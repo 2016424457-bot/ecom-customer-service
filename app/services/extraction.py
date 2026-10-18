@@ -28,6 +28,14 @@ async def extract_after_sales(
     ]
     try:
         result = await extraction_model.ainvoke(messages)
+    except ValidationError as exc:
+        # with_structured_output parses tool-call arguments inside ainvoke,
+        # so schema-invalid model output surfaces here as ValidationError.
+        raise AppError(
+            code="parse_error",
+            message=ERROR_MESSAGES["parse_error"],
+            status_code=502,
+        ) from exc
     except Exception as exc:
         raise map_upstream_error(exc) from exc
 

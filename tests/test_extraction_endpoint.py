@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import ValidationError
 
 from app.config import Settings
 from app.main import create_app
@@ -152,6 +153,48 @@ def test_extract_parse_error_maps_to_502(
     model = FakeExtractionModel(
         error=OutputParserException("invalid structured output")
     )
+    client = make_client(
+        settings=settings,
+        prompt_builder=prompt_builder,
+        extraction_model=model,
+    )
+
+    with client:
+        response = client.post(
+            "/api/chat/extract", json={"text": "我要退货"}
+        )
+
+    assert response.status_code == 502
+    assert response.json()["code"] == "parse_error"
+
+
+def test_extract_validation_error_from_model_maps_to_502(
+    settings: Settings, prompt_builder: PromptBuilder
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        AfterSalesExtraction.model_validate({"request_type": "bogus"})
+    # with_structured_output raises this during ainvoke when the model's
+    # tool-call arguments do not satisfy the schema.
+    model = FakeExtractionModel(error=exc_info.value)
+    client = make_client(
+        settings=settings,
+        prompt_builder=prompt_builder,
+        extraction_model=model,
+    )
+
+    with client:
+        response = client.post(
+            "/api/chat/extract", json={"text": "我要退货"}
+        )
+
+    assert response.status_code == 502
+    assert response.json()["code"] == "parse_error"
+
+
+def test_extract_invalid_model_result_maps_to_502(
+    settings: Settings, prompt_builder: PromptBuilder
+) -> None:
+    model = FakeExtractionModel(result=None)
     client = make_client(
         settings=settings,
         prompt_builder=prompt_builder,
