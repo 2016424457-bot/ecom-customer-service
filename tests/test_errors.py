@@ -1,6 +1,7 @@
+import pytest
 from langchain_core.exceptions import OutputParserException
 
-from app.errors import ERROR_MESSAGES, map_upstream_error
+from app.errors import ERROR_MESSAGES, AppError, map_upstream_error
 
 
 class FakeStatusError(Exception):
@@ -51,3 +52,17 @@ def test_unknown_error_maps_to_upstream_error() -> None:
     assert error.status_code == 502
     assert error.message
     assert error.message == ERROR_MESSAGES["upstream_error"]
+
+
+def test_app_error_can_be_raised_and_caught() -> None:
+    error = map_upstream_error(RuntimeError("connection reset"))
+
+    with pytest.raises(AppError) as exc_info:
+        raise error
+
+    caught = exc_info.value
+    assert isinstance(caught, Exception)
+    assert caught.code == "upstream_error"
+    assert caught.status_code == 502
+    assert caught.message == ERROR_MESSAGES["upstream_error"]
+    assert str(caught) == caught.message

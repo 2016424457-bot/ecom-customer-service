@@ -1,7 +1,5 @@
 """Shared error mapping for upstream model failures."""
 
-from dataclasses import dataclass
-
 from langchain_core.exceptions import OutputParserException
 
 ERROR_MESSAGES: dict[str, str] = {
@@ -13,13 +11,18 @@ ERROR_MESSAGES: dict[str, str] = {
 }
 
 
-@dataclass(frozen=True)
-class AppError:
-    """User-facing error with the HTTP status used by non-streaming routes."""
+class AppError(Exception):
+    """User-facing error with the HTTP status used by non-streaming routes.
 
-    code: str
-    message: str
-    status_code: int
+    Derives from ``Exception`` so it can be raised directly and registered
+    with FastAPI's ``exception_handler``.
+    """
+
+    def __init__(self, code: str, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status_code = status_code
 
 
 def _make_error(code: str, status_code: int) -> AppError:
