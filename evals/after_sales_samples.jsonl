@@ -1,0 +1,11 @@
+{"text": "订单号：A12345，买的外套不合身，想退货，希望退款。", "expected_order_id": "订单号：A12345", "request_type": "return", "desired_present": true}
+{"text": "订单号：B98765，收到的鞋子有质量问题，我要换货。", "expected_order_id": "订单号：B98765", "request_type": "exchange", "desired_present": true}
+{"text": "订单 202310180001 还没发货，我想退款。", "expected_order_id": "订单 202310180001", "request_type": "refund", "desired_present": true}
+{"text": "快递三天没动了，订单号：C55555，麻烦帮我看看。", "expected_order_id": "订单号：C55555", "request_type": "logistics", "desired_present": false}
+{"text": "你们的产品太差了，我要投诉！订单 D77777。", "expected_order_id": "订单 D77777", "request_type": "complaint", "desired_present": false}
+{"text": "订单 E11111 的耳机坏了，想维修。", "expected_order_id": "订单 E11111", "request_type": "repair", "desired_present": true}
+{"text": "我昨天买的衣服不合身，还没想好怎么处理。", "expected_order_id": null, "request_type": "other", "desired_present": false}
+{"text": "订单号：F22222，我要退货，但希望你们上门取件。", "expected_order_id": "订单号：F22222", "request_type": "return", "desired_present": true}
+{"text": "订单 G33333 少发了一件，要求补发。", "expected_order_id": "订单 G33333", "request_type": "other", "desired_present": true}
+{"text": "我买的东西有问题，订单 H44444，既要退货又要赔偿。", "expected_order_id": "订单 H44444", "request_type": "return", "desired_present": true}
+{"text": "你好，在吗？", "expected_order_id": null, "request_type": "other", "desired_present": false}
