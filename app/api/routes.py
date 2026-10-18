@@ -7,8 +7,9 @@ from fastapi import APIRouter, Depends
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from app.runtime import Runtime, get_runtime
-from app.schemas import ChatRequest
+from app.schemas import AfterSalesExtraction, ChatExtractRequest, ChatRequest
 from app.services.chat import stream_chat
+from app.services.extraction import extract_after_sales
 
 router = APIRouter()
 
@@ -33,3 +34,16 @@ async def chat_stream_endpoint(
         settings=runtime.settings,
     ):
         yield ServerSentEvent(event=event, data=data)
+
+
+@router.post("/api/chat/extract", response_model=AfterSalesExtraction)
+async def chat_extract_endpoint(
+    payload: ChatExtractRequest,
+    runtime: Runtime = Depends(get_runtime),
+) -> AfterSalesExtraction:
+    """Extract the fixed after-sales fields from one message."""
+    return await extract_after_sales(
+        text=payload.text,
+        extraction_model=runtime.extraction_model,
+        prompt_builder=runtime.prompt_builder,
+    )

@@ -33,6 +33,20 @@ class ChatRequest(BaseModel):
         return value
 
 
+class ChatExtractRequest(BaseModel):
+    """Payload for the structured after-sales extraction endpoint."""
+
+    text: str = Field(min_length=1, max_length=8000)
+
+    @field_validator("text")
+    @classmethod
+    def reject_blank_text(cls, value: str) -> str:
+        """Reject text that contains only whitespace."""
+        if not value.strip():
+            raise ValueError("text must not be whitespace-only")
+        return value
+
+
 class ErrorResponse(BaseModel):
     """Non-streaming error body shared by API routes."""
 
