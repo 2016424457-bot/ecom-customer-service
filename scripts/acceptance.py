@@ -159,8 +159,23 @@ def check_extraction(client: httpx.Client) -> tuple[bool, str]:
         missing = EXTRACT_FIELDS - set(body)
         if missing:
             problems.append(f"缺少字段：{sorted(missing)}")
-        if body.get("request_type") not in VALID_REQUEST_TYPES:
-            problems.append(f"request_type 非法：{body.get('request_type')!r}")
+
+        order_id = body.get("order_id")
+        if not isinstance(order_id, str) or "A12345" not in order_id:
+            problems.append(f"order_id 未包含 A12345：{order_id!r}")
+
+        desired_solution = body.get("desired_solution")
+        if (
+            not isinstance(desired_solution, str)
+            or not desired_solution.strip()
+        ):
+            problems.append(f"desired_solution 为空：{desired_solution!r}")
+
+        request_type = body.get("request_type")
+        if request_type not in VALID_REQUEST_TYPES:
+            problems.append(f"request_type 非法：{request_type!r}")
+        if request_type != "return":
+            problems.append(f"request_type 期望 'return'，实际 {request_type!r}")
     elif response.status_code == 200:
         problems.append(f"响应不是 JSON 对象：{body!r}")
 

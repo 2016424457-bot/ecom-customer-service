@@ -112,7 +112,7 @@ curl -s -X POST http://127.0.0.1:8000/api/chat/extract \
 
 ```json
 {
-  "order_id": "A12345",
+  "order_id": "订单 A12345",
   "request_type": "return",
   "desired_solution": "退货退款"
 }
@@ -122,13 +122,17 @@ curl -s -X POST http://127.0.0.1:8000/api/chat/extract \
 
 ## 测试、评估与验收
 
-### 单元测试
+### 测试
 
 ```bash
 uv run pytest
 ```
 
-不访问网络，不需要真实密钥。
+`uv run pytest` 会运行全部测试：单元测试，以及在配置了真实密钥时运行集成测试（集成测试只由 marker 标记，不会被默认排除）。没有 `.env`、密钥缺失或仍是 `sk-your-key` 占位符时，集成测试会自动跳过。只跑不访问网络的单元测试：
+
+```bash
+uv run pytest -m "not integration"
+```
 
 ### 真实上游集成测试
 
