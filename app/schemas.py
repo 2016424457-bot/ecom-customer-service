@@ -1,6 +1,6 @@
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RequestType(str, Enum):
@@ -13,6 +13,31 @@ class RequestType(str, Enum):
     LOGISTICS = "logistics"
     COMPLAINT = "complaint"
     OTHER = "other"
+
+
+class ChatRequest(BaseModel):
+    """Payload for the streaming chat endpoint."""
+
+    session_id: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9_-]{1,64}$",
+    )
+    message: str = Field(min_length=1, max_length=8000)
+
+    @field_validator("message")
+    @classmethod
+    def reject_blank_message(cls, value: str) -> str:
+        """Reject messages that contain only whitespace."""
+        if not value.strip():
+            raise ValueError("message must not be whitespace-only")
+        return value
+
+
+class ErrorResponse(BaseModel):
+    """Non-streaming error body shared by API routes."""
+
+    code: str
+    message: str
 
 
 class AfterSalesExtraction(BaseModel):
