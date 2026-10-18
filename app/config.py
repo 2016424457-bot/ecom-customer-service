@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -47,6 +48,12 @@ class Settings(BaseSettings):
 
     @field_validator("openai_base_url")
     @classmethod
-    def strip_trailing_slash(cls, value: str) -> str:
-        """Normalize the upstream base URL to have no trailing slash."""
-        return value.rstrip("/")
+    def validate_base_url(cls, value: str) -> str:
+        """Normalize the upstream base URL and require absolute http(s)."""
+        normalized = value.rstrip("/")
+        parsed = urlparse(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(
+                "openai_base_url must be an absolute http:// or https:// URL"
+            )
+        return normalized

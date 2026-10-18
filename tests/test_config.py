@@ -35,6 +35,25 @@ def test_base_url_trailing_slash_is_stripped() -> None:
     assert settings.openai_base_url == "https://api.deepseek.com"
 
 
+def test_invalid_base_url_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            openai_api_key="test",
+            openai_base_url="not-a-url",
+        )
+
+
+def test_http_local_base_url_is_accepted() -> None:
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="test",
+        openai_base_url="http://localhost:11434/v1",
+    )
+
+    assert settings.openai_base_url == "http://localhost:11434/v1"
+
+
 def test_invalid_structured_method() -> None:
     with pytest.raises(ValidationError):
         Settings(
