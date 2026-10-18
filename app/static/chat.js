@@ -1,0 +1,406 @@
+(() => {
+  "use strict";
+
+  const SESSION_KEY = "ecom-chat-session-id";
+  const HISTORY_KEY = "ecom-chat-history";
+  const STREAM_URL = "/api/chat/stream";
+  const HEALTH_URL = "/health";
+  const MAX_INPUT = 8000;
+
+  const WELCOME =
+    "您好，这里是示例商城客户服务。请告诉我您的订单号、遇到的问题和期望的处理方式，我会为您妥善处理。";
+
+  const AVATAR_ICONS = {
+    assistant: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M4 14v-2a8 8 0 0 1 16 0v2"></path>
+      <rect x="2.8" y="13" width="4.2" height="6.2" rx="2.1"></rect>
+      <rect x="17" y="13" width="4.2" height="6.2" rx="2.1"></rect>
+      <path d="M19.1 19.2a3.2 3.2 0 0 1-3.2 2.3h-3"></path>
+    </svg>`,
+    user: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="8" r="3.2"></circle>
+      <path d="M5.6 20c.7-3.2 3.2-5 6.4-5s5.7 1.8 6.4 5"></path>
+    </svg>`,
+    error: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 7.5v5.5"></path>
+      <circle cx="12" cy="16.8" r="0.9" fill="currentColor" stroke="none"></circle>
+    </svg>`,
+  };
+
+  const VALID_ROLES = new Set(["user", "assistant", "error"]);
+  const reduceMotion =
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  const messagesEl = document.getElementById("messages");
+  const composer = document.getElementById("composer");
+  const input = document.getElementById("input");
+  const sendBtn = document.getElementById("sendBtn");
+  const newChatBtn = document.getElementById("newChatBtn");
+  const suggestions = document.getElementById("suggestions");
+  const statusDot = document.getElementById("statusDot");
+  const statusText = document.getElementById("statusText");
+
+  let sessionId = loadSessionId();
+  let history = loadHistory();
+  let busy = false;
+
+  function uuid() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+    return (
+      "s-" +
+      Date.now().toString(36) +
+      "-" +
+      Math.random().toString(36).slice(2, 10)
+    );
+  }
+
+  function isValidSessionId(value) {
+    return typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(value);
+  }
+
+  function loadSessionId() {
+    try {
+      const stored = localStorage.getItem(SESSION_KEY);
+      if (isValidSessionId(stored)) return stored;
+      const next = uuid();
+      localStorage.setItem(SESSION_KEY, next);
+      return next;
+    } catch {
+      return uuid();
+    }
+  }
+
+  function saveSessionId() {
+    try {
+      localStorage.setItem(SESSION_KEY, sessionId);
+    } catch {
+      /* storage may be unavailable */
+    }
+  }
+
+  function loadHistory() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(
+        (item) =>
+          item &&
+          VALID_ROLES.has(item.role) &&
+          typeof item.text === "string" &&
+          item.text.length > 0,
+      );
+    } catch {
+      return [];
+    }
+  }
+
+  function saveHistory() {
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+    } catch {
+      /* storage may be unavailable */
+    }
+  }
+
+  function scrollToBottom(behavior = "smooth") {
+    requestAnimationFrame(() => {
+      messagesEl.scrollTo({
+        top: messagesEl.scrollHeight,
+        behavior: reduceMotion ? "auto" : behavior,
+      });
+    });
+  }
+
+  function autoResize() {
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
+  }
+
+  function setBusy(next) {
+    busy = next;
+    sendBtn.disabled = next;
+    sendBtn.setAttribute("aria-busy", String(next));
+    composer.classList.toggle("is-busy", next);
+  }
+
+  function createMessage(role, text, { typing = false } = {}) {
+    const row = document.createElement("div");
+    row.className = `msg ${role}`;
+    row.dataset.role = role;
+
+    const avatar = document.createElement("div");
+    avatar.className = "avatar";
+    avatar.setAttribute("aria-hidden", "true");
+    avatar.innerHTML = AVATAR_ICONS[role] || AVATAR_ICONS.assistant;
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+
+    if (typing) {
+      bubble.innerHTML =
+        '<span class="typing" aria-label="正在输入"><i></i><i></i><i></i></span>';
+    } else {
+      bubble.textContent = text;
+    }
+
+    row.append(avatar, bubble);
+    messagesEl.append(row);
+    scrollToBottom();
+    return { row, bubble };
+  }
+
+  function renderHistory() {
+    messagesEl.innerHTML = "";
+    if (!history.length) {
+      createMessage("assistant", WELCOME);
+      return;
+    }
+    for (const item of history) {
+      createMessage(item.role, item.text);
+    }
+    scrollToBottom("auto");
+  }
+
+  function appendHistory(role, text) {
+    history.push({ role, text });
+    saveHistory();
+  }
+
+  function addErrorMessage(text) {
+    history.push({ role: "error", text });
+    saveHistory();
+    createMessage("error", text);
+    scrollToBottom();
+  }
+
+  function showSuggestions(show) {
+    suggestions.classList.toggle("is-hidden", !show);
+  }
+
+  function dispatchEvent(raw, onEvent) {
+    const lines = raw.replace(/\r/g, "").split("\n");
+    let event = "message";
+    const dataLines = [];
+
+    for (const line of lines) {
+      if (line.startsWith("event:")) {
+        event = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+
+    if (!dataLines.length) return;
+    const payload = dataLines.join("\n");
+    let data;
+    try {
+      data = JSON.parse(payload);
+    } catch {
+      data = payload;
+    }
+    onEvent(event, data);
+  }
+
+  async function readSse(response, onEvent) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    const delimiter = /\r?\n\r?\n/;
+    let buffer = "";
+    let completed = false;
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let match;
+        while ((match = delimiter.exec(buffer)) !== null) {
+          const raw = buffer.slice(0, match.index);
+          buffer = buffer.slice(match.index + match[0].length);
+          if (raw.trim()) dispatchEvent(raw, onEvent);
+        }
+      }
+
+      buffer += decoder.decode();
+      if (buffer.trim()) dispatchEvent(buffer, onEvent);
+      completed = true;
+    } finally {
+      if (!completed) {
+        try {
+          await reader.cancel();
+        } catch {
+          /* ignore cancellation errors */
+        }
+      }
+      reader.releaseLock();
+    }
+  }
+
+  async function sendMessage() {
+    const text = input.value.trim();
+    if (!text || busy) return;
+    if (text.length > MAX_INPUT) return;
+
+    setBusy(true);
+    showSuggestions(false);
+    input.value = "";
+    autoResize();
+
+    appendHistory("user", text);
+    createMessage("user", text);
+
+    const placeholder = createMessage("assistant", "", { typing: true });
+    const assistantItem = { role: "assistant", text: "" };
+    history.push(assistantItem);
+
+    let gotToken = false;
+    let sawDone = false;
+
+    try {
+      const response = await fetch(STREAM_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, message: text }),
+      });
+
+      if (!response.ok) {
+        let detail = `请求失败（${response.status}）`;
+        try {
+          const body = await response.json();
+          const candidate = body?.detail?.message || body?.message || body?.detail;
+          if (candidate) {
+            detail = typeof candidate === "string" ? candidate : JSON.stringify(candidate);
+          }
+        } catch {
+          /* keep the status message */
+        }
+        throw new Error(detail);
+      }
+
+      if (!response.body) {
+        throw new Error("当前浏览器不支持流式响应");
+      }
+
+      await readSse(response, (event, data) => {
+        if (event === "session" && data && data.session_id) {
+          sessionId = String(data.session_id);
+          saveSessionId();
+          return;
+        }
+
+        if (event === "token" && data && typeof data.delta === "string") {
+          if (!gotToken) {
+            gotToken = true;
+            placeholder.bubble.classList.remove("typing-state");
+            placeholder.bubble.classList.add("streaming");
+            placeholder.bubble.textContent = "";
+          }
+          assistantItem.text += data.delta;
+          placeholder.bubble.textContent = assistantItem.text;
+          scrollToBottom();
+          return;
+        }
+
+        if (event === "done") {
+          sawDone = true;
+          return;
+        }
+
+        if (event === "error") {
+          throw new Error(
+            (data && data.message) || "服务暂时不可用，请稍后重试",
+          );
+        }
+      });
+
+      placeholder.bubble.classList.remove("typing-state", "streaming");
+
+      if (!assistantItem.text) {
+        placeholder.row.remove();
+        history.pop();
+        addErrorMessage("没有收到回复，请稍后重试。");
+      } else {
+        saveHistory();
+        if (!sawDone) {
+          addErrorMessage("连接中断，当前回复可能不完整。");
+        }
+      }
+    } catch (error) {
+      placeholder.bubble.classList.remove("typing-state", "streaming");
+      if (!assistantItem.text) {
+        placeholder.row.remove();
+        history.pop();
+      }
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "网络异常，请稍后重试";
+      addErrorMessage(message);
+    } finally {
+      setBusy(false);
+      scrollToBottom();
+      input.focus();
+    }
+  }
+
+  async function checkHealth() {
+    try {
+      const response = await fetch(HEALTH_URL, { cache: "no-store" });
+      if (!response.ok) throw new Error("health check failed");
+      const data = await response.json();
+      statusDot.className = "status-dot online";
+      statusText.textContent = data.model ? `在线 · ${data.model}` : "在线";
+    } catch {
+      statusDot.className = "status-dot offline";
+      statusText.textContent = "服务未连接";
+    }
+  }
+
+  function newChat() {
+    if (history.length && !window.confirm("开始新对话？当前页面消息会清空。")) {
+      return;
+    }
+    history = [];
+    saveHistory();
+    sessionId = uuid();
+    saveSessionId();
+    messagesEl.innerHTML = "";
+    createMessage("assistant", WELCOME);
+    showSuggestions(true);
+    autoResize();
+    input.focus();
+  }
+
+  composer.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void sendMessage();
+  });
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey) return;
+    if (event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    void sendMessage();
+  });
+
+  input.addEventListener("input", autoResize);
+
+  newChatBtn.addEventListener("click", newChat);
+
+  suggestions.addEventListener("click", (event) => {
+    const chip = event.target.closest("[data-message]");
+    if (!chip || busy) return;
+    input.value = chip.dataset.message || "";
+    autoResize();
+    void sendMessage();
+  });
+
+  renderHistory();
+  autoResize();
+  void checkHealth();
+  input.focus();
+})();

@@ -1,12 +1,16 @@
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
 from app.config import Settings
 from app.errors import AppError
 from app.runtime import Runtime, build_runtime
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 def create_app(
@@ -24,7 +28,18 @@ def create_app(
 
     application = FastAPI()
     application.state.runtime = runtime
+    application.mount(
+        "/static", StaticFiles(directory=STATIC_DIR), name="static"
+    )
     application.include_router(router)
+
+    @application.get("/", include_in_schema=False)
+    async def index() -> RedirectResponse:
+        return RedirectResponse(url="/chat")
+
+    @application.get("/chat", include_in_schema=False)
+    async def chat_page() -> FileResponse:
+        return FileResponse(STATIC_DIR / "chat.html")
 
     @application.exception_handler(AppError)
     async def handle_app_error(
