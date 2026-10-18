@@ -51,7 +51,7 @@ class FakeChatModel:
 
 
 @pytest.fixture
-def settings() -> Settings:
+def settings(clean_unit_env: pytest.MonkeyPatch) -> Settings:
     return Settings(_env_file=None, openai_api_key="test")
 
 
@@ -270,6 +270,9 @@ async def test_client_disconnect_does_not_save_history(
     assert await generator.__anext__() == ("token", {"delta": "first"})
     await generator.aclose()
 
+    # Cancellation must release the in-use reference so LRU eviction can
+    # reclaim the session later.
+    assert store._sessions["s6"].in_use == 0
     state = await store.get("s6")
     assert state.history == []
     assert not state.lock.locked()

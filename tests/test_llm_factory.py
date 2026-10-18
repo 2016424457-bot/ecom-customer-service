@@ -1,5 +1,7 @@
 from typing import Any
 
+import pytest
+
 from app.config import Settings
 from app.llm import build_model_kwargs
 
@@ -8,7 +10,9 @@ def _settings(**overrides: Any) -> Settings:
     return Settings(_env_file=None, openai_api_key="test", **overrides)
 
 
-def test_model_kwargs_include_thinking() -> None:
+def test_model_kwargs_include_thinking(
+    clean_unit_env: pytest.MonkeyPatch,
+) -> None:
     settings = _settings()
 
     kwargs = build_model_kwargs(
@@ -31,7 +35,9 @@ def test_model_kwargs_include_thinking() -> None:
     assert kwargs["stream_usage"] is True
 
 
-def test_model_kwargs_omit_thinking_when_blank() -> None:
+def test_model_kwargs_omit_thinking_when_blank(
+    clean_unit_env: pytest.MonkeyPatch,
+) -> None:
     settings = _settings(llm_thinking="")
 
     kwargs = build_model_kwargs(

@@ -7,6 +7,8 @@
 - 应用侧统一使用 OpenAI 兼容协议，可切换 DeepSeek / OpenAI / Ollama / Claude 兼容代理。
 - 会话保存在进程内存，按 token 预算裁剪历史，不做持久化。
 
+> 本文所有命令都必须在仓库根目录执行：Prompt 路径是相对当前工作目录解析的，换目录启动会找不到 `app/prompts/*.txt`。
+
 ## 快速开始
 
 ### 1. 安装依赖
@@ -46,7 +48,7 @@ curl -s http://127.0.0.1:8000/health
 
 ## 切换上游模型
 
-应用统一按 OpenAI 协议访问上游，切换时只需要改 `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_MODEL`。`LLM_THINKING` 非空时会作为 `extra_body.thinking.type` 发送；非 DeepSeek 上游通常留空。
+应用统一按 OpenAI 协议访问上游，切换时只需要改 `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`OPENAI_MODEL` 和 `LLM_THINKING`。`LLM_THINKING` 非空时会作为 `extra_body.thinking.type` 发送；非 DeepSeek 上游通常将其设为空。
 
 ### DeepSeek（默认）
 
@@ -154,7 +156,7 @@ uv run python scripts/acceptance.py
 
 - `run_extraction_eval.py`：逐条调用 `/api/chat/extract`，统计 JSON 合法率（100%）、`order_id` 原文精确匹配（≥80%）、`request_type` 匹配（≥90%）、`desired_solution` 有无判断（≥80%），不达标退出码为 1。
 - `run_chat_eval.py`：逐条调用 `/api/chat/stream`，检查不编造物流、不擅自赔付、隐私提醒、高风险转人工、拒绝提示词注入，并打印完整回复供人工复核。
-- `scripts/acceptance.py`：检查流式 token/done、多轮订单号记忆、结构化抽取三字段，全部通过时打印 `ACCEPTANCE PASS`。
+- `scripts/acceptance.py`：检查流式 token/done、多轮订单号记忆、结构化抽取（三字段齐全、`order_id` 含 `A12345`、`desired_solution` 非空、`request_type` 为合法枚举值），全部通过时打印 `ACCEPTANCE PASS`。
 
 脚本默认访问 `http://127.0.0.1:8000`，可用 `ECOM_BASE_URL` 环境变量覆盖。
 
@@ -163,6 +165,7 @@ uv run python scripts/acceptance.py
 - 会话保存在进程内存中，服务重启或多 worker 都会丢失上下文；本章仅支持 `--workers 1`。
 - 没有用户认证、限流、计费或多租户隔离，不要直接暴露到公网。
 - 默认只监听 `127.0.0.1`，仅适合本地开发与验收。
+- 经反向代理或网关访问时，代理可能缓冲 SSE 导致 token 不能实时到达；请为流式响应设置 `X-Accel-Buffering: no`（Nginx）或关闭代理缓冲。
 - Prompt 中的业务信息（品牌名、服务时间）来自 `.env`，本章不接入订单/物流 API，无法核实真实订单状态。
 - `LOG_CONTENT=false` 默认不记录用户消息与模型回复全文；改为 `true` 会把全文写入日志，存在隐私风险。
 - 模型输出具有不确定性；评估脚本中的关键词检查只是底线，不能替代人工复核。

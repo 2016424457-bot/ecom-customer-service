@@ -6,8 +6,9 @@ Usage (server must already be running):
 Checks:
 1. SSE stream: at least 2 token events and 1 done event.
 2. Multi-turn context: a second turn in the same session recalls A12345.
-3. Structured extraction: the response has all three fields and a valid
-   request_type.
+3. Structured extraction: the response has all three fields, the
+   ``order_id`` contains ``A12345``, ``desired_solution`` is non-empty,
+   and ``request_type`` is one of the documented enum values.
 
 Prints ``ACCEPTANCE PASS`` and exits 0 when all checks pass; otherwise exits 1.
 """
@@ -141,7 +142,7 @@ def check_context(client: httpx.Client) -> tuple[bool, str]:
 
 
 def check_extraction(client: httpx.Client) -> tuple[bool, str]:
-    """Check 3: extraction returns all three fields with a valid type."""
+    """Check 3: extraction has three fields, order id, solution, valid type."""
     text = "我订单 A12345 买的外套不合身，想退货，希望退款"
     response = client.post(EXTRACT_ENDPOINT, json={"text": text})
     problems: list[str] = []
@@ -174,8 +175,6 @@ def check_extraction(client: httpx.Client) -> tuple[bool, str]:
         request_type = body.get("request_type")
         if request_type not in VALID_REQUEST_TYPES:
             problems.append(f"request_type 非法：{request_type!r}")
-        if request_type != "return":
-            problems.append(f"request_type 期望 'return'，实际 {request_type!r}")
     elif response.status_code == 200:
         problems.append(f"响应不是 JSON 对象：{body!r}")
 

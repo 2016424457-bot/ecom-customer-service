@@ -13,6 +13,7 @@ class SessionState:
     history: list[BaseMessage] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_access: float = field(default_factory=time.monotonic)
+    in_use: int = 0
 
 
 class SessionStore:
@@ -32,16 +33,28 @@ class SessionStore:
         self._lock = asyncio.Lock()
 
     async def get(self, session_id: str) -> SessionState:
-        """Return the session state, creating it if it does not exist."""
+        """Return the session state, creating it if it does not exist.
+
+        The returned state is marked in use until the caller calls
+        ``release`` so that LRU eviction cannot drop a session that has been
+        fetched but has not yet acquired its per-session lock.
+        """
         async with self._lock:
             state = self._sessions.get(session_id)
             if state is None:
                 state = SessionState()
                 self._sessions[session_id] = state
+            state.in_use += 1
             state.last_access = time.monotonic()
             self._sessions.move_to_end(session_id)
             self._evict_if_needed(current_session_id=session_id)
             return state
+
+    async def release(self, state: SessionState) -> None:
+        """Mark a state returned by ``get`` as no longer in use."""
+        async with self._lock:
+            if state.in_use > 0:
+                state.in_use -= 1
 
     def append_turn(
         self, state: SessionState, user_text: str, assistant_text: str
@@ -53,10 +66,12 @@ class SessionStore:
             del state.history[: -self.max_stored_messages]
 
     def _evict_if_needed(self, current_session_id: str) -> None:
-        """Evict least-recently-used sessions that are not currently locked.
+        """Evict least-recently-used sessions that are not in use.
 
-        If every other session is locked, the store is allowed to exceed
-        ``max_sessions`` until a later call finds an unlocked candidate.
+        A session is eviction-safe only when no caller holds a fetched
+        reference (``in_use == 0``) and its lock is free. If every other
+        session is in use or locked, the store is allowed to exceed
+        ``max_sessions`` until a later call finds a candidate.
         """
         if len(self._sessions) <= self.max_sessions:
             return
@@ -66,6 +81,7 @@ class SessionStore:
                 return
             if session_id == current_session_id:
                 continue
-            if self._sessions[session_id].lock.locked():
+            state = self._sessions[session_id]
+            if state.in_use > 0 or state.lock.locked():
                 continue
             del self._sessions[session_id]

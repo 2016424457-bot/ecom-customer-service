@@ -4,7 +4,7 @@ from pydantic import ValidationError
 from app.config import Settings
 
 
-def test_defaults() -> None:
+def test_defaults(clean_unit_env: pytest.MonkeyPatch) -> None:
     settings = Settings(_env_file=None, openai_api_key="test")
 
     assert settings.openai_model == "deepseek-flash"
@@ -18,14 +18,14 @@ def test_defaults() -> None:
     assert settings.structured_output_method == "function_calling"
 
 
-def test_missing_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
+def test_missing_api_key(clean_unit_env: pytest.MonkeyPatch) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
 
 
-def test_base_url_trailing_slash_is_stripped() -> None:
+def test_base_url_trailing_slash_is_stripped(
+    clean_unit_env: pytest.MonkeyPatch,
+) -> None:
     settings = Settings(
         _env_file=None,
         openai_api_key="test",
@@ -35,7 +35,9 @@ def test_base_url_trailing_slash_is_stripped() -> None:
     assert settings.openai_base_url == "https://api.deepseek.com"
 
 
-def test_invalid_base_url_is_rejected() -> None:
+def test_invalid_base_url_is_rejected(
+    clean_unit_env: pytest.MonkeyPatch,
+) -> None:
     with pytest.raises(ValidationError):
         Settings(
             _env_file=None,
@@ -44,7 +46,9 @@ def test_invalid_base_url_is_rejected() -> None:
         )
 
 
-def test_http_local_base_url_is_accepted() -> None:
+def test_http_local_base_url_is_accepted(
+    clean_unit_env: pytest.MonkeyPatch,
+) -> None:
     settings = Settings(
         _env_file=None,
         openai_api_key="test",
@@ -54,7 +58,9 @@ def test_http_local_base_url_is_accepted() -> None:
     assert settings.openai_base_url == "http://localhost:11434/v1"
 
 
-def test_invalid_structured_method() -> None:
+def test_invalid_structured_method(
+    clean_unit_env: pytest.MonkeyPatch,
+) -> None:
     with pytest.raises(ValidationError):
         Settings(
             _env_file=None,
@@ -63,6 +69,8 @@ def test_invalid_structured_method() -> None:
         )
 
 
-def test_budget_must_be_positive() -> None:
+def test_budget_must_be_positive(
+    clean_unit_env: pytest.MonkeyPatch,
+) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, openai_api_key="test", history_token_budget=0)

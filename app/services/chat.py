@@ -61,106 +61,110 @@ async def stream_chat(
     """
     started = time.perf_counter()
     state = await session_store.get(session_id)
-    yield ("session", {"session_id": session_id})
-
-    token_events = 0
     try:
-        async with state.lock:
-            history = list(state.history)
-            trimmed_history = trim_history(
-                history, settings.history_token_budget
-            )
-            messages = prompt_builder.build_messages(
-                trimmed_history, user_message
-            )
+        yield ("session", {"session_id": session_id})
 
-            chunks: list[str] = []
-            usage: dict[str, Any] | None = None
-            finish_reason: str | None = None
-
-            async for chunk in chat_model.astream(messages):
-                text = chunk_text(getattr(chunk, "content", None))
-                if text:
-                    chunks.append(text)
-                    token_events += 1
-                    yield ("token", {"delta": text})
-
-                chunk_usage = getattr(chunk, "usage_metadata", None)
-                if chunk_usage:
-                    usage = chunk_usage
-
-                response_metadata = (
-                    getattr(chunk, "response_metadata", None) or {}
+        token_events = 0
+        try:
+            async with state.lock:
+                history = list(state.history)
+                trimmed_history = trim_history(
+                    history, settings.history_token_budget
                 )
-                reason = response_metadata.get("finish_reason")
-                if reason:
-                    finish_reason = reason
-
-            assistant_text = "".join(chunks)
-            if assistant_text:
-                session_store.append_turn(
-                    state, user_message, assistant_text
+                messages = prompt_builder.build_messages(
+                    trimmed_history, user_message
                 )
 
-            latency_ms = round(
-                (time.perf_counter() - started) * 1000, 1
-            )
-            input_tokens, output_tokens = _usage_tokens(usage)
-            logger.info(
-                "chat_stream event=chat_stream outcome=done "
-                "session_id=%s latency_ms=%s token_events=%d "
-                "input_tokens=%s output_tokens=%s error_code=None",
-                session_id,
-                latency_ms,
-                token_events,
-                input_tokens,
-                output_tokens,
-            )
-            if settings.log_content:
+                chunks: list[str] = []
+                usage: dict[str, Any] | None = None
+                finish_reason: str | None = None
+
+                async for chunk in chat_model.astream(messages):
+                    text = chunk_text(getattr(chunk, "content", None))
+                    if text:
+                        chunks.append(text)
+                        token_events += 1
+                        yield ("token", {"delta": text})
+
+                    chunk_usage = getattr(chunk, "usage_metadata", None)
+                    if chunk_usage:
+                        usage = chunk_usage
+
+                    response_metadata = (
+                        getattr(chunk, "response_metadata", None) or {}
+                    )
+                    reason = response_metadata.get("finish_reason")
+                    if reason:
+                        finish_reason = reason
+
+                assistant_text = "".join(chunks)
+                if assistant_text:
+                    session_store.append_turn(
+                        state, user_message, assistant_text
+                    )
+
+                latency_ms = round(
+                    (time.perf_counter() - started) * 1000, 1
+                )
+                input_tokens, output_tokens = _usage_tokens(usage)
                 logger.info(
-                    "chat_stream content session_id=%s "
-                    "user_message=%r assistant_message=%r",
+                    "chat_stream event=chat_stream outcome=done "
+                    "session_id=%s latency_ms=%s token_events=%d "
+                    "input_tokens=%s output_tokens=%s error_code=None",
                     session_id,
-                    user_message,
-                    assistant_text,
+                    latency_ms,
+                    token_events,
+                    input_tokens,
+                    output_tokens,
                 )
+                if settings.log_content:
+                    logger.info(
+                        "chat_stream content session_id=%s "
+                        "user_message=%r assistant_message=%r",
+                        session_id,
+                        user_message,
+                        assistant_text,
+                    )
 
-            yield (
-                "done",
-                {
+                done_payload = {
                     "session_id": session_id,
                     "finish_reason": finish_reason,
                     "usage": usage,
-                },
-            )
-    except Exception as exc:
-        error = map_upstream_error(exc)
-        if error.code == "parse_error":
-            # Chat does not parse structured output; expose it as a
-            # generic upstream failure on this endpoint.
-            error = AppError(
-                code="upstream_error",
-                message=ERROR_MESSAGES["upstream_error"],
-                status_code=502,
-            )
-        latency_ms = round((time.perf_counter() - started) * 1000, 1)
-        logger.warning(
-            "chat_stream event=chat_stream outcome=error "
-            "session_id=%s latency_ms=%s token_events=%d "
-            "input_tokens=None output_tokens=None error_code=%s "
-            "error_type=%s error=%r",
-            session_id,
-            latency_ms,
-            token_events,
-            error.code,
-            type(exc).__name__,
-            exc,
-        )
-        if settings.log_content:
+                }
+
+            # Yield after releasing the per-session lock so a slow consumer
+            # cannot block another turn for the same session.
+            yield ("done", done_payload)
+        except Exception as exc:
+            error = map_upstream_error(exc)
+            if error.code == "parse_error":
+                # Chat does not parse structured output; expose it as a
+                # generic upstream failure on this endpoint.
+                error = AppError(
+                    code="upstream_error",
+                    message=ERROR_MESSAGES["upstream_error"],
+                    status_code=502,
+                )
+            latency_ms = round((time.perf_counter() - started) * 1000, 1)
             logger.warning(
-                "chat_stream content session_id=%s user_message=%r",
+                "chat_stream event=chat_stream outcome=error "
+                "session_id=%s latency_ms=%s token_events=%d "
+                "input_tokens=None output_tokens=None error_code=%s "
+                "error_type=%s error=%r",
                 session_id,
-                user_message,
+                latency_ms,
+                token_events,
+                error.code,
+                type(exc).__name__,
+                exc,
             )
-        yield ("error", {"code": error.code, "message": error.message})
-        return
+            if settings.log_content:
+                logger.warning(
+                    "chat_stream content session_id=%s user_message=%r",
+                    session_id,
+                    user_message,
+                )
+            yield ("error", {"code": error.code, "message": error.message})
+            return
+    finally:
+        await session_store.release(state)

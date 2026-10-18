@@ -57,7 +57,7 @@ class FakeRuntime:
 
 
 @pytest.fixture
-def settings() -> Settings:
+def settings(clean_unit_env: pytest.MonkeyPatch) -> Settings:
     return Settings(_env_file=None, openai_api_key="test")
 
 

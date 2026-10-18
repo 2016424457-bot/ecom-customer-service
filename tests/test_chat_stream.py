@@ -63,7 +63,7 @@ def parse_sse(body: str) -> list[tuple[str, dict[str, Any]]]:
 
 
 @pytest.fixture
-def settings() -> Settings:
+def settings(clean_unit_env: pytest.MonkeyPatch) -> Settings:
     return Settings(_env_file=None, openai_api_key="test")
 
 
@@ -131,7 +131,7 @@ def test_stream_route_returns_sse(
         "done",
     ]
     session_id = events[0][1]["session_id"]
-    assert uuid.UUID(session_id, version=4)
+    assert uuid.UUID(session_id).version == 4
     assert [
         data["delta"] for name, data in events if name == "token"
     ] == ["你", "好"]
