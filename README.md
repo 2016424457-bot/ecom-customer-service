@@ -1,11 +1,35 @@
-# 电商智能客服（CH01：纯对话）
+# 电商智能客服（CH02：Function Calling 工具链）
 
-基于 FastAPI + LangChain 的电商售后客服后端，本章跑通纯对话链路：
+基于 FastAPI + LangChain + SQLAlchemy + MySQL 的电商售后客服后端。CH02 在纯对话链路上接入单轮 Function Calling：
 
-- `POST /api/chat/stream`：SSE 流式对话，同一 `session_id` 支持多轮上下文。
-- `POST /api/chat/extract`：从售后描述中抽取 `order_id`、`request_type`、`desired_solution` 三个固定字段。
+- `POST /api/chat/stream`：SSE 流式对话；模型先决定调用哪个工具，后端执行后回灌，最终回答仍逐 token 输出。
+- 五个业务工具：`query_order`、`query_product`、`query_logistics`、`query_faq`、`create_ticket`。
+- 聊天记录（含工具调用与结果）落 `conversations` / `messages` 表，数据库是上下文唯一来源。
+- `POST /api/chat/extract`：保留 CH01 的售后结构化抽取。
+- 聊天页在 assistant 气泡内显示工具轨迹徽章。
 - 应用侧统一使用 OpenAI 兼容协议，可切换 DeepSeek / OpenAI / Ollama / Claude 兼容代理。
-- 会话保存在进程内存，按 token 预算裁剪历史，不做持久化。
+
+## CH02 新增能力
+
+| 工具 | 作用 | 数据来源 |
+|------|------|----------|
+| `query_order` | 查订单状态、商品、金额 | 工具内 mock |
+| `query_product` | 查商品价格、库存、规格 | 工具内 mock |
+| `query_logistics` | 查物流承运商、运单号、最新节点 | 工具内 mock |
+| `query_faq` | SQL `LIKE` 查常见问题 | `faq` 表 |
+| `create_ticket` | 创建人工工单并转人工 | `tickets` 表 |
+
+单轮约束：第一轮模型绑定工具；若请求工具调用，后端在同一轮内执行并回灌；第二轮不绑定工具，强制收敛。本章不做多轮 Agent Loop、向量检索或真实订单/物流 API。
+
+SSE 事件：
+
+| 事件 | 说明 |
+|------|------|
+| `session` | 返回 `session_id`（即 `conversations.id`，数字字符串） |
+| `tool` | 工具状态：`{name, arguments, status: running}`，执行后 `{name, status: done/error, duration_ms}` |
+| `token` | 最终回答的文本增量 |
+| `done` | `{session_id, finish_reason, usage, tool_calls}` |
+| `error` | `{code, message}` |
 
 > 本文所有命令都必须在仓库根目录执行：Prompt 路径是相对当前工作目录解析的，换目录启动会找不到 `app/prompts/*.txt`。
 
@@ -17,7 +41,26 @@
 uv sync
 ```
 
-### 2. 配置环境变量
+### 2. 准备数据库
+
+默认连接本机 MySQL 9.x：
+
+```bash
+mysql -h 127.0.0.1 -u root -p -e \
+  "CREATE DATABASE IF NOT EXISTS ecom_customer_service DEFAULT CHARACTER SET utf8mb4"
+mysql -h 127.0.0.1 -u root -p ecom_customer_service < db/schema.sql
+mysql -h 127.0.0.1 -u root -p ecom_customer_service < db/seed.sql
+```
+
+也可以改用 Docker（宿主端口 3307）：
+
+```bash
+docker compose up -d
+```
+
+两种方式都通过 `.env` 的 `DATABASE_URL` 切换，代码不感知差异。Docker 首次启动才会执行 schema/seed；重建数据用 `docker compose down -v`。
+
+### 3. 配置环境变量
 
 ```bash
 # macOS / Linux / Git Bash：已有 .env 时不覆盖
@@ -31,7 +74,7 @@ test -f .env || cp .env.example .env
 
 > `.env` 已被 `.gitignore` 忽略。不要提交真实密钥，也不要把密钥写进 README、日志或代码。
 
-### 3. 启动服务
+### 4. 启动服务
 
 ```bash
 uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
@@ -44,7 +87,7 @@ curl -s http://127.0.0.1:8000/health
 # {"status":"ok","model":"deepseek-flash"}
 ```
 
-本章只支持单 worker：会话在进程内存中，多 worker 会导致同一会话的上下文随机丢失。
+本章仍只支持单 worker：消息历史在 MySQL，但同一会话的串行锁在进程内，多 worker 下并发保护不完整。
 
 ## 切换上游模型
 
@@ -100,7 +143,9 @@ curl -N -X POST http://127.0.0.1:8000/api/chat/stream \
   -d '{"session_id":"demo-1","message":"你好，我叫小王，订单号 A12345，想退货"}'
 ```
 
-响应是 SSE：先出现 `event: session`，随后是多个 `event: token`（`data` 中的 `delta` 为文本增量），最后是 `event: done`。复用同一个 `session_id` 再发一条消息即可验证多轮上下文（把 `message` 换成“我的订单号是多少？”）。
+响应是 SSE：先出现 `event: session`，如果模型选择工具会出现 `event: tool`（running/done），随后是多个 `event: token`（`data` 中的 `delta` 为文本增量），最后是 `event: done`。复用 `done` 或 `session` 返回的数字 `session_id` 再发一条消息即可验证多轮上下文。
+
+示例：问「订单 1001 的物流到哪了」，应看到 `query_logistics` 的 `tool` 事件；问「退货政策是什么」，应看到 `query_faq`。`done.tool_calls` 列出本轮实际执行的工具名。
 
 ### 结构化抽取
 
@@ -151,18 +196,24 @@ uv run pytest -m integration -v
 ```bash
 uv run python evals/run_extraction_eval.py
 uv run python evals/run_chat_eval.py
+uv run python evals/run_tool_routing_eval.py
 uv run python scripts/acceptance.py
+uv run python scripts/ch02_acceptance.py
 ```
 
 - `run_extraction_eval.py`：逐条调用 `/api/chat/extract`，统计 JSON 合法率（100%）、`order_id` 原文精确匹配（≥80%）、`request_type` 匹配（≥90%）、`desired_solution` 有无判断（≥80%），不达标退出码为 1。
 - `run_chat_eval.py`：逐条调用 `/api/chat/stream`，检查不编造物流、不擅自赔付、隐私提醒、高风险转人工、拒绝提示词注入，并打印完整回复供人工复核。
 - `scripts/acceptance.py`：检查流式 token/done、多轮订单号记忆、结构化抽取（三字段齐全、`order_id` 含 `A12345`、`desired_solution` 非空、`request_type` 为合法枚举值），全部通过时打印 `ACCEPTANCE PASS`。
+- `run_tool_routing_eval.py`：用 6 条标注样例检查工具选择与参数，阈值 5/6；只测路由、不执行工具。
+- `scripts/ch02_acceptance.py`：端到端检查物流工具、FAQ 工具、邮费漏召回（`query_faq` 返回 0 条）和数据库落库，全部通过时打印 `CH02 ACCEPTANCE PASS`。
 
 脚本默认访问 `http://127.0.0.1:8000`，可用 `ECOM_BASE_URL` 环境变量覆盖。
 
 ## 已知限制
 
-- 会话保存在进程内存中，服务重启或多 worker 都会丢失上下文；本章仅支持 `--workers 1`。
+- 消息历史在 MySQL，但同一会话的串行锁在进程内，本章仅支持 `--workers 1`。
+- 订单、商品、物流工具返回随机 mock 数据，不接真实系统；FAQ 是关键词 `LIKE` 检索，「邮费」这类换个说法的问题会漏召回，留给下一章升级。
+- `create_ticket` 成功后会话状态置 `已转人工`，但本章不做人工接管，后续消息仍由机器人处理。
 - 没有用户认证、限流、计费或多租户隔离，不要直接暴露到公网。
 - 默认只监听 `127.0.0.1`，仅适合本地开发与验收。
 - 经反向代理或网关访问时，代理可能缓冲 SSE 导致 token 不能实时到达；请为流式响应设置 `X-Accel-Buffering: no`（Nginx）或关闭代理缓冲。
