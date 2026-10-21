@@ -4,7 +4,7 @@ from langchain_core.tools import BaseTool, tool
 def build_faq_tool(repository) -> BaseTool:
     @tool("query_faq", parse_docstring=True)
     async def query_faq(keyword: str) -> dict:
-        """查询常见问题政策。用户询问退货、换货、发票、发货、服务时间等政策时调用。
+        """查询常见问题政策。用户询问退货、换货、发票、发货、服务时间、邮费、运费等政策时调用。
 
         Args:
             keyword: 检索关键词

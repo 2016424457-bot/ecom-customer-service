@@ -1,0 +1,33 @@
+[
+  {
+    "message": "订单 1001 的物流到哪了",
+    "expect_tool": "query_logistics",
+    "expect_order_id": "1001"
+  },
+  {
+    "message": "退货政策是什么",
+    "expect_tool": "query_faq",
+    "expect_keyword_contains": "退货"
+  },
+  {
+    "message": "邮费是多少",
+    "expect_tool": "query_faq",
+    "expect_keyword_contains": "邮费",
+    "expected_empty": true
+  },
+  {
+    "message": "帮我查一下订单 1001",
+    "expect_tool": "query_order",
+    "expect_order_id": "1001"
+  },
+  {
+    "message": "蓝牙耳机多少钱",
+    "expect_tool": "query_product",
+    "expect_name_contains": "耳机"
+  },
+  {
+    "message": "我要投诉，帮我转人工",
+    "expect_tool": "create_ticket",
+    "expect_type": "投诉"
+  }
+]
