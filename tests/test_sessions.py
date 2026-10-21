@@ -1,88 +1,44 @@
-from app.sessions import SessionStore
+from app.sessions import ConversationLocks
 
 
-async def test_sessions_are_isolated() -> None:
-    store = SessionStore()
-    a = await store.get("a")
-    b = await store.get("b")
+def test_same_key_returns_same_lock() -> None:
+    locks = ConversationLocks()
 
-    store.append_turn(a, "hello", "hi there")
-
-    assert [message.content for message in a.history] == ["hello", "hi there"]
-    assert b.history == []
-
-    await store.release(a)
-    await store.release(b)
+    assert locks.lock_for("a") is locks.lock_for("a")
 
 
-async def test_append_turn_caps_stored_messages() -> None:
-    store = SessionStore(max_stored_messages=4)
-    state = await store.get("a")
+def test_different_keys_return_different_locks() -> None:
+    locks = ConversationLocks()
 
-    store.append_turn(state, "u0", "a0")
-    store.append_turn(state, "u1", "a1")
-    store.append_turn(state, "u2", "a2")
-
-    assert len(state.history) == 4
-    assert state.history[-1].content == "a2"
-    assert [message.content for message in state.history] == ["u1", "a1", "u2", "a2"]
-
-    await store.release(state)
+    assert locks.lock_for("a") is not locks.lock_for("b")
 
 
-async def test_lru_eviction() -> None:
-    store = SessionStore(max_sessions=2)
-    a_state = await store.get("a")
-    b_state = await store.get("b")
-    await store.release(a_state)
-    await store.release(b_state)
-    store.append_turn(b_state, "old", "reply")
+async def test_held_lock_is_not_evicted() -> None:
+    locks = ConversationLocks(max_locks=1)
+    first = locks.lock_for("a")
 
-    a_state = await store.get("a")
-    await store.release(a_state)
-    c_state = await store.get("c")
-    await store.release(c_state)
-
-    revived_b = await store.get("b")
-
-    assert revived_b is not b_state
-    assert revived_b.history == []
+    async with first:
+        locks.lock_for("b")
+        assert locks.lock_for("a") is first
 
 
-async def test_active_session_not_evicted() -> None:
-    store = SessionStore(max_sessions=2)
-    b_state = await store.get("b")
-    a_state = await store.get("a")
-    await store.release(a_state)
-    await store.release(b_state)
+def test_unheld_locks_are_evicted_lru() -> None:
+    locks = ConversationLocks(max_locks=2)
+    first = locks.lock_for("a")
+    second = locks.lock_for("b")
+    locks.lock_for("a")
 
-    async with b_state.lock:
-        c_state = await store.get("c")
-        await store.release(c_state)
+    locks.lock_for("c")
 
-    assert await store.get("b") is b_state
+    assert locks.lock_for("a") is first
+    assert locks.lock_for("b") is not second
 
 
-async def test_fetched_but_not_locked_session_not_evicted() -> None:
-    store = SessionStore(max_sessions=2)
-    a_state = await store.get("a")
-    b_state = await store.get("b")
-    c_state = await store.get("c")
+def test_lock_registry_stays_within_limit() -> None:
+    locks = ConversationLocks(max_locks=2)
 
-    assert c_state is not a_state
-    assert c_state is not b_state
-    assert await store.get("a") is a_state
-    assert await store.get("b") is b_state
+    locks.lock_for("a")
+    locks.lock_for("b")
+    locks.lock_for("c")
 
-
-async def test_release_allows_eviction() -> None:
-    store = SessionStore(max_sessions=2)
-    a_state = await store.get("a")
-    b_state = await store.get("b")
-    await store.release(a_state)
-    await store.release(b_state)
-
-    c_state = await store.get("c")
-    await store.release(c_state)
-
-    assert await store.get("a") is not a_state
+    assert len(locks._locks) == 2

@@ -1,47 +1,19 @@
 """Route-level tests for the SSE chat endpoint using fakes (no network)."""
 
 import json
-import uuid
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessageChunk
 
 from app.config import Settings
 from app.main import create_app
 from app.prompt_builder import PromptBuilder
-from app.sessions import SessionStore
-
-
-@dataclass
-class FakeChunk:
-    content: Any = ""
-    response_metadata: dict[str, Any] = field(default_factory=dict)
-    usage_metadata: dict[str, Any] | None = None
-
-
-class FakeChatModel:
-    """Yield scripted chunks; raise scripted exceptions before any chunk."""
-
-    def __init__(self, items: list[Any]) -> None:
-        self._items = items
-
-    async def astream(self, messages: list[Any]):
-        for item in self._items:
-            if isinstance(item, BaseException):
-                raise item
-            yield item
-
-
-@dataclass
-class FakeRuntime:
-    settings: Settings
-    session_store: SessionStore
-    prompt_builder: PromptBuilder
-    chat_model: FakeChatModel
-    extraction_model: Any = None
+from app.runtime import Runtime
+from app.sessions import ConversationLocks
+from tests.fakes import FakeChatModel, FakeRepository
 
 
 def parse_sse(body: str) -> list[tuple[str, dict[str, Any]]]:
@@ -60,6 +32,21 @@ def parse_sse(body: str) -> list[tuple[str, dict[str, Any]]]:
         assert event_name is not None, f"missing event name in block: {block!r}"
         events.append((event_name, json.loads("\n".join(data_lines))))
     return events
+
+
+def tool_chunk(name: str, args: str, call_id: str) -> AIMessageChunk:
+    return AIMessageChunk(
+        content="",
+        tool_call_chunks=[
+            {
+                "name": name,
+                "args": args,
+                "id": call_id,
+                "index": 0,
+                "type": "tool_call_chunk",
+            }
+        ],
+    )
 
 
 @pytest.fixture
@@ -85,34 +72,29 @@ def make_client(
     *,
     settings: Settings,
     prompt_builder: PromptBuilder,
-    items: list[Any],
-) -> TestClient:
-    runtime = FakeRuntime(
+    responses: list[list[Any]],
+    repository: FakeRepository | None = None,
+) -> tuple[TestClient, FakeRepository]:
+    repo = repository or FakeRepository()
+    runtime = Runtime(
         settings=settings,
-        session_store=SessionStore(),
         prompt_builder=prompt_builder,
-        chat_model=FakeChatModel(items),
+        chat_model=FakeChatModel(responses),
+        extraction_model=None,
+        locks=ConversationLocks(),
+        repository=repo,
     )
-    return TestClient(create_app(runtime=runtime))
+    return TestClient(create_app(runtime=runtime)), repo
 
 
 def test_stream_route_returns_sse(
     settings: Settings, prompt_builder: PromptBuilder
 ) -> None:
-    client = make_client(
+    client, _ = make_client(
         settings=settings,
         prompt_builder=prompt_builder,
-        items=[
-            FakeChunk("你"),
-            FakeChunk(
-                "好",
-                response_metadata={"finish_reason": "stop"},
-                usage_metadata={
-                    "input_tokens": 3,
-                    "output_tokens": 2,
-                    "total_tokens": 5,
-                },
-            ),
+        responses=[
+            [AIMessageChunk(content="你"), AIMessageChunk(content="好")]
         ],
     )
 
@@ -130,22 +112,70 @@ def test_stream_route_returns_sse(
         "token",
         "done",
     ]
-    session_id = events[0][1]["session_id"]
-    assert uuid.UUID(session_id).version == 4
+    assert events[0][1]["session_id"] == "1"
     assert [
         data["delta"] for name, data in events if name == "token"
     ] == ["你", "好"]
-    assert events[-1][0] == "done"
-    assert events[-1][1]["session_id"] == session_id
+    assert events[-1][1]["session_id"] == "1"
+
+
+def test_stream_route_passes_user_id(
+    settings: Settings, prompt_builder: PromptBuilder
+) -> None:
+    client, repo = make_client(
+        settings=settings,
+        prompt_builder=prompt_builder,
+        responses=[[AIMessageChunk(content="好")]],
+    )
+
+    with client:
+        response = client.post(
+            "/api/chat/stream",
+            json={"message": "在吗", "user_id": "u-42"},
+        )
+
+    assert response.status_code == 200
+    assert repo.conversations[1].user_id == "u-42"
+
+
+def test_stream_route_emits_tool_events(
+    settings: Settings, prompt_builder: PromptBuilder
+) -> None:
+    client, repo = make_client(
+        settings=settings,
+        prompt_builder=prompt_builder,
+        responses=[
+            [tool_chunk("query_logistics", '{"order_id":"1001"}', "call_1")],
+            [AIMessageChunk(content="已发货")],
+        ],
+    )
+
+    with client:
+        response = client.post(
+            "/api/chat/stream",
+            json={"message": "订单 1001 的物流到哪了"},
+        )
+
+    events = parse_sse(response.text)
+    tool_events = [data for name, data in events if name == "tool"]
+    assert [data["status"] for data in tool_events] == ["running", "done"]
+    assert tool_events[0]["name"] == "query_logistics"
+    assert events[-1][1]["tool_calls"] == ["query_logistics"]
+    assert [row.role for _, row in repo.messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
 
 
 def test_stream_route_pre_token_error_is_http_200_with_error_event(
     settings: Settings, prompt_builder: PromptBuilder
 ) -> None:
-    client = make_client(
+    client, _ = make_client(
         settings=settings,
         prompt_builder=prompt_builder,
-        items=[RuntimeError("boom")],
+        responses=[[RuntimeError("boom")]],
     )
 
     with client:
@@ -164,8 +194,8 @@ def test_stream_route_pre_token_error_is_http_200_with_error_event(
 def test_stream_route_rejects_blank_message(
     settings: Settings, prompt_builder: PromptBuilder
 ) -> None:
-    client = make_client(
-        settings=settings, prompt_builder=prompt_builder, items=[]
+    client, _ = make_client(
+        settings=settings, prompt_builder=prompt_builder, responses=[]
     )
 
     with client:
@@ -180,14 +210,30 @@ def test_stream_route_rejects_blank_message(
 def test_stream_route_rejects_bad_session_id(
     settings: Settings, prompt_builder: PromptBuilder
 ) -> None:
-    client = make_client(
-        settings=settings, prompt_builder=prompt_builder, items=[]
+    client, _ = make_client(
+        settings=settings, prompt_builder=prompt_builder, responses=[]
     )
 
     with client:
         response = client.post(
             "/api/chat/stream",
             json={"session_id": "bad id!", "message": "你好"},
+        )
+
+    assert response.status_code == 422
+
+
+def test_stream_route_rejects_bad_user_id(
+    settings: Settings, prompt_builder: PromptBuilder
+) -> None:
+    client, _ = make_client(
+        settings=settings, prompt_builder=prompt_builder, responses=[]
+    )
+
+    with client:
+        response = client.post(
+            "/api/chat/stream",
+            json={"user_id": "bad id!", "message": "你好"},
         )
 
     assert response.status_code == 422

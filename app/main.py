@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -26,7 +27,12 @@ def create_app(
     runtime = runtime or build_runtime(settings or Settings())
     logging.basicConfig(level=runtime.settings.log_level.upper())
 
-    application = FastAPI()
+    @asynccontextmanager
+    async def lifespan(_application: FastAPI):
+        yield
+        await runtime.aclose()
+
+    application = FastAPI(lifespan=lifespan)
     application.state.runtime = runtime
     application.mount(
         "/static", StaticFiles(directory=STATIC_DIR), name="static"

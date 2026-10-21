@@ -22,6 +22,10 @@ class ChatRequest(BaseModel):
         default=None,
         pattern=r"^[A-Za-z0-9_-]{1,64}$",
     )
+    user_id: str = Field(
+        default="anonymous",
+        pattern=r"^[A-Za-z0-9_-]{1,64}$",
+    )
     message: str = Field(min_length=1, max_length=8000)
 
     @field_validator("message")

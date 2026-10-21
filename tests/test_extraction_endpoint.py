@@ -1,6 +1,5 @@
 """Route-level tests for structured after-sales extraction (no network)."""
 
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -13,8 +12,9 @@ from pydantic import ValidationError
 from app.config import Settings
 from app.main import create_app
 from app.prompt_builder import PromptBuilder
+from app.runtime import Runtime
 from app.schemas import AfterSalesExtraction, RequestType
-from app.sessions import SessionStore
+from app.sessions import ConversationLocks
 
 
 class FakeStatusError(Exception):
@@ -45,15 +45,6 @@ class FakeExtractionModel:
         return self._result
 
 
-@dataclass
-class FakeRuntime:
-    """Minimal runtime; the extract route only uses prompt/extraction deps."""
-
-    settings: Settings
-    session_store: SessionStore
-    prompt_builder: PromptBuilder
-    extraction_model: FakeExtractionModel
-    chat_model: Any = field(default_factory=object)
 
 
 @pytest.fixture
@@ -81,11 +72,12 @@ def make_client(
     prompt_builder: PromptBuilder,
     extraction_model: FakeExtractionModel,
 ) -> TestClient:
-    runtime = FakeRuntime(
+    runtime = Runtime(
         settings=settings,
-        session_store=SessionStore(),
         prompt_builder=prompt_builder,
+        chat_model=object(),
         extraction_model=extraction_model,
+        locks=ConversationLocks(),
     )
     return TestClient(create_app(runtime=runtime))
 

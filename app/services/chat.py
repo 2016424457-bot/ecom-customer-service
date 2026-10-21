@@ -1,14 +1,21 @@
-"""Streaming chat orchestration: session locking, trimming, and logging."""
+"""Streaming chat orchestration with one round of tool calling."""
 
+import json
 import logging
 import time
+import uuid
 from typing import Any, AsyncIterator
+
+from langchain_core.messages import AIMessage, ToolMessage
 
 from app.config import Settings
 from app.errors import ERROR_MESSAGES, AppError, map_upstream_error
 from app.history import trim_history
 from app.prompt_builder import PromptBuilder
-from app.sessions import SessionStore
+from app.services.chat_history import to_langchain
+from app.services.tool_exec import ToolRegistry
+from app.sessions import ConversationLocks
+from app.tools import build_tools
 
 logger = logging.getLogger(__name__)
 
@@ -44,52 +51,176 @@ def _usage_tokens(usage: dict[str, Any] | None) -> tuple[Any, Any]:
     return usage.get("input_tokens"), usage.get("output_tokens")
 
 
+def _openai_tool_calls(tool_calls: list[dict]) -> list[dict]:
+    return [
+        {
+            "id": call["id"],
+            "type": "function",
+            "function": {
+                "name": call["name"],
+                "arguments": json.dumps(call["args"], ensure_ascii=False),
+            },
+        }
+        for call in tool_calls
+    ]
+
+
 async def stream_chat(
     *,
-    session_id: str,
+    session_id: str | None,
+    user_id: str,
     user_message: str,
     chat_model: Any,
-    session_store: SessionStore,
+    repository: Any,
     prompt_builder: PromptBuilder,
     settings: Settings,
+    locks: ConversationLocks,
 ) -> AsyncIterator[Event]:
-    """Yield chat events for one turn.
+    """Stream one turn: model-selected tool call, execution, then answer.
 
-    Event order is ``session`` first (before the session lock), then ``token``
-    deltas, then either ``done`` or ``error``. History is written only after a
-    normal completion, so errors and client disconnects leave no partial turn.
+    The first upstream pass is bound to the five tools; if it requests tool
+    calls they are executed once and their results are fed back. The second
+    pass is never bound to tools, so the turn converges after one round.
     """
     started = time.perf_counter()
-    state = await session_store.get(session_id)
+    lock_key = session_id or f"new:{uuid.uuid4()}"
+    lock = locks.lock_for(lock_key)
+
     try:
-        yield ("session", {"session_id": session_id})
+        async with lock:
+            conversation = await repository.get_or_create_conversation(
+                session_id, user_id
+            )
+            conversation_id = conversation.id
+            yield ("session", {"session_id": str(conversation_id)})
 
-        token_events = 0
-        try:
-            async with state.lock:
-                history = list(state.history)
-                trimmed_history = trim_history(
-                    history, settings.history_token_budget
+            rows = await repository.list_messages(conversation_id)
+            history = trim_history(
+                to_langchain(rows), settings.history_token_budget
+            )
+            messages = prompt_builder.build_messages(history, user_message)
+
+            await repository.add_message(
+                conversation_id, "user", content=user_message
+            )
+            await repository.commit()
+
+            tools = build_tools(repository, conversation_id)
+            registry = ToolRegistry(
+                tools,
+                timeout_seconds=settings.tool_timeout_seconds,
+                max_retries=settings.tool_max_retries,
+                retry_disabled=frozenset({"create_ticket"}),
+            )
+
+            token_events = 0
+            usage: dict[str, Any] | None = None
+            finish_reason: str | None = None
+            tool_names: list[str] = []
+
+            gathered = None
+            first_text_parts: list[str] = []
+            async for chunk in chat_model.bind_tools(tools).astream(messages):
+                text = chunk_text(getattr(chunk, "content", None))
+                if text:
+                    first_text_parts.append(text)
+                    token_events += 1
+                    yield ("token", {"delta": text})
+
+                chunk_usage = getattr(chunk, "usage_metadata", None)
+                if chunk_usage:
+                    usage = chunk_usage
+                response_metadata = (
+                    getattr(chunk, "response_metadata", None) or {}
                 )
-                messages = prompt_builder.build_messages(
-                    trimmed_history, user_message
+                reason = response_metadata.get("finish_reason")
+                if reason:
+                    finish_reason = reason
+
+                gathered = chunk if gathered is None else gathered + chunk
+
+            tool_calls = [
+                call
+                for call in (getattr(gathered, "tool_calls", None) or [])
+                if call.get("name") and call.get("id")
+            ]
+            final_text_parts = first_text_parts
+
+            if tool_calls:
+                await repository.add_message(
+                    conversation_id,
+                    "assistant",
+                    content=None,
+                    tool_calls=_openai_tool_calls(tool_calls),
                 )
+                await repository.commit()
 
-                chunks: list[str] = []
-                usage: dict[str, Any] | None = None
-                finish_reason: str | None = None
+                tool_messages: list[ToolMessage] = []
+                for call in tool_calls:
+                    name = call["name"]
+                    arguments = call.get("args") or {}
+                    call_id = call["id"]
+                    tool_names.append(name)
 
-                async for chunk in chat_model.astream(messages):
+                    yield (
+                        "tool",
+                        {
+                            "name": name,
+                            "arguments": arguments,
+                            "status": "running",
+                            "tool_call_id": call_id,
+                        },
+                    )
+                    result = await registry.execute(name, arguments)
+                    if result.ok:
+                        yield (
+                            "tool",
+                            {
+                                "name": name,
+                                "status": "done",
+                                "duration_ms": result.duration_ms,
+                                "tool_call_id": call_id,
+                            },
+                        )
+                    else:
+                        yield (
+                            "tool",
+                            {
+                                "name": name,
+                                "status": "error",
+                                "duration_ms": result.duration_ms,
+                                "code": result.error_code,
+                                "tool_call_id": call_id,
+                            },
+                        )
+
+                    tool_message = ToolMessage(
+                        content=result.content, tool_call_id=call_id
+                    )
+                    tool_messages.append(tool_message)
+                    await repository.add_message(
+                        conversation_id,
+                        "tool",
+                        content=result.content,
+                        tool_call_id=call_id,
+                    )
+                    await repository.commit()
+
+                ai_message = AIMessage(
+                    content="".join(first_text_parts), tool_calls=tool_calls
+                )
+                final_messages = messages + [ai_message] + tool_messages
+                final_text_parts = []
+                async for chunk in chat_model.astream(final_messages):
                     text = chunk_text(getattr(chunk, "content", None))
                     if text:
-                        chunks.append(text)
+                        final_text_parts.append(text)
                         token_events += 1
                         yield ("token", {"delta": text})
 
                     chunk_usage = getattr(chunk, "usage_metadata", None)
                     if chunk_usage:
                         usage = chunk_usage
-
                     response_metadata = (
                         getattr(chunk, "response_metadata", None) or {}
                     )
@@ -97,74 +228,72 @@ async def stream_chat(
                     if reason:
                         finish_reason = reason
 
-                assistant_text = "".join(chunks)
-                if assistant_text:
-                    session_store.append_turn(
-                        state, user_message, assistant_text
-                    )
-
-                latency_ms = round(
-                    (time.perf_counter() - started) * 1000, 1
+            final_text = "".join(final_text_parts)
+            if final_text:
+                await repository.add_message(
+                    conversation_id, "assistant", content=final_text
                 )
-                input_tokens, output_tokens = _usage_tokens(usage)
-                logger.info(
-                    "chat_stream event=chat_stream outcome=done "
-                    "session_id=%s latency_ms=%s token_events=%d "
-                    "input_tokens=%s output_tokens=%s error_code=None",
-                    session_id,
-                    latency_ms,
-                    token_events,
-                    input_tokens,
-                    output_tokens,
-                )
-                if settings.log_content:
-                    logger.info(
-                        "chat_stream content session_id=%s "
-                        "user_message=%r assistant_message=%r",
-                        session_id,
-                        user_message,
-                        assistant_text,
-                    )
+            await repository.touch_conversation(conversation_id)
+            await repository.commit()
 
-                done_payload = {
-                    "session_id": session_id,
-                    "finish_reason": finish_reason,
-                    "usage": usage,
-                }
-
-            # Yield after releasing the per-session lock so a slow consumer
-            # cannot block another turn for the same session.
-            yield ("done", done_payload)
-        except Exception as exc:
-            error = map_upstream_error(exc)
-            if error.code == "parse_error":
-                # Chat does not parse structured output; expose it as a
-                # generic upstream failure on this endpoint.
-                error = AppError(
-                    code="upstream_error",
-                    message=ERROR_MESSAGES["upstream_error"],
-                    status_code=502,
-                )
             latency_ms = round((time.perf_counter() - started) * 1000, 1)
-            logger.warning(
-                "chat_stream event=chat_stream outcome=error "
+            input_tokens, output_tokens = _usage_tokens(usage)
+            logger.info(
+                "chat_stream event=chat_stream outcome=done "
                 "session_id=%s latency_ms=%s token_events=%d "
-                "input_tokens=None output_tokens=None error_code=%s "
-                "error_type=%s error=%r",
-                session_id,
+                "input_tokens=%s output_tokens=%s tool_calls=%s "
+                "error_code=None",
+                conversation_id,
                 latency_ms,
                 token_events,
-                error.code,
-                type(exc).__name__,
-                exc,
+                input_tokens,
+                output_tokens,
+                ",".join(tool_names) or "-",
             )
             if settings.log_content:
-                logger.warning(
-                    "chat_stream content session_id=%s user_message=%r",
-                    session_id,
+                logger.info(
+                    "chat_stream content session_id=%s "
+                    "user_message=%r assistant_message=%r",
+                    conversation_id,
                     user_message,
+                    final_text,
                 )
-            yield ("error", {"code": error.code, "message": error.message})
-            return
-    finally:
-        await session_store.release(state)
+
+            yield (
+                "done",
+                {
+                    "session_id": str(conversation_id),
+                    "finish_reason": finish_reason,
+                    "usage": usage,
+                    "tool_calls": tool_names,
+                },
+            )
+    except Exception as exc:
+        error = map_upstream_error(exc)
+        if error.code == "parse_error":
+            # Chat does not parse structured output; expose it as a
+            # generic upstream failure on this endpoint.
+            error = AppError(
+                code="upstream_error",
+                message=ERROR_MESSAGES["upstream_error"],
+                status_code=502,
+            )
+        latency_ms = round((time.perf_counter() - started) * 1000, 1)
+        logger.warning(
+            "chat_stream event=chat_stream outcome=error "
+            "session_id=%s latency_ms=%s token_events=0 "
+            "input_tokens=None output_tokens=None error_code=%s "
+            "error_type=%s error=%r",
+            session_id,
+            latency_ms,
+            error.code,
+            type(exc).__name__,
+            exc,
+        )
+        if settings.log_content:
+            logger.warning(
+                "chat_stream content session_id=%s user_message=%r",
+                session_id,
+                user_message,
+            )
+        yield ("error", {"code": error.code, "message": error.message})
