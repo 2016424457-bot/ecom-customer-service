@@ -2,6 +2,7 @@
   "use strict";
 
   const SESSION_KEY = "ecom-chat-session-id";
+  const USER_KEY = "ecom-chat-user-id";
   const HISTORY_KEY = "ecom-chat-history";
   const STREAM_URL = "/api/chat/stream";
   const HEALTH_URL = "/health";
@@ -42,6 +43,7 @@
   const statusText = document.getElementById("statusText");
 
   let sessionId = loadSessionId();
+  let userId = loadUserId();
   let history = loadHistory();
   let busy = false;
 
@@ -78,6 +80,18 @@
       localStorage.setItem(SESSION_KEY, sessionId);
     } catch {
       /* storage may be unavailable */
+    }
+  }
+
+  function loadUserId() {
+    try {
+      const stored = localStorage.getItem(USER_KEY);
+      if (isValidSessionId(stored)) return stored;
+      const next = uuid();
+      localStorage.setItem(USER_KEY, next);
+      return next;
+    } catch {
+      return uuid();
     }
   }
 
@@ -126,7 +140,7 @@
     composer.classList.toggle("is-busy", next);
   }
 
-  function createMessage(role, text, { typing = false } = {}) {
+  function createMessage(role, text, { typing = false, tools = [] } = {}) {
     const row = document.createElement("div");
     row.className = `msg ${role}`;
     row.dataset.role = role;
@@ -139,17 +153,68 @@
     const bubble = document.createElement("div");
     bubble.className = "bubble";
 
+    const toolWrap = document.createElement("div");
+    toolWrap.className = "tool-badges";
+
+    const textEl = document.createElement("div");
+    textEl.className = "bubble-text";
+
     if (typing) {
-      bubble.innerHTML =
+      textEl.innerHTML =
         '<span class="typing" aria-label="正在输入"><i></i><i></i><i></i></span>';
     } else {
-      bubble.textContent = text;
+      textEl.textContent = text;
     }
+
+    bubble.append(toolWrap, textEl);
+    for (const tool of tools) updateToolBadge(toolWrap, tool);
 
     row.append(avatar, bubble);
     messagesEl.append(row);
     scrollToBottom();
-    return { row, bubble };
+    return { row, bubble, textEl, toolWrap };
+  }
+
+  function createToolBadge(name) {
+    const badge = document.createElement("span");
+    badge.className = "tool-badge";
+
+    const icon = document.createElement("span");
+    icon.className = "tool-icon";
+    icon.setAttribute("aria-hidden", "true");
+
+    const label = document.createElement("span");
+    label.className = "tool-label";
+    label.textContent = name;
+
+    badge.append(icon, label);
+    return badge;
+  }
+
+  function updateToolBadge(wrap, tool) {
+    const name = tool.name || "tool";
+    const key = tool.tool_call_id || tool.key || name;
+    let badge = Array.from(wrap.children).find(
+      (item) => item.dataset.callId === key,
+    );
+    if (!badge) {
+      badge = createToolBadge(name);
+      badge.dataset.callId = key;
+      wrap.append(badge);
+    }
+
+    const status = tool.status || "done";
+    badge.classList.remove("running", "done", "error");
+    badge.classList.add(status);
+
+    const label = badge.querySelector(".tool-label");
+    if (status === "running") {
+      label.textContent = `正在调用 ${name}…`;
+    } else if (status === "error") {
+      label.textContent = `${name} · 失败`;
+    } else {
+      label.textContent = name;
+    }
   }
 
   function renderHistory() {
@@ -159,7 +224,7 @@
       return;
     }
     for (const item of history) {
-      createMessage(item.role, item.text);
+      createMessage(item.role, item.text, { tools: item.tools || [] });
     }
     scrollToBottom("auto");
   }
@@ -254,7 +319,7 @@
     createMessage("user", text);
 
     const placeholder = createMessage("assistant", "", { typing: true });
-    const assistantItem = { role: "assistant", text: "" };
+    const assistantItem = { role: "assistant", text: "", tools: [] };
     history.push(assistantItem);
 
     let gotToken = false;
@@ -264,7 +329,11 @@
       const response = await fetch(STREAM_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, message: text }),
+        body: JSON.stringify({
+          session_id: sessionId,
+          user_id: userId,
+          message: text,
+        }),
       });
 
       if (!response.ok) {
@@ -292,15 +361,32 @@
           return;
         }
 
+        if (event === "tool" && data && data.name) {
+          const key = data.tool_call_id || data.name;
+          let entry = assistantItem.tools.find(
+            (tool) => tool.key === key,
+          );
+          if (entry) {
+            entry.name = data.name;
+            entry.status = data.status;
+          } else {
+            entry = { key, name: data.name, status: data.status };
+            assistantItem.tools.push(entry);
+          }
+          updateToolBadge(placeholder.toolWrap, entry);
+          scrollToBottom();
+          return;
+        }
+
         if (event === "token" && data && typeof data.delta === "string") {
           if (!gotToken) {
             gotToken = true;
             placeholder.bubble.classList.remove("typing-state");
             placeholder.bubble.classList.add("streaming");
-            placeholder.bubble.textContent = "";
+            placeholder.textEl.textContent = "";
           }
           assistantItem.text += data.delta;
-          placeholder.bubble.textContent = assistantItem.text;
+          placeholder.textEl.textContent = assistantItem.text;
           scrollToBottom();
           return;
         }
