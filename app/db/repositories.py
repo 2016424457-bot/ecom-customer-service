@@ -117,6 +117,9 @@ class ChatRepository:
             description=description,
             ticket_type=ticket_type,
         )
-        self.session.add(ticket)
-        await self.session.flush()
+        # A duplicate ticket number aborts only the savepoint, so the tool
+        # can retry with a fresh number on the same session.
+        async with self.session.begin_nested():
+            self.session.add(ticket)
+            await self.session.flush()
         return ticket

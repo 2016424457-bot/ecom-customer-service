@@ -123,10 +123,24 @@ async def test_next_ticket_no_and_create_ticket(session):
         select(Ticket).where(Ticket.ticket_no == ticket.ticket_no)
     )
 
+    assert ticket.status == "待处理"
     assert row is not None
     assert row.description == "耳机有杂音"
     assert row.ticket_type == "投诉"
     assert row.status == "待处理"
+
+
+async def test_duplicate_ticket_number_leaves_session_usable(session):
+    repo = ChatRepository(session)
+    conversation = await repo.get_or_create_conversation(None, "u1")
+    ticket_no = await repo.next_ticket_no(date(2026, 10, 21))
+    await repo.create_ticket(conversation.id, "first", "售后", ticket_no)
+
+    with pytest.raises(IntegrityError):
+        await repo.create_ticket(conversation.id, "second", "售后", ticket_no)
+
+    next_no = await repo.next_ticket_no(date(2026, 10, 21))
+    assert next_no != ticket_no
 
 
 async def test_message_with_unknown_conversation_violates_foreign_key(session):
