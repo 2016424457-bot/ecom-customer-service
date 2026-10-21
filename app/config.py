@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     max_stored_messages: int = Field(default=50, gt=0)
     max_sessions: int = Field(default=1000, gt=0)
 
+    database_url: str = (
+        "mysql+asyncmy://root:123456@127.0.0.1:3306/ecom_customer_service"
+        "?charset=utf8mb4"
+    )
+    tool_timeout_seconds: float = Field(default=5, gt=0)
+    tool_max_retries: int = Field(default=2, ge=0)
+
     system_prompt_path: Path = Path("app/prompts/system_prompt.txt")
     extract_prompt_path: Path = Path("app/prompts/extract_prompt.txt")
 

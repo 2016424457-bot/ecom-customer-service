@@ -9,6 +9,8 @@ dependencies = [
   "langchain-openai>=1.7,<2",
   "pydantic-settings>=2.14,<3",
   "openai>=1.0",
+  "sqlalchemy[asyncio]>=2.0,<2.1",
+  "asyncmy>=0.2",
 ]
 
 [dependency-groups]

@@ -74,3 +74,25 @@ def test_budget_must_be_positive(
 ) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, openai_api_key="test", history_token_budget=0)
+
+
+def test_ch02_defaults(clean_unit_env: pytest.MonkeyPatch) -> None:
+    settings = Settings(_env_file=None, openai_api_key="test")
+
+    assert settings.database_url.startswith("mysql+asyncmy://")
+    assert settings.tool_timeout_seconds == 5
+    assert settings.tool_max_retries == 2
+
+
+def test_ch02_env_overrides(
+    clean_unit_env: pytest.MonkeyPatch, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", "mysql+asyncmy://u:p@db:3306/x")
+    monkeypatch.setenv("TOOL_TIMEOUT_SECONDS", "1.5")
+    monkeypatch.setenv("TOOL_MAX_RETRIES", "0")
+
+    settings = Settings(_env_file=None, openai_api_key="test")
+
+    assert settings.database_url == "mysql+asyncmy://u:p@db:3306/x"
+    assert settings.tool_timeout_seconds == 1.5
+    assert settings.tool_max_retries == 0
