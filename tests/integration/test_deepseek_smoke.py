@@ -4,13 +4,14 @@ These tests are opt-in via ``-m integration`` and skip when no usable real
 key is configured. They never print or log the API key.
 """
 
-import uuid
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
+from app.db.repositories import ChatRepository
 from app.runtime import Runtime, build_runtime
 from app.schemas import RequestType
 from app.services.chat import stream_chat
@@ -42,21 +43,28 @@ async def runtime() -> Runtime:
     if not key.startswith("sk-") or key == "sk-your-key":
         pytest.skip("OPENAI_API_KEY is missing or still a placeholder")
 
-    return build_runtime(settings)
+    built = build_runtime(settings)
+    yield built
+    await built.aclose()
 
 
 async def collect_events(
-    runtime: Runtime, session_id: str, message: str
+    runtime: Runtime,
+    repository: ChatRepository,
+    session_id: str | None,
+    message: str,
 ) -> list[tuple[str, dict]]:
     """Run one real streaming turn and return its SSE events."""
     events: list[tuple[str, dict]] = []
     async for event, data in stream_chat(
         session_id=session_id,
+        user_id="integration",
         user_message=message,
         chat_model=runtime.chat_model,
-        session_store=runtime.session_store,
+        repository=repository,
         prompt_builder=runtime.prompt_builder,
         settings=runtime.settings,
+        locks=runtime.locks,
     ):
         events.append((event, data))
     return events
@@ -70,23 +78,59 @@ def reply_text(events: list[tuple[str, dict]]) -> str:
     )
 
 
+def session_id_of(events: list[tuple[str, dict]]) -> str:
+    for event, data in events:
+        if event == "session":
+            return str(data["session_id"])
+    raise AssertionError(f"no session event: {events}")
+
+
 async def test_real_stream_and_context(runtime: Runtime) -> None:
     """Real stream yields token + done, and the next turn sees history."""
-    session_id = f"itest-{uuid.uuid4().hex[:12]}"
+    engine = create_async_engine(runtime.settings.database_url)
+    try:
+        async with engine.connect() as conn:
+            trans = await conn.begin()
+            factory = async_sessionmaker(
+                bind=conn,
+                join_transaction_mode="create_savepoint",
+                expire_on_commit=False,
+            )
+            async with factory() as session:
+                repository = ChatRepository(session)
+                first_events = await collect_events(
+                    runtime,
+                    repository,
+                    None,
+                    "我叫小王，订单号 A12345，想退货",
+                )
+                assert any(
+                    event == "token" for event, _ in first_events
+                ), first_events
+                assert any(
+                    event == "done" for event, _ in first_events
+                ), first_events
+                assert all(
+                    event != "error" for event, _ in first_events
+                ), first_events
 
-    first_events = await collect_events(
-        runtime, session_id, "我叫小王，订单号 A12345，想退货"
-    )
-    assert any(event == "token" for event, _ in first_events), first_events
-    assert any(event == "done" for event, _ in first_events), first_events
-    assert all(event != "error" for event, _ in first_events), first_events
-
-    second_events = await collect_events(
-        runtime, session_id, "我的订单号是多少？"
-    )
-    assert any(event == "done" for event, _ in second_events), second_events
-    assert all(event != "error" for event, _ in second_events), second_events
-    assert "A12345" in reply_text(second_events), second_events
+                session_id = session_id_of(first_events)
+                second_events = await collect_events(
+                    runtime,
+                    repository,
+                    session_id,
+                    "我的订单号是多少？",
+                )
+                assert any(
+                    event == "done" for event, _ in second_events
+                ), second_events
+                assert all(
+                    event != "error" for event, _ in second_events
+                ), second_events
+                assert "A12345" in reply_text(second_events), second_events
+            await trans.rollback()
+    finally:
+        await engine.dispose()
 
 
 async def test_real_extraction(runtime: Runtime) -> None:
