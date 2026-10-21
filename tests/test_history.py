@@ -1,4 +1,9 @@
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+)
 
 from app.history import trim_history
 
@@ -52,3 +57,39 @@ def test_single_huge_message_falls_back_to_truncated_human() -> None:
 
 def test_empty_history() -> None:
     assert trim_history([], token_budget=100) == []
+
+
+def test_trim_keeps_tool_pair_together() -> None:
+    history = [
+        HumanMessage(content="old"),
+        AIMessage(content=""),
+        HumanMessage(content="new"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "query_faq",
+                    "args": {},
+                    "id": "c1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(content="{}", tool_call_id="c1"),
+    ]
+
+    trimmed = trim_history(history, token_budget=30)
+
+    assert isinstance(trimmed[0], HumanMessage)
+    assert isinstance(trimmed[-1], ToolMessage)
+
+
+def test_trim_never_leaves_orphan_tool_message() -> None:
+    history = [
+        HumanMessage(content="new"),
+        ToolMessage(content="{}", tool_call_id="orphan"),
+    ]
+
+    trimmed = trim_history(history, token_budget=100)
+
+    assert all(not isinstance(m, ToolMessage) for m in trimmed)
