@@ -13,6 +13,7 @@ from app.errors import ERROR_MESSAGES, AppError, map_upstream_error
 from app.history import trim_history
 from app.prompt_builder import PromptBuilder
 from app.services.chat_history import to_langchain
+from app.session_id import parse_conversation_id
 from app.services.tool_exec import ToolRegistry
 from app.sessions import ConversationLocks
 from app.tools import build_tools
@@ -51,6 +52,13 @@ def _usage_tokens(usage: dict[str, Any] | None) -> tuple[Any, Any]:
     return usage.get("input_tokens"), usage.get("output_tokens")
 
 
+def _lock_key(session_id: str | None) -> str:
+    conversation_id = parse_conversation_id(session_id)
+    if conversation_id is not None:
+        return str(conversation_id)
+    return session_id or f"new:{uuid.uuid4()}"
+
+
 def _openai_tool_calls(tool_calls: list[dict]) -> list[dict]:
     return [
         {
@@ -83,8 +91,7 @@ async def stream_chat(
     pass is never bound to tools, so the turn converges after one round.
     """
     started = time.perf_counter()
-    lock_key = session_id or f"new:{uuid.uuid4()}"
-    lock = locks.lock_for(lock_key)
+    lock = locks.lock_for(_lock_key(session_id))
 
     try:
         async with lock:

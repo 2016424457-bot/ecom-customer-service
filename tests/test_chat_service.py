@@ -322,6 +322,42 @@ async def test_same_conversation_serializes(
     ]
 
 
+async def test_canonical_session_ids_serialize(
+    settings: Settings, prompt_builder: PromptBuilder
+) -> None:
+    repo = FakeRepository()
+    locks = ConversationLocks()
+    model = FakeChatModel(
+        [
+            [AIMessageChunk(content="first answer")],
+            [AIMessageChunk(content="second answer")],
+        ]
+    )
+
+    async def run(message: str, session_id: str):
+        return await _collect(
+            model=model,
+            message=message,
+            repo=repo,
+            builder=prompt_builder,
+            settings=settings,
+            locks=locks,
+            session_id=session_id,
+        )
+
+    await asyncio.gather(
+        run("first question", "1"),
+        run("second question", "01"),
+    )
+
+    assert repo.role_contents() == [
+        ("user", "first question"),
+        ("assistant", "first answer"),
+        ("user", "second question"),
+        ("assistant", "second answer"),
+    ]
+
+
 async def test_client_disconnect_releases_lock(
     settings: Settings, prompt_builder: PromptBuilder
 ) -> None:

@@ -4,6 +4,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Conversation, Faq, Message, Ticket
+from app.session_id import parse_conversation_id
 
 
 class ChatRepository:
@@ -19,9 +20,10 @@ class ChatRepository:
     async def get_or_create_conversation(
         self, session_id: str | None, user_id: str
     ) -> Conversation:
-        if session_id and session_id.isdigit() and len(session_id) <= 18:
+        conversation_id = parse_conversation_id(session_id)
+        if conversation_id is not None:
             conversation = await self.session.get(
-                Conversation, int(session_id)
+                Conversation, conversation_id
             )
             if conversation is not None:
                 return conversation

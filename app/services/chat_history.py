@@ -100,22 +100,29 @@ def to_langchain(rows: Iterable[MessageLike]) -> list[BaseMessage]:
         )
     ]
 
-    present = {
-        message.tool_call_id
+    tool_by_id: dict[str, ToolMessage] = {
+        message.tool_call_id: message
         for message in messages
         if isinstance(message, ToolMessage)
     }
+    emitted: set[str] = set()
     repaired: list[BaseMessage] = []
     for message in messages:
+        if isinstance(message, ToolMessage):
+            continue
         repaired.append(message)
         if not isinstance(message, AIMessage):
             continue
         for call in message.tool_calls or []:
-            if call["id"] not in present:
-                repaired.append(
-                    ToolMessage(
-                        content='{"error": {"code": "incomplete_turn"}}',
-                        tool_call_id=call["id"],
-                    )
+            call_id = call["id"]
+            if call_id in emitted:
+                continue
+            tool_message = tool_by_id.get(call_id)
+            if tool_message is None:
+                tool_message = ToolMessage(
+                    content='{"error": {"code": "incomplete_turn"}}',
+                    tool_call_id=call_id,
                 )
+            repaired.append(tool_message)
+            emitted.add(call_id)
     return repaired

@@ -158,6 +158,7 @@ async def main() -> int:
             events = await run_case(client, "邮费是多少")
             conversation_id = int(session_id_of(events))
             tools = running_tools(events)
+            answer = answer_text(events)
             _, _, tool_content = await database_check(
                 engine, conversation_id
             )
@@ -171,10 +172,27 @@ async def main() -> int:
                 failures.append(
                     f"postage FAQ count: {payload.get('count')!r}"
                 )
+            miss_markers = (
+                "查不到",
+                "暂无",
+                "没有",
+                "未收录",
+                "不清楚",
+                "人工",
+                "客服",
+            )
+            if not any(marker in answer for marker in miss_markers):
+                failures.append(
+                    f"postage answer may fabricate policy: {answer!r}"
+                )
+            if "元" in answer or "¥" in answer:
+                failures.append(
+                    f"postage answer contains a price: {answer!r}"
+                )
             if len(failures) == before:
                 print(
                     f"[PASS] postage: tools={tools}, "
-                    "FAQ count=0 (expected miss)"
+                    f"FAQ count=0 (expected miss), answer={answer!r}"
                 )
     except httpx.ConnectError as exc:
         print(

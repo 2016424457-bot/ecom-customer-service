@@ -66,6 +66,47 @@ def test_orphan_tool_message_is_dropped():
     assert to_langchain(rows) == []
 
 
+def test_partial_tool_responses_follow_tool_call_order():
+    rows = [
+        StoredMessage("user", "查订单和物流", None, None),
+        StoredMessage(
+            "assistant",
+            None,
+            [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "query_order",
+                        "arguments": '{"order_id":"1001"}',
+                    },
+                },
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {
+                        "name": "query_logistics",
+                        "arguments": '{"order_id":"1001"}',
+                    },
+                },
+            ],
+            None,
+        ),
+        StoredMessage("tool", '{"ok":1}', None, "call_1"),
+    ]
+
+    messages = to_langchain(rows)
+
+    tool_messages = [
+        message for message in messages if isinstance(message, ToolMessage)
+    ]
+    assert [message.tool_call_id for message in tool_messages] == [
+        "call_1",
+        "call_2",
+    ]
+    assert "incomplete_turn" in tool_messages[-1].content
+
+
 def test_invalid_arguments_json_becomes_empty_dict():
     rows = [
         StoredMessage(
