@@ -168,31 +168,23 @@ async def main() -> int:
                 payload = json.loads(tool_content or "{}")
             except json.JSONDecodeError:
                 payload = {}
-            if payload.get("count") != 0:
+            if payload.get("count", 0) <= 0:
                 failures.append(
                     f"postage FAQ count: {payload.get('count')!r}"
                 )
-            miss_markers = (
-                "查不到",
-                "暂无",
-                "没有",
-                "未收录",
-                "不清楚",
-                "人工",
-                "客服",
-            )
-            if not any(marker in answer for marker in miss_markers):
+            if "运费" not in answer and "邮费" not in answer:
                 failures.append(
-                    f"postage answer may fabricate policy: {answer!r}"
+                    f"postage answer lacks shipping fee: {answer!r}"
                 )
-            if "元" in answer or "¥" in answer:
+            if "没有查到" in answer:
                 failures.append(
-                    f"postage answer contains a price: {answer!r}"
+                    f"postage answer still claims no result: {answer!r}"
                 )
             if len(failures) == before:
                 print(
                     f"[PASS] postage: tools={tools}, "
-                    f"FAQ count=0 (expected miss), answer={answer!r}"
+                    f"FAQ count={payload.get('count')!r} "
+                    f"(CH03 fixed the miss), answer={answer!r}"
                 )
     except httpx.ConnectError as exc:
         print(

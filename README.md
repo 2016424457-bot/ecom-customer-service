@@ -1,6 +1,6 @@
-# 电商智能客服（CH02：Function Calling 工具链）
+# 电商智能客服（CH03：知识库与向量检索）
 
-基于 FastAPI + LangChain + SQLAlchemy + MySQL 的电商售后客服后端。CH02 在纯对话链路上接入单轮 Function Calling：
+基于 FastAPI + LangChain + SQLAlchemy + MySQL + Milvus 的电商售后客服后端。CH03 在 CH02 工具链上把 `query_faq` 从关键词 `LIKE` 升级为 BGE-M3 dense 向量检索，工具入参/出参契约保持不变：
 
 - `POST /api/chat/stream`：SSE 流式对话；模型先决定调用哪个工具，后端执行后回灌，最终回答仍逐 token 输出。
 - 五个业务工具：`query_order`、`query_product`、`query_logistics`、`query_faq`、`create_ticket`。
@@ -9,6 +9,14 @@
 - 聊天页在 assistant 气泡内显示工具轨迹徽章。
 - 应用侧统一使用 OpenAI 兼容协议，可切换 DeepSeek / OpenAI / Ollama / Claude 兼容代理。
 
+## CH03 新增能力
+
+- **离线建库**：Markdown 知识文档按标题层级切分；超长内容递归切；块间重叠裁到完整句；大表格按行切且每块复制表头。`faq` 表逐行导入为商品 FAQ。
+- **对话挖知识**：`scripts/mine_knowledge.py` 从历史客服对话分批抽问答对，先落 `qa_extraction_staging`，整体去重后入 `knowledge_chunks`；支持 cron / `--loop`。
+- **双写**：MySQL `knowledge_chunks` 是原文权威源，Milvus `knowledge` 集合存向量；先写 MySQL `pending`，再写 Milvus 回填 `vector_id` 并转 `done`；中断后重跑只补 pending。
+- **在线检索**：问题向量化 → Milvus COSINE Top-K → 回 MySQL 取原文；`query_faq` 的 `keyword → {keyword, count, items[question, answer, category]}` 契约不变。
+- **检索范围**：只跑 dense 单路，不做关键词召回、混合检索或重排。
+
 ## CH02 新增能力
 
 | 工具 | 作用 | 数据来源 |
@@ -16,10 +24,10 @@
 | `query_order` | 查订单状态、商品、金额 | 工具内 mock |
 | `query_product` | 查商品价格、库存、规格 | 工具内 mock |
 | `query_logistics` | 查物流承运商、运单号、最新节点 | 工具内 mock |
-| `query_faq` | SQL `LIKE` 查常见问题 | `faq` 表 |
+| `query_faq` | BGE-M3 向量检索（Milvus） | `knowledge_chunks` + Milvus |
 | `create_ticket` | 创建人工工单并转人工 | `tickets` 表 |
 
-单轮约束：第一轮模型绑定工具；若请求工具调用，后端在同一轮内执行并回灌；第二轮不绑定工具，强制收敛。本章不做多轮 Agent Loop、向量检索或真实订单/物流 API。
+单轮约束：第一轮模型绑定工具；若请求工具调用，后端在同一轮内执行并回灌；第二轮不绑定工具，强制收敛。CH02 不做多轮 Agent Loop 或真实订单/物流 API；CH03 只把 FAQ 检索升级为 dense 向量单路，不做混合检索或重排。
 
 SSE 事件：
 
@@ -52,6 +60,12 @@ mysql -h 127.0.0.1 -u root -p ecom_customer_service < db/schema.sql
 mysql -h 127.0.0.1 -u root -p ecom_customer_service < db/seed.sql
 ```
 
+已有 CH02 数据库时，再执行 CH03 迁移（可重复执行）：
+
+```bash
+mysql -h 127.0.0.1 -u root -p ecom_customer_service < sql/ch03-ddl.sql
+```
+
 也可以改用 Docker（宿主端口 3307）：
 
 ```bash
@@ -72,9 +86,46 @@ test -f .env || cp .env.example .env
 
 编辑 `.env`，至少把 `OPENAI_API_KEY` 换成真实密钥。默认上游是 DeepSeek，模型 `deepseek-flash`。
 
+CH03 还需要填入 OpenAI 兼容的 BGE-M3 嵌入配置：
+
+```ini
+EMBED_BASE_URL=https://api.siliconflow.cn/v1
+EMBED_API_KEY=你的嵌入服务密钥
+EMBED_MODEL=BAAI/bge-m3
+EMBED_DIM=1024
+MILVUS_URI=./data/milvus_knowledge.db
+MILVUS_COLLECTION=knowledge
+```
+
 > `.env` 已被 `.gitignore` 忽略。不要提交真实密钥，也不要把密钥写进 README、日志或代码。
 
-### 4. 启动服务
+### 4. 建库与挖矿
+
+先确认嵌入接口是 1024 维，再离线建库：
+
+```bash
+uv run python scripts/smoke_embed.py
+uv run python scripts/build_knowledge.py --reset
+```
+
+- `MILVUS_URI` 默认是 Milvus Lite 文件 `./data/milvus_knowledge.db`，单进程；**建库时先停服务**，否则两个进程会争同一文件。
+- 切 standalone Milvus 只需把 `MILVUS_URI` 改成 `http://127.0.0.1:19530`，代码不感知。
+- 只写 MySQL 待向量化、不调嵌入接口：`--no-sync`；只补漏：`--verify`；演示中断续跑：`--limit 3`。
+- 历史对话挖知识：
+
+```bash
+uv run python scripts/mine_knowledge.py --once
+# 或进程内循环
+uv run python scripts/mine_knowledge.py --loop --interval-minutes 60
+```
+
+cron 示例（生产建议）：
+
+```cron
+*/30 * * * * cd /path/to/ecom-customer-service && uv run python scripts/mine_knowledge.py --once >> logs/kb-mine.log 2>&1
+```
+
+### 5. 启动服务
 
 ```bash
 uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
@@ -205,14 +256,35 @@ uv run python scripts/ch02_acceptance.py
 - `run_chat_eval.py`：逐条调用 `/api/chat/stream`，检查不编造物流、不擅自赔付、隐私提醒、高风险转人工、拒绝提示词注入，并打印完整回复供人工复核。
 - `scripts/acceptance.py`：检查流式 token/done、多轮订单号记忆、结构化抽取（三字段齐全、`order_id` 含 `A12345`、`desired_solution` 非空、`request_type` 为合法枚举值），全部通过时打印 `ACCEPTANCE PASS`。
 - `run_tool_routing_eval.py`：用 6 条标注样例检查工具选择与参数，阈值 5/6；只测路由、不执行工具。
-- `scripts/ch02_acceptance.py`：端到端检查物流工具、FAQ 工具、邮费漏召回（`query_faq` 返回 0 条）和数据库落库，全部通过时打印 `CH02 ACCEPTANCE PASS`。
+- `scripts/ch02_acceptance.py`：端到端检查物流工具、FAQ 工具、邮费命中（CH03 已修复原来的漏召回）和数据库落库，全部通过时打印 `CH02 ACCEPTANCE PASS`。
+- `evals/run_faq_retrieval_eval.py`：10 条换说法查询，统计 hit@1 / hit@3，阈值 hit@3 ≥ 80%。
+- `evals/run_qa_mining_eval.py`：5 段历史对话，检查挖矿 Prompt 的问题召回与答案要点命中，阈值 70%。
+- `scripts/ch03_acceptance.py`：`resume` 验证中断续跑、`retrieve` 验证「邮费是多少」召回与契约、`chat` 验证 SSE 端到端；全部通过时打印 `CH03 ACCEPTANCE PASS`。
+
+CH03 的离线阶段要求嵌入 key，且必须在**服务停止**时跑（Milvus Lite 单进程）：
+
+```bash
+uv run python evals/run_faq_retrieval_eval.py
+uv run python evals/run_qa_mining_eval.py
+uv run python scripts/ch03_acceptance.py --phase resume
+uv run python scripts/ch03_acceptance.py --phase retrieve
+```
+
+启动服务后跑聊天阶段：
+
+```bash
+uv run python scripts/ch03_acceptance.py --phase chat
+```
 
 脚本默认访问 `http://127.0.0.1:8000`，可用 `ECOM_BASE_URL` 环境变量覆盖。
 
 ## 已知限制
 
 - 消息历史在 MySQL，但同一会话的串行锁在进程内，本章仅支持 `--workers 1`。
-- 订单、商品、物流工具返回随机 mock 数据，不接真实系统；FAQ 是关键词 `LIKE` 检索，「邮费」这类换个说法的问题会漏召回，留给下一章升级。
+- 订单、商品、物流工具返回随机 mock 数据，不接真实系统；FAQ 已改为 BGE-M3 向量检索，但只跑 dense 单路，不做关键词召回、混合检索或重排。
+- Milvus 默认用 Lite 本地文件，单进程；离线建库/挖矿与在线服务不能同时打开同一个文件。生产可切 standalone。
+- 嵌入依赖外部 OpenAI 兼容服务；没有 `EMBED_API_KEY` 时建库、挖矿向量化和在线检索都不可用。
+- 挖矿去重是规范化问题文本的精确去重，换说法的近重复可能同时入库；挖矿质量受 LLM 波动影响，评估集只是底线。
 - `create_ticket` 成功后会话状态置 `已转人工`，但本章不做人工接管，后续消息仍由机器人处理。
 - 没有用户认证、限流、计费或多租户隔离，不要直接暴露到公网。
 - 默认只监听 `127.0.0.1`，仅适合本地开发与验收。
