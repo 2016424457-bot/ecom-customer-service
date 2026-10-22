@@ -103,3 +103,19 @@ async def test_tools_property_returns_registered_tools():
     registry = ToolRegistry([tool], timeout_seconds=1, max_retries=0)
 
     assert registry.tools == [tool]
+
+
+async def test_timeout_override_uses_per_tool_value():
+    faq = make_slow_tool("query_faq", delay=0.05)
+    other = make_slow_tool("other", delay=0.05)
+    registry = ToolRegistry(
+        [faq, other],
+        timeout_seconds=0.01,
+        max_retries=0,
+        timeout_overrides={"query_faq": 0.2},
+    )
+
+    assert (await registry.execute("query_faq", {})).ok is True
+    assert (
+        await registry.execute("other", {})
+    ).error_code == "tool_timeout"

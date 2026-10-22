@@ -13,6 +13,17 @@ class Chunk:
 
 
 @dataclass(frozen=True)
+class KnowledgeHit:
+    id: int
+    category: str
+    questions: str
+    answer: str
+    score: float
+    section_path: str | None
+    content_type: str | None
+
+
+@dataclass(frozen=True)
 class StagingRow:
     batch_no: str
     source_ref: str | None

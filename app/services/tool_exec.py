@@ -28,12 +28,14 @@ class ToolRegistry:
         timeout_seconds: float,
         max_retries: int,
         retry_disabled: frozenset[str] = frozenset(),
+        timeout_overrides: dict[str, float] | None = None,
     ) -> None:
         self._tools = list(tools)
         self._by_name = {tool.name: tool for tool in self._tools}
         self._timeout_seconds = timeout_seconds
         self._max_retries = max_retries
         self._retry_disabled = retry_disabled
+        self._timeout_overrides = timeout_overrides or {}
 
     @property
     def tools(self) -> list[BaseTool]:
@@ -60,12 +62,15 @@ class ToolRegistry:
         last_message = "tool execution failed"
         attempts = 0
 
+        timeout = self._timeout_overrides.get(
+            name, self._timeout_seconds
+        )
         for attempt in range(1, max_attempts + 1):
             attempts = attempt
             try:
                 result = await asyncio.wait_for(
                     tool.ainvoke(arguments),
-                    timeout=self._timeout_seconds,
+                    timeout=timeout,
                 )
             except ValidationError as exc:
                 return self._failure(
@@ -77,9 +82,7 @@ class ToolRegistry:
                 )
             except TimeoutError:
                 last_code = "tool_timeout"
-                last_message = (
-                    f"tool timed out after {self._timeout_seconds}s"
-                )
+                last_message = f"tool timed out after {timeout}s"
                 continue
             except Exception as exc:
                 last_code = "tool_execution_error"

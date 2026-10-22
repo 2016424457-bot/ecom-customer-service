@@ -3,19 +3,13 @@ from dataclasses import dataclass
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from app.knowledge.types import KnowledgeHit
 from app.tools import build_tools
 from app.tools.faq import build_faq_tool
 from app.tools.logistics import query_logistics
 from app.tools.order import query_order
 from app.tools.product import query_product
 from app.tools.ticket import build_ticket_tool
-
-
-@dataclass
-class FakeFaq:
-    question: str
-    answer: str
-    category: str
 
 
 @dataclass
@@ -33,11 +27,6 @@ class FakeRepository:
         self.ticket_numbers = ["T20261021001", "T20261021002"]
         self.ticket_seq = 0
         self.fail_first_ticket = False
-
-    async def search_faq(self, keyword: str) -> list[FakeFaq]:
-        if keyword == "退货":
-            return [FakeFaq("退货政策是什么？", "签收后 7 天内可退", "退货")]
-        return []
 
     async def next_ticket_no(self, day) -> str:
         index = min(self.ticket_seq, len(self.ticket_numbers) - 1)
@@ -66,7 +55,15 @@ def fake_repo() -> FakeRepository:
 
 
 async def test_build_tools_returns_five_expected_names(fake_repo):
-    names = [tool.name for tool in build_tools(fake_repo, conversation_id=1)]
+    async def fake_search(keyword: str):
+        return []
+
+    names = [
+        tool.name
+        for tool in build_tools(
+            fake_repo, conversation_id=1, faq_search=fake_search
+        )
+    ]
 
     assert names == [
         "query_order",
@@ -104,22 +101,46 @@ async def test_query_logistics_shape():
     assert result["latest_event"]
 
 
-async def test_query_faq_uses_like_and_returns_items(fake_repo):
-    tool = build_faq_tool(fake_repo)
+async def test_query_faq_returns_vector_hits_with_unchanged_contract():
+    async def fake_search(keyword: str):
+        return [
+            KnowledgeHit(
+                id=1,
+                category="运费",
+                questions="邮费怎么算？",
+                answer="满 99 包邮。",
+                score=0.9,
+                section_path="退货与退款政策 / 退货运费与邮费",
+                content_type="policy",
+            )
+        ]
 
-    result = await tool.ainvoke({"keyword": "退货"})
+    tool = build_faq_tool(fake_search)
 
-    assert result["keyword"] == "退货"
-    assert result["count"] == 1
-    assert result["items"][0]["question"].startswith("退货")
+    result = await tool.ainvoke({"keyword": "邮费是多少"})
+
+    assert result == {
+        "keyword": "邮费是多少",
+        "count": 1,
+        "items": [
+            {
+                "question": "邮费怎么算？",
+                "answer": "满 99 包邮。",
+                "category": "运费",
+            }
+        ],
+    }
 
 
-async def test_query_faq_empty_result(fake_repo):
-    tool = build_faq_tool(fake_repo)
+async def test_query_faq_empty_result_keeps_contract():
+    async def fake_search(keyword: str):
+        return []
 
-    result = await tool.ainvoke({"keyword": "邮费"})
+    tool = build_faq_tool(fake_search)
 
-    assert result == {"keyword": "邮费", "count": 0, "items": []}
+    result = await tool.ainvoke({"keyword": "邮费是多少"})
+
+    assert result == {"keyword": "邮费是多少", "count": 0, "items": []}
 
 
 async def test_create_ticket_writes_and_flips_status(fake_repo):

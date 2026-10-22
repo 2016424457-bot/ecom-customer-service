@@ -22,9 +22,6 @@ MIN_PASSED = 5
 
 
 class DummyRepository:
-    async def search_faq(self, keyword: str, limit: int = 5):
-        return []
-
     async def next_ticket_no(self, day):
         return "T20261021001"
 
@@ -77,7 +74,14 @@ async def main() -> int:
         brand_name=settings.brand_name,
         service_hours=settings.service_hours,
     )
-    tools = build_tools(DummyRepository(), conversation_id=1)
+    async def fake_faq_search(keyword: str):
+        return []
+
+    tools = build_tools(
+        DummyRepository(),
+        conversation_id=1,
+        faq_search=fake_faq_search,
+    )
     model = build_chat_model(settings).bind_tools(tools)
     cases = json.loads(CASES_PATH.read_text(encoding="utf-8"))
 

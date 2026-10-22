@@ -4,6 +4,7 @@ import json
 import logging
 import time
 import uuid
+from functools import partial
 from typing import Any, AsyncIterator
 
 from langchain_core.messages import AIMessage, ToolMessage
@@ -11,6 +12,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from app.config import Settings
 from app.errors import ERROR_MESSAGES, AppError, map_upstream_error
 from app.history import trim_history
+from app.knowledge.search import search_knowledge
 from app.prompt_builder import PromptBuilder
 from app.services.chat_history import to_langchain
 from app.session_id import parse_conversation_id
@@ -112,12 +114,23 @@ async def stream_chat(
             )
             await repository.commit()
 
-            tools = build_tools(repository, conversation_id)
+            tools = build_tools(
+                repository,
+                conversation_id,
+                faq_search=partial(
+                    search_knowledge,
+                    repository=repository,
+                    settings=settings,
+                ),
+            )
             registry = ToolRegistry(
                 tools,
                 timeout_seconds=settings.tool_timeout_seconds,
                 max_retries=settings.tool_max_retries,
                 retry_disabled=frozenset({"create_ticket"}),
+                timeout_overrides={
+                    "query_faq": settings.faq_tool_timeout_seconds
+                },
             )
 
             token_events = 0
