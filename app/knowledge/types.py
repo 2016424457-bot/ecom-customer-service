@@ -24,6 +24,13 @@ class KnowledgeHit:
 
 
 @dataclass(frozen=True)
+class QaPair:
+    question: str
+    answer: str
+    category: str
+
+
+@dataclass(frozen=True)
 class StagingRow:
     batch_no: str
     source_ref: str | None
