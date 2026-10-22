@@ -47,6 +47,10 @@ def create_app(
     async def chat_page() -> FileResponse:
         return FileResponse(STATIC_DIR / "chat.html")
 
+    @application.get("/faith-cases", include_in_schema=False)
+    async def faith_cases_page() -> FileResponse:
+        return FileResponse(STATIC_DIR / "faith-cases.html")
+
     @application.exception_handler(AppError)
     async def handle_app_error(
         _request: Request, exc: AppError

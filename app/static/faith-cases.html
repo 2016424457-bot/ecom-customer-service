@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#1f3b2f" />
+  <title>编造个案台账 · 示例商城</title>
+  <link rel="stylesheet" href="/static/faith-cases.css?v=1" />
+</head>
+<body>
+  <div class="page-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">审</div>
+        <div class="brand-copy">
+          <p class="brand-kicker">Faithfulness Ledger</p>
+          <h1>编造个案台账</h1>
+          <p class="subtitle">忠实度裁判判出的编造，一题一行；处置状态人工维护。</p>
+        </div>
+      </div>
+      <a class="ghost-btn" href="/chat">返回聊天</a>
+    </header>
+
+    <section class="toolbar" aria-label="筛选">
+      <div id="statusFilters" class="filters">
+        <button class="filter-chip is-active" type="button" data-status="">全部</button>
+        <button class="filter-chip" type="button" data-status="未解决">未解决</button>
+        <button class="filter-chip" type="button" data-status="已解决">已解决</button>
+        <button class="filter-chip" type="button" data-status="无需解决">无需解决</button>
+      </div>
+      <label class="bucket-filter">
+        <span>桶</span>
+        <select id="bucketFilter">
+          <option value="">全部</option>
+          <option value="A_policy">A_policy</option>
+          <option value="B_model">B_model</option>
+          <option value="C_colloquial">C_colloquial</option>
+          <option value="E_multi">E_multi</option>
+          <option value="F_unanswerable">F_unanswerable</option>
+        </select>
+      </label>
+    </section>
+
+    <p id="summary" class="summary">加载中…</p>
+    <main id="caseList" class="case-list" aria-live="polite"></main>
+  </div>
+
+  <script src="/static/faith-cases.js?v=1"></script>
+</body>
+</html>
