@@ -4,6 +4,7 @@ from langchain_core.runnables import Runnable
 from langchain_openai import ChatOpenAI
 
 from app.config import Settings
+from app.evaluation.judge import FaithfulnessVerdict
 from app.knowledge.query_understanding import QueryRewrite
 from app.knowledge.schemas import QaExtraction
 from app.knowledge.self_check import EvidenceAssessment
@@ -97,5 +98,20 @@ def build_evidence_check_model(settings: Settings) -> Runnable:
     )
     return chat_model.with_structured_output(
         EvidenceAssessment,
+        method=settings.structured_output_method,
+    )
+
+
+def build_judge_model(settings: Settings) -> Runnable:
+    """Create the structured-output runnable used for faithfulness judging."""
+    kwargs = build_model_kwargs(
+        settings,
+        temperature=settings.judge_temperature,
+        max_tokens=settings.judge_max_tokens,
+    )
+    kwargs["model"] = settings.judge_model or settings.openai_model
+    chat_model = ChatOpenAI(**kwargs)
+    return chat_model.with_structured_output(
+        FaithfulnessVerdict,
         method=settings.structured_output_method,
     )
