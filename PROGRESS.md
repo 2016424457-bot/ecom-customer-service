@@ -2,7 +2,7 @@
 
 - 日期：2026-10-22
 - 分支：`ch03-knowledge-base`
-- 状态：功能代码、单元测试、MySQL/Milvus 集成测试完成；**真实检索评估与端到端验收待 `EMBED_API_KEY`**
+- 状态：功能代码、单元测试、MySQL/Milvus 集成测试、真实检索评估与端到端验收全部完成
 
 ## 一、项目简介
 
@@ -45,12 +45,12 @@
 
 | 检查项 | 结果 | 备注 |
 |--------|------|------|
-| 单元测试 `.venv/bin/pytest -m "not integration"` | **133 passed** | 2026-10-22 |
+| 单元测试 `.venv/bin/pytest -m "not integration"` | **134 passed** | 2026-10-22 |
 | 知识仓储集成测试 | **8 passed** | 本机 MySQL |
 | Milvus Lite 往返测试 | **1 passed** | 临时文件 |
 | 挖矿评估 `run_qa_mining_eval.py` | **5/5 PASS** | 真实 DeepSeek |
-| 检索评估 `run_faq_retrieval_eval.py` | **待跑** | 需要 `EMBED_API_KEY` |
-| CH03 验收 `ch03_acceptance.py` | **待跑** | 需要 `EMBED_API_KEY` |
+| 检索评估 `run_faq_retrieval_eval.py` | **hit@1 10/10，hit@3 10/10** | 真实 BGE-M3 |
+| CH03 验收 `ch03_acceptance.py` | **resume / retrieve / chat 全 PASS** | 邮费查询命中运费标准；中断 19 pending 后补齐 22 条 |
 
 ## 五、继续开发
 

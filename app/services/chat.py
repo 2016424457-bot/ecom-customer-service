@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator
 from langchain_core.messages import AIMessage, ToolMessage
 
 from app.config import Settings
+from app.db.repositories import KnowledgeRepository
 from app.errors import ERROR_MESSAGES, AppError, map_upstream_error
 from app.history import trim_history
 from app.knowledge.search import search_knowledge
@@ -114,12 +115,17 @@ async def stream_chat(
             )
             await repository.commit()
 
+            knowledge_repository = repository
+            if not hasattr(knowledge_repository, "get_chunks_by_ids"):
+                session = getattr(repository, "session", None)
+                if session is not None:
+                    knowledge_repository = KnowledgeRepository(session)
             tools = build_tools(
                 repository,
                 conversation_id,
                 faq_search=partial(
                     search_knowledge,
-                    repository=repository,
+                    repository=knowledge_repository,
                     settings=settings,
                 ),
             )

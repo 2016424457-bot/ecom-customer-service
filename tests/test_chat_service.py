@@ -1,11 +1,13 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessageChunk, ToolMessage
 
 from app.config import Settings
+from app.db.repositories import KnowledgeRepository
 from app.prompt_builder import PromptBuilder
 from app.services.chat import stream_chat
 from app.sessions import ConversationLocks
@@ -383,3 +385,46 @@ async def test_client_disconnect_releases_lock(
 
     assert not locks.lock_for("1").locked()
     assert repo.role_contents() == [("user", "你好")]
+
+
+async def test_query_faq_wraps_chat_repository_with_knowledge_repository(
+    settings: Settings,
+    prompt_builder: PromptBuilder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeRepository()
+    repo.session = object()
+    captured: dict[str, Any] = {}
+
+    async def fake_search(query, *, repository, settings, **kwargs):
+        captured["repository"] = repository
+        return [
+            SimpleNamespace(
+                questions="邮费怎么算？",
+                answer="满 99 包邮。",
+                category="运费",
+            )
+        ]
+
+    monkeypatch.setattr(
+        "app.services.chat.search_knowledge", fake_search
+    )
+    model = FakeChatModel(
+        [
+            [_tool_chunk("query_faq", '{"keyword":"邮费是多少"}', "call_1")],
+            [AIMessageChunk(content="满 99 包邮。")],
+        ]
+    )
+
+    events = await _collect(
+        model=model,
+        message="邮费是多少",
+        repo=repo,
+        builder=prompt_builder,
+        settings=settings,
+        locks=ConversationLocks(),
+    )
+
+    assert isinstance(captured["repository"], KnowledgeRepository)
+    assert captured["repository"].session is repo.session
+    assert events[2][1]["status"] == "done"
