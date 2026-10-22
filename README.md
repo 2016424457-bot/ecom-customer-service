@@ -1,6 +1,6 @@
-# 电商智能客服（CH03：知识库与向量检索）
+# 电商智能客服（CH04：检索质量进阶）
 
-基于 FastAPI + LangChain + SQLAlchemy + MySQL + Milvus 的电商售后客服后端。CH03 在 CH02 工具链上把 `query_faq` 从关键词 `LIKE` 升级为 BGE-M3 dense 向量检索，工具入参/出参契约保持不变：
+基于 FastAPI + LangChain + SQLAlchemy + MySQL + Milvus 的电商售后客服后端。CH04 在 CH03 的 dense 检索上加入 Milvus 原生 BM25 + dense 混合召回、bge-reranker-v2-m3 精排、引用/拒答与评估体系：
 
 - `POST /api/chat/stream`：SSE 流式对话；模型先决定调用哪个工具，后端执行后回灌，最终回答仍逐 token 输出。
 - 五个业务工具：`query_order`、`query_product`、`query_logistics`、`query_faq`、`create_ticket`。
@@ -8,6 +8,15 @@
 - `POST /api/chat/extract`：保留 CH01 的售后结构化抽取。
 - 聊天页在 assistant 气泡内显示工具轨迹徽章。
 - 应用侧统一使用 OpenAI 兼容协议，可切换 DeepSeek / OpenAI / Ollama / Claude 兼容代理。
+
+## CH04 新增能力
+
+- **混合召回**：Milvus `text` 字段挂 BM25 function（`jieba` analyzer），dense 与 sparse 各 Top-50，`hybrid_search` + RRF 融合。
+- **重排**：`bge-reranker-v2-m3` 精排 Top-10；重排失败回退 hybrid 顺序。
+- **Query 理解**：LLM 把口语问题改写成标准问法；同义词只加在检索侧，不改入库文本。
+- **引用与拒答**：`query_faq` 返回 `n / chunk_id / section_path`；回答用 `[n]` 引用；生成前做证据自评，不足则拒答并写 `low_confidence_questions`（`source='self_check'`）。
+- **评估**：48 条标注集，四策略（vector / bm25 / hybrid / hybrid_rerank）Recall@K / MRR，最终策略 Faithfulness；编造个案进 `faith_cases`。
+- **前端**：引用角标可点、来源弹层、每条回答 👍/👎 纯前端反馈、`/faith-cases` 最小管理页。
 
 ## CH03 新增能力
 
@@ -97,6 +106,20 @@ MILVUS_URI=./data/milvus_knowledge.db
 MILVUS_COLLECTION=knowledge
 ```
 
+CH04 还需要（重排默认复用同一 SiliconFlow key；`RERANK_*` 留空时回退 `EMBED_*`）：
+
+```ini
+MILVUS_ANALYZER_TYPE=jieba
+RERANK_ENABLED=true
+RERANK_BASE_URL=
+RERANK_API_KEY=
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+RERANK_TOP_N=10
+QUERY_REWRITE_ENABLED=true
+```
+
+完整的可复制配置见 `.env.example`。依赖新增 `jieba`、`httpx`、`cryptography`；`uv sync` 会安装。
+
 > `.env` 已被 `.gitignore` 忽略。不要提交真实密钥，也不要把密钥写进 README、日志或代码。
 
 ### 4. 建库与挖矿
@@ -105,8 +128,11 @@ MILVUS_COLLECTION=knowledge
 
 ```bash
 uv run python scripts/smoke_embed.py
-uv run python scripts/build_knowledge.py --reset
+uv run python scripts/smoke_rerank.py
+uv run python scripts/build_knowledge.py --reset --recreate
 ```
+
+CH04 的 Milvus 集合新增 `text/sparse/category` 等字段，**必须带 `--recreate` 重建**；旧集合会被检测为 schema 过期并提示。`smoke_rerank.py` 验证重排 key 权限；401/403/404 时先修 key 或服务地址，不要换模型。
 
 - `MILVUS_URI` 默认是 Milvus Lite 文件 `./data/milvus_knowledge.db`，单进程；**建库时先停服务**，否则两个进程会争同一文件。
 - 切 standalone Milvus 只需把 `MILVUS_URI` 改成 `http://127.0.0.1:19530`，代码不感知。
@@ -276,12 +302,37 @@ uv run python scripts/ch03_acceptance.py --phase retrieve
 uv run python scripts/ch03_acceptance.py --phase chat
 ```
 
+CH04 的检索评估与验收同样分离线/在线：
+
+```bash
+# 服务停止（Milvus Lite 单进程）
+uv run python evals/run_query_rewrite_eval.py
+uv run python evals/run_ch04_eval.py
+uv run python scripts/ch04_acceptance.py --phase build
+uv run python scripts/ch04_acceptance.py --phase retrieve
+
+# 服务运行
+uv run python scripts/ch04_acceptance.py --phase refuse
+uv run python scripts/ch04_acceptance.py --phase citation
+uv run python scripts/ch04_acceptance.py --phase admin
+```
+
+- `run_query_rewrite_eval.py`：16 条口语改写样例，检查标准问法命中与型号/金额保留，阈值 80%。
+- `run_ch04_eval.py`：48 条评估集，四策略 Recall@K / MRR + 最终策略 Faithfulness，输出 `evals/reports/ch04-report.md` 和 `.json`；不写会话/低置信度池，不忠实的答案写 `faith_cases`。
+- `ch04_acceptance.py`：`build` 重建并验证 BM25 型号命中；`retrieve` 验证混合/BM25/元数据过滤/改写；`refuse` 验证拒答 + 低置信度入池；`citation` 验证引用可回溯；`admin` 验证台账状态流转；全部通过打印 `CH04 ACCEPTANCE PASS`。
+
 脚本默认访问 `http://127.0.0.1:8000`，可用 `ECOM_BASE_URL` 环境变量覆盖。
 
 ## 已知限制
 
 - 消息历史在 MySQL，但同一会话的串行锁在进程内，本章仅支持 `--workers 1`。
-- 订单、商品、物流工具返回随机 mock 数据，不接真实系统；FAQ 已改为 BGE-M3 向量检索，但只跑 dense 单路，不做关键词召回、混合检索或重排。
+- 订单、商品、物流工具返回随机 mock 数据，不接真实系统；FAQ 已改为 BM25 + dense 混合召回 + `bge-reranker-v2-m3` 重排；重排失败会回退 hybrid 顺序。
+- Milvus 集合 schema 新增了 `text/sparse/category` 等字段，旧库必须 `build_knowledge.py --reset --recreate` 重建；启动时检测到旧 schema 会直接报错。
+- 重排依赖 SiliconFlow rerank 权限；`scripts/smoke_rerank.py` 失败时先确认 key/地址，不要换模型。
+- 引用映射与 👍/👎 反馈只存在浏览器 localStorage；换浏览器或清缓存后旧消息的角标不可点，反馈也不可见。反馈不落库。
+- 本章 `low_confidence_questions` 只写 `source='self_check'`；`retrieval_low_conf` / `user_feedback` 留给后续章节。
+- `faith_cases` 管理页没有认证，只适合本地演示。
+- 评估集 48 条覆盖有限，数字用于策略对比与回归，不宣称绝对质量；Faithfulness 裁判是 LLM，不是金标准。
 - Milvus 默认用 Lite 本地文件，单进程；离线建库/挖矿与在线服务不能同时打开同一个文件。生产可切 standalone。
 - 嵌入依赖外部 OpenAI 兼容服务；没有 `EMBED_API_KEY` 时建库、挖矿向量化和在线检索都不可用。
 - 挖矿去重是规范化问题文本的精确去重，换说法的近重复可能同时入库；挖矿质量受 LLM 波动影响，评估集只是底线。
