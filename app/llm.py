@@ -4,6 +4,7 @@ from langchain_core.runnables import Runnable
 from langchain_openai import ChatOpenAI
 
 from app.config import Settings
+from app.knowledge.query_understanding import QueryRewrite
 from app.knowledge.schemas import QaExtraction
 from app.schemas import AfterSalesExtraction
 
@@ -64,5 +65,21 @@ def build_mining_model(settings: Settings) -> Runnable:
     )
     return chat_model.with_structured_output(
         QaExtraction,
+        method=settings.structured_output_method,
+    )
+
+
+def build_rewrite_model(settings: Settings) -> Runnable:
+    """Create the structured-output runnable used for query rewriting."""
+    kwargs = build_model_kwargs(
+        settings,
+        temperature=settings.query_rewrite_temperature,
+        max_tokens=settings.query_rewrite_max_tokens,
+    )
+    kwargs["timeout"] = settings.query_rewrite_timeout_seconds
+    kwargs["max_retries"] = settings.query_rewrite_max_retries
+    chat_model = ChatOpenAI(**kwargs)
+    return chat_model.with_structured_output(
+        QueryRewrite,
         method=settings.structured_output_method,
     )

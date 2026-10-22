@@ -1,0 +1,16 @@
+{"query": "邮费多少钱", "expect_terms": ["运费"], "keep_terms": []}
+{"query": "退货运费谁掏", "expect_terms": ["运费"], "keep_terms": []}
+{"query": "我的耳机咋连手机", "expect_terms": ["配对"], "keep_terms": []}
+{"query": "ANC-04 能便宜点吗", "expect_terms": ["ANC-04"], "keep_terms": ["ANC-04"]}
+{"query": "ANC-06 续航多久", "expect_terms": ["ANC-06", "续航"], "keep_terms": ["ANC-06"]}
+{"query": "钱啥时候回来", "expect_terms": ["退款", "到账"], "keep_terms": []}
+{"query": "耳机保修多长时间", "expect_terms": ["保修"], "keep_terms": []}
+{"query": "发票咋开", "expect_terms": ["发票"], "keep_terms": []}
+{"query": "耳机降噪咋开", "expect_terms": ["降噪"], "keep_terms": []}
+{"query": "新疆买耳机退货运费多少", "expect_terms": ["新疆", "运费"], "keep_terms": ["新疆"]}
+{"query": "ANC-09 防水吗", "expect_terms": ["ANC-09"], "keep_terms": ["ANC-09"]}
+{"query": "换货要多久", "expect_terms": ["换货"], "keep_terms": []}
+{"query": "超过七天还能退吗", "expect_terms": ["退货"], "keep_terms": ["七天"]}
+{"query": "499 元那款续航多少", "expect_terms": ["续航"], "keep_terms": ["499"]}
+{"query": "耳机充电要多久", "expect_terms": ["充电"], "keep_terms": []}
+{"query": "偏远地区邮费", "expect_terms": ["运费"], "keep_terms": []}
