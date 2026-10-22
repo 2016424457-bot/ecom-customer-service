@@ -87,14 +87,9 @@ async def build_document(
     settings: Settings,
     content_type: str,
     reset: bool = False,
+    store: VectorStore | None = None,
 ) -> int:
     source_doc = path.name
-    if reset:
-        await reset_source(repository, source_doc, settings)
-
-    if await repository.count_chunks_by_source(source_doc) > 0:
-        return 0
-
     markdown = path.read_text(encoding="utf-8")
     chunks = build_chunks(
         markdown,
@@ -104,20 +99,24 @@ async def build_document(
         overlap=settings.chunk_overlap,
         table_max_rows=settings.table_max_rows,
     )
+
+    if reset:
+        await reset_source(repository, source_doc, settings, store=store)
+    elif await repository.count_chunks_by_source(source_doc) > 0:
+        return 0
+
     ids = await write_pending(repository, chunks)
     await repository.commit()
     return len(ids)
 
 
 async def build_faq(
-    repository: Any, settings: Settings, *, reset: bool = False
+    repository: Any,
+    settings: Settings,
+    *,
+    reset: bool = False,
+    store: VectorStore | None = None,
 ) -> int:
-    if reset:
-        await reset_source(repository, FAQ_SOURCE, settings)
-
-    if await repository.count_chunks_by_source(FAQ_SOURCE) > 0:
-        return 0
-
     rows = await repository.list_faq_rows()
     chunks = [
         Chunk(
@@ -131,6 +130,12 @@ async def build_faq(
         )
         for row in rows
     ]
+
+    if reset:
+        await reset_source(repository, FAQ_SOURCE, settings, store=store)
+    elif await repository.count_chunks_by_source(FAQ_SOURCE) > 0:
+        return 0
+
     ids = await write_pending(repository, chunks)
     await repository.commit()
     return len(ids)
@@ -210,7 +215,10 @@ async def reset_source(
     ids = await repository.delete_chunks_by_source(source_doc)
     if not ids:
         return 0
+    # Commit the MySQL delete first: if the process dies before the Milvus
+    # delete, the only damage is an orphan vector (ignored by retrieval),
+    # never a live `done` row whose vector is gone.
+    await repository.commit()
     vector_store = _resolve_store(store, settings)
     await acall(vector_store.delete, ids)
-    await repository.commit()
     return len(ids)

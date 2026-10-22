@@ -35,7 +35,14 @@ async def embed_texts(
         model=settings.embed_model,
         input=texts,
     )
-    return [item.embedding for item in response.data]
+    data = sorted(response.data, key=lambda item: item.index)
+    indices = [item.index for item in data]
+    if indices != list(range(len(data))):
+        raise RuntimeError(
+            "embedding response indices are incomplete or duplicated: "
+            f"{indices}"
+        )
+    return [item.embedding for item in data]
 
 
 async def embed_query(text: str, settings: Settings) -> list[float]:

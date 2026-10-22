@@ -9,6 +9,7 @@ from app.config import Settings
 T = TypeVar("T")
 
 _CLIENTS: dict[str, MilvusClient] = {}
+_ENSURED: set[tuple[int, str, int]] = set()
 
 
 def reset_client_cache() -> None:
@@ -17,6 +18,7 @@ def reset_client_cache() -> None:
         if close is not None:
             close()
     _CLIENTS.clear()
+    _ENSURED.clear()
 
 
 def get_client(settings: Settings) -> MilvusClient:
@@ -37,8 +39,12 @@ async def acall(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
 def ensure_collection(
     client: Any, collection: str, dim: int = 1024
 ) -> None:
+    cache_key = (id(client), collection, dim)
+    if cache_key in _ENSURED:
+        return
     if client.has_collection(collection):
         client.load_collection(collection)
+        _ENSURED.add(cache_key)
         return
 
     schema = client.create_schema(auto_id=False)
@@ -57,6 +63,7 @@ def ensure_collection(
         index_params=index_params,
     )
     client.load_collection(collection)
+    _ENSURED.add(cache_key)
 
 
 def upsert_vectors(

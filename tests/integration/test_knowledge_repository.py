@@ -70,13 +70,17 @@ async def test_pending_chunk_becomes_done(session):
 
 async def test_count_and_delete_chunks_by_source(session):
     repo = KnowledgeRepository(session)
-    first = await _insert_chunk(repo, source_doc="a.md")
-    second = await _insert_chunk(repo, source_doc="b.md")
+    first_source = f"a-{uuid.uuid4().hex[:8]}.md"
+    second_source = f"b-{uuid.uuid4().hex[:8]}.md"
+    first = await _insert_chunk(repo, source_doc=first_source)
+    second = await _insert_chunk(repo, source_doc=second_source)
 
-    assert await repo.count_chunks_by_source("a.md") == 1
-    assert set(await repo.delete_chunks_by_source("a.md")) == {first}
-    assert await repo.count_chunks_by_source("a.md") == 0
-    assert await repo.count_chunks_by_source("b.md") == 1
+    assert await repo.count_chunks_by_source(first_source) == 1
+    assert set(
+        await repo.delete_chunks_by_source(first_source)
+    ) == {first}
+    assert await repo.count_chunks_by_source(first_source) == 0
+    assert await repo.count_chunks_by_source(second_source) == 1
     assert await repo.get_chunks_by_ids([second])
 
 

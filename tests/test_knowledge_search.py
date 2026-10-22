@@ -30,7 +30,7 @@ class FakeSearcher:
         self.hits = hits
         self.calls: list[tuple[list[float], int]] = []
 
-    def search(self, vector, top_k):
+    async def search(self, vector, top_k):
         self.calls.append((vector, top_k))
         return self.hits
 
@@ -117,3 +117,49 @@ async def test_search_returns_empty_when_no_hits(settings):
     )
 
     assert hits == []
+
+
+def test_milvus_searcher_does_not_connect_in_constructor(
+    settings, monkeypatch
+):
+    from app.knowledge import search as search_module
+
+    def fail(*args, **kwargs):
+        raise AssertionError("get_client must not run in __init__")
+
+    monkeypatch.setattr(search_module, "get_client", fail)
+
+    search_module.MilvusSearcher(settings)
+
+
+async def test_search_filters_below_min_score(settings):
+    repository = FakeRepository(
+        [Row(1, "退货", "怎么退货？", "7 天内可退。")]
+    )
+    searcher = FakeSearcher([(1, 0.1)])
+
+    hits = await search_knowledge(
+        "怎么退货",
+        repository=repository,
+        settings=settings,
+        min_score=0.35,
+        searcher=searcher,
+        embedder=fake_embed,
+    )
+
+    assert hits == []
+
+
+async def test_search_propagates_searcher_errors(settings):
+    class FailingSearcher:
+        async def search(self, vector, top_k):
+            raise RuntimeError("milvus down")
+
+    with pytest.raises(RuntimeError, match="milvus down"):
+        await search_knowledge(
+            "怎么退货",
+            repository=FakeRepository([]),
+            settings=settings,
+            searcher=FailingSearcher(),
+            embedder=fake_embed,
+        )

@@ -387,6 +387,41 @@ async def test_client_disconnect_releases_lock(
     assert repo.role_contents() == [("user", "你好")]
 
 
+async def test_stream_chat_passes_faq_timeout_override(
+    settings: Settings,
+    prompt_builder: PromptBuilder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeRegistry:
+        def __init__(self, tools, **kwargs):
+            captured["timeout_overrides"] = kwargs.get(
+                "timeout_overrides"
+            )
+
+        async def execute(self, name, arguments):
+            raise AssertionError("no tool call expected")
+
+    monkeypatch.setattr(
+        "app.services.chat.ToolRegistry", FakeRegistry
+    )
+    model = FakeChatModel([[AIMessageChunk(content="你好")]])
+
+    await _collect(
+        model=model,
+        message="在吗",
+        repo=FakeRepository(),
+        builder=prompt_builder,
+        settings=settings,
+        locks=ConversationLocks(),
+    )
+
+    assert captured["timeout_overrides"] == {
+        "query_faq": settings.faq_tool_timeout_seconds
+    }
+
+
 async def test_query_faq_wraps_chat_repository_with_knowledge_repository(
     settings: Settings,
     prompt_builder: PromptBuilder,

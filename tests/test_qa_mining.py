@@ -289,3 +289,43 @@ async def test_mine_once_with_no_conversations_is_noop(
     assert stats.conversations == 0
     assert stats.kept == 0
     assert repository.cursor == 0
+
+
+async def test_finalize_staging_syncs_pending_without_extracted_rows(
+    repository, settings, monkeypatch
+):
+    calls: list[bool] = []
+
+    async def fake_vectorize(repo, settings, **kwargs):
+        calls.append(True)
+        return 4
+
+    monkeypatch.setattr(
+        "app.knowledge.mining.vectorize_pending", fake_vectorize
+    )
+
+    stats = await finalize_staging(repository, settings, sync=True)
+
+    assert stats.vectorized == 4
+    assert calls == [True]
+
+
+async def test_mine_once_retries_pending_without_new_conversations(
+    repository, settings, monkeypatch
+):
+    async def fake_vectorize(repo, settings, **kwargs):
+        return 4
+
+    monkeypatch.setattr(
+        "app.knowledge.mining.vectorize_pending", fake_vectorize
+    )
+
+    stats = await mine_once(
+        repository,
+        settings,
+        FakeModel(QaExtraction()),
+        "prompt",
+        sync=True,
+    )
+
+    assert stats.vectorized == 4

@@ -45,7 +45,7 @@
 
 | 检查项 | 结果 | 备注 |
 |--------|------|------|
-| 单元测试 `.venv/bin/pytest -m "not integration"` | **134 passed** | 2026-10-22 |
+| 单元测试 `.venv/bin/pytest -m "not integration"` | **147 passed** | 2026-10-22（code review 修复后） |
 | 集成测试 `.venv/bin/pytest -m integration` | **18 passed** | 含知识仓储、Milvus Lite、DeepSeek smoke |
 | 路由评估 `run_tool_routing_eval.py` | **6/6 PASS** | 真实 DeepSeek |
 | 挖矿评估 `run_qa_mining_eval.py` | **5/5 PASS** | 真实 DeepSeek |

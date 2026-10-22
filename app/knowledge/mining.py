@@ -59,7 +59,15 @@ async def finalize_staging(
         "extracted", batch_no=batch_no
     )
     if not rows:
-        return MiningStats()
+        stats = MiningStats()
+        if sync:
+            # A previous run may have left pending chunks (for example after
+            # an embedding failure); retry them even when nothing new was
+            # extracted.
+            stats.vectorized = await vectorize_pending(
+                repository, settings
+            )
+        return stats
 
     pairs = [
         QaPair(

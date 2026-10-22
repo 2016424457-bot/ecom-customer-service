@@ -6,6 +6,19 @@ from app.knowledge.types import QaPair
 
 logger = logging.getLogger(__name__)
 
+ALLOWED_CATEGORIES = frozenset(
+    {"退货", "换货", "发货", "运费", "发票", "售后", "商品", "其他"}
+)
+
+
+def _normalize_category(value: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        return "历史对话"
+    if value not in ALLOWED_CATEGORIES:
+        return "其他"
+    return value[:255]
+
 
 class QaExtraction(BaseModel):
     """Use parallel scalar arrays: nested object arrays break some upstreams."""
@@ -37,12 +50,14 @@ def parse_extraction(
         answer = answers[index].strip()
         if not question or not answer:
             continue
-        category = (
-            categories[index].strip()
-            if index < len(categories) and categories[index].strip()
-            else "历史对话"
+        raw_category = (
+            categories[index] if index < len(categories) else ""
         )
         pairs.append(
-            QaPair(question=question, answer=answer, category=category)
+            QaPair(
+                question=question,
+                answer=answer,
+                category=_normalize_category(raw_category),
+            )
         )
     return pairs

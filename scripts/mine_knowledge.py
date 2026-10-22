@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.config import Settings
 from app.db.repositories import KnowledgeRepository
 from app.db.session import create_engine_and_session
+from app.knowledge import milvus_client
 from app.knowledge.mining import mine_once
 from app.llm import build_mining_model
 
@@ -68,6 +69,9 @@ async def run_once(
             )
             return 0
     finally:
+        # Release the Milvus Lite file lock between loop iterations; the
+        # service may need it while this process sleeps.
+        milvus_client.reset_client_cache()
         await engine.dispose()
 
 

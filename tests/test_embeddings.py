@@ -82,3 +82,52 @@ async def test_embed_texts_requires_api_key(
 
     with pytest.raises(RuntimeError, match="EMBED_API_KEY"):
         await embeddings.embed_texts(["x"], settings)
+
+
+async def test_embed_texts_sorts_by_response_index(
+    settings: Settings,
+) -> None:
+    embeddings.reset_client_cache()
+
+    class ShuffledResource(FakeEmbeddingsResource):
+        async def create(self, *, model, input):
+            self.calls.append((model, input))
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(embedding=[1.0] * 1024, index=1),
+                    SimpleNamespace(embedding=[0.0] * 1024, index=0),
+                ]
+            )
+
+    fake = FakeClient()
+    fake.embeddings = ShuffledResource()
+    embeddings._CLIENTS[("https://embed.test/v1", "embed-key")] = fake
+
+    vectors = await embeddings.embed_texts(["第一段", "第二段"], settings)
+
+    assert vectors == [[0.0] * 1024, [1.0] * 1024]
+    embeddings.reset_client_cache()
+
+
+async def test_embed_texts_rejects_duplicate_indices(
+    settings: Settings,
+) -> None:
+    embeddings.reset_client_cache()
+
+    class DuplicateResource(FakeEmbeddingsResource):
+        async def create(self, *, model, input):
+            self.calls.append((model, input))
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(embedding=[0.0] * 1024, index=0),
+                    SimpleNamespace(embedding=[1.0] * 1024, index=0),
+                ]
+            )
+
+    fake = FakeClient()
+    fake.embeddings = DuplicateResource()
+    embeddings._CLIENTS[("https://embed.test/v1", "embed-key")] = fake
+
+    with pytest.raises(RuntimeError, match="indices"):
+        await embeddings.embed_texts(["a", "b"], settings)
+    embeddings.reset_client_cache()

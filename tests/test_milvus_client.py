@@ -1,4 +1,13 @@
+import pytest
+
 from app.knowledge import milvus_client
+
+
+@pytest.fixture(autouse=True)
+def clear_milvus_cache():
+    milvus_client.reset_client_cache()
+    yield
+    milvus_client.reset_client_cache()
 
 
 class FakeSchema:

@@ -305,3 +305,44 @@ async def test_build_faq_imports_real_questions(
     assert repository.rows[0].questions == "怎么申请换货？"
     assert repository.rows[0].category == "换货"
     assert repository.rows[0].source_doc == "faq"
+
+
+class DeleteFailingStore(FakeStore):
+    def delete(self, ids):
+        raise RuntimeError("milvus delete failed")
+
+
+async def test_reset_source_commits_delete_before_vector_delete(
+    repository, settings
+):
+    store = DeleteFailingStore()
+    await write_pending(
+        repository, [chunk("a", source_doc="docs.md")]
+    )
+    store.existing.update({1})
+
+    with pytest.raises(RuntimeError):
+        await reset_source(repository, "docs.md", settings, store=store)
+
+    assert repository.rows == []
+    assert repository.commits >= 1
+
+
+async def test_build_document_read_error_does_not_reset(
+    repository, store, settings, tmp_path
+):
+    repository.rows.append(
+        Row(1, "分类", "旧问题", "旧答案", "missing.md")
+    )
+
+    with pytest.raises(FileNotFoundError):
+        await build_document(
+            repository,
+            tmp_path / "missing.md",
+            settings=settings,
+            content_type="policy",
+            reset=True,
+            store=store,
+        )
+
+    assert len(repository.rows) == 1

@@ -68,3 +68,27 @@ def test_parse_extraction_accepts_dict_and_empty_arrays():
     assert parse_extraction(
         {"questions": ["q"], "answers": ["a"], "categories": ["商品"]}
     ) == [QaPair("q", "a", "商品")]
+
+
+def test_parse_extraction_maps_unknown_category_to_other():
+    pairs = parse_extraction(
+        QaExtraction(
+            questions=["q"],
+            answers=["a"],
+            categories=["退款"],
+        )
+    )
+
+    assert pairs[0].category == "其他"
+
+
+def test_parse_extraction_maps_overlong_category_to_other():
+    pairs = parse_extraction(
+        QaExtraction(
+            questions=["q"],
+            answers=["a"],
+            categories=["超长分类" * 100],
+        )
+    )
+
+    assert pairs[0].category == "其他"

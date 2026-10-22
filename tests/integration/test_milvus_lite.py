@@ -2,6 +2,25 @@ from app.config import Settings
 from app.knowledge import milvus_client
 
 
+def test_empty_collection_search_returns_empty(tmp_path, clean_unit_env):
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="test",
+        milvus_uri=str(tmp_path / "empty.db"),
+    )
+    milvus_client.reset_client_cache()
+    client = milvus_client.get_client(settings)
+    milvus_client.ensure_collection(client, "empty")
+
+    assert (
+        milvus_client.dense_search(
+            client, [0.0] * 1024, 3, "empty"
+        )
+        == []
+    )
+    milvus_client.reset_client_cache()
+
+
 def test_milvus_lite_round_trip(tmp_path, clean_unit_env):
     settings = Settings(
         _env_file=None,

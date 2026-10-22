@@ -1,13 +1,14 @@
 """End-to-end acceptance for CH03.
 
-Offline phases (resume / retrieve) must run while the chat service is
-stopped: Milvus Lite is a single-process file. The chat phase needs the
-service running.
+`resume` and `retrieve` must run while the chat service is stopped:
+Milvus Lite is a single-process file. `chat` needs the service running.
+Run the phases separately; there is no combined mode for that reason.
 """
 
 import argparse
 import asyncio
 import json
+import os
 import sys
 from functools import partial
 from pathlib import Path
@@ -31,15 +32,17 @@ from app.knowledge.search import search_knowledge
 from app.knowledge.sources import DOCS
 from app.tools.faq import build_faq_tool
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = os.environ.get(
+    "ECOM_BASE_URL", "http://127.0.0.1:8000"
+).rstrip("/")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--phase",
-        choices=["resume", "retrieve", "chat", "all"],
-        default="all",
+        choices=["resume", "retrieve", "chat"],
+        required=True,
     )
     return parser.parse_args()
 
@@ -195,27 +198,21 @@ async def main(args: argparse.Namespace) -> int:
         )
         return 2
 
-    phases = (
-        ["resume", "retrieve", "chat"]
-        if args.phase == "all"
-        else [args.phase]
-    )
-
+    phase = args.phase
     engine, session_factory = create_engine_and_session(settings)
     try:
         async with session_factory() as session:
             repository = KnowledgeRepository(session)
-            for phase in phases:
-                if phase == "resume":
-                    await phase_resume(settings, repository)
-                elif phase == "retrieve":
-                    await phase_retrieve(settings, repository)
-                elif phase == "chat":
-                    await phase_chat()
+            if phase == "resume":
+                await phase_resume(settings, repository)
+            elif phase == "retrieve":
+                await phase_retrieve(settings, repository)
+            elif phase == "chat":
+                await phase_chat()
     finally:
         await engine.dispose()
 
-    print("\nCH03 ACCEPTANCE PASS")
+    print(f"\nCH03 ACCEPTANCE PASS ({phase})")
     return 0
 
 

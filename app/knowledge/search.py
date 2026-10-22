@@ -12,7 +12,7 @@ from app.knowledge.types import KnowledgeHit
 
 
 class Searcher(Protocol):
-    def search(
+    async def search(
         self, vector: list[float], top_k: int
     ) -> list[tuple[int, float]]:
         ...
@@ -20,17 +20,27 @@ class Searcher(Protocol):
 
 class MilvusSearcher:
     def __init__(self, settings: Settings) -> None:
+        self.settings = settings
         self.collection = settings.milvus_collection
-        self.client = get_client(settings)
-        ensure_collection(
-            self.client, self.collection, dim=settings.embed_dim
+        self._client = None
+
+    async def _ensure(self) -> None:
+        if self._client is not None:
+            return
+        self._client = await acall(get_client, self.settings)
+        await acall(
+            ensure_collection,
+            self._client,
+            self.collection,
+            self.settings.embed_dim,
         )
 
-    def search(
+    async def search(
         self, vector: list[float], top_k: int
     ) -> list[tuple[int, float]]:
-        return dense_search(
-            self.client, vector, top_k, self.collection
+        await self._ensure()
+        return await acall(
+            dense_search, self._client, vector, top_k, self.collection
         )
 
 
@@ -48,12 +58,12 @@ async def search_knowledge(
     searcher: Searcher | None = None,
     embedder: Embedder = embed_query,
 ) -> list[KnowledgeHit]:
-    active_searcher = searcher or MilvusSearcher(settings)
+    active_searcher = (
+        searcher if searcher is not None else MilvusSearcher(settings)
+    )
     vector = await embedder(query, settings)
-    hits = await acall(
-        active_searcher.search,
-        vector,
-        top_k if top_k is not None else settings.faq_top_k,
+    hits = await active_searcher.search(
+        vector, top_k if top_k is not None else settings.faq_top_k
     )
     if not hits:
         return []
