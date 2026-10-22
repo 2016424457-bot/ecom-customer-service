@@ -13,6 +13,8 @@ def _get_client(settings: Settings) -> AsyncOpenAI:
         client = AsyncOpenAI(
             base_url=settings.embed_base_url,
             api_key=settings.embed_api_key,
+            timeout=settings.embed_timeout_seconds,
+            max_retries=settings.embed_max_retries,
         )
         _CLIENTS[key] = client
     return client

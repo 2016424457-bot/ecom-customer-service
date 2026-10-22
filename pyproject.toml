@@ -13,6 +13,8 @@ dependencies = [
   "asyncmy>=0.2",
   "pymilvus[milvus_lite]>=2.5,<3",
   "langchain-text-splitters>=1.0,<2",
+  "jieba>=0.42,<1",
+  "httpx>=0.28",
 ]
 
 [dependency-groups]

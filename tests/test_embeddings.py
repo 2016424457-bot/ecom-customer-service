@@ -131,3 +131,25 @@ async def test_embed_texts_rejects_duplicate_indices(
     with pytest.raises(RuntimeError, match="indices"):
         await embeddings.embed_texts(["a", "b"], settings)
     embeddings.reset_client_cache()
+
+
+def test_get_client_passes_timeout_and_retries(
+    monkeypatch: pytest.MonkeyPatch, clean_unit_env: pytest.MonkeyPatch
+) -> None:
+    captured = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(embeddings, "AsyncOpenAI", FakeOpenAI)
+    embeddings.reset_client_cache()
+    settings = Settings(
+        _env_file=None, openai_api_key="test", embed_api_key="k"
+    )
+
+    embeddings._get_client(settings)
+
+    assert captured["timeout"] == settings.embed_timeout_seconds
+    assert captured["max_retries"] == settings.embed_max_retries
+    embeddings.reset_client_cache()

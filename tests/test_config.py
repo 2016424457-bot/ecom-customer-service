@@ -112,7 +112,25 @@ def test_knowledge_settings_defaults(
     assert settings.table_max_rows == 12
     assert settings.faq_top_k == 5
     assert settings.faq_min_score == 0.35
-    assert settings.faq_tool_timeout_seconds == 15
+    assert settings.faq_tool_timeout_seconds == 30
     assert str(settings.knowledge_docs_dir) == "knowledge_docs"
     assert settings.mining_batch_conversations == 10
     assert settings.mining_max_messages == 60
+
+
+def test_ch04_settings_defaults(clean_unit_env: pytest.MonkeyPatch) -> None:
+    settings = Settings(_env_file=None, openai_api_key="test")
+
+    assert settings.milvus_analyzer_type == "jieba"
+    assert settings.retrieval_candidates == 50
+    assert settings.rag_top_k == 10
+    assert settings.rerank_model == "BAAI/bge-reranker-v2-m3"
+    assert settings.rerank_top_n == 10
+    assert settings.rerank_min_score == 0.0
+    assert settings.query_rewrite_enabled is True
+    assert settings.query_rewrite_timeout_seconds == 8
+    assert settings.evidence_check_temperature == 0.0
+    assert settings.faq_tool_timeout_seconds == 30
+    assert settings.embed_timeout_seconds == 10
+    assert settings.embed_max_retries == 1
+    assert settings.refusal_message.startswith("抱歉，知识库中没有找到")

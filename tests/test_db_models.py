@@ -10,6 +10,8 @@ def test_table_and_column_names_match_schema():
         "knowledge_chunks",
         "qa_extraction_staging",
         "knowledge_mining_state",
+        "low_confidence_questions",
+        "faith_cases",
     }
     assert [c.name for c in Base.metadata.tables["conversations"].columns] == [
         "id",
@@ -75,3 +77,38 @@ def test_table_and_column_names_match_schema():
     assert [
         c.name for c in Base.metadata.tables["knowledge_mining_state"].columns
     ] == ["id", "last_message_id", "updated_at"]
+
+
+def test_ch04_tables_and_columns():
+    assert "low_confidence_questions" in Base.metadata.tables
+    assert [
+        c.name
+        for c in Base.metadata.tables["low_confidence_questions"].columns
+    ] == [
+        "id",
+        "conversation_id",
+        "raw_question",
+        "source",
+        "reason",
+        "created_at",
+    ]
+    assert "faith_cases" in Base.metadata.tables
+    assert [
+        c.name for c in Base.metadata.tables["faith_cases"].columns
+    ] == [
+        "id",
+        "eval_id",
+        "bucket",
+        "query",
+        "strategy",
+        "answer",
+        "reason",
+        "citations",
+        "judge_model",
+        "status",
+        "seen_count",
+        "first_seen_at",
+        "last_seen_at",
+        "resolution",
+        "resolved_at",
+    ]

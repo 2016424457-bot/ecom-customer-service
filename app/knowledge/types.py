@@ -21,6 +21,7 @@ class KnowledgeHit:
     score: float
     section_path: str | None
     content_type: str | None
+    source_doc: str | None = None
 
 
 @dataclass(frozen=True)

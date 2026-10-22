@@ -48,17 +48,58 @@ class Settings(BaseSettings):
     embed_api_key: str = ""
     embed_model: str = "BAAI/bge-m3"
     embed_dim: int = Field(default=1024, gt=0)
+    embed_timeout_seconds: float = Field(default=10, gt=0)
+    embed_max_retries: int = Field(default=1, ge=0)
 
     milvus_uri: str = "./data/milvus_knowledge.db"
     milvus_collection: str = "knowledge"
+    milvus_analyzer_type: str = "jieba"
 
     chunk_size: int = Field(default=700, gt=0)
     chunk_overlap: int = Field(default=120, ge=0)
     table_max_rows: int = Field(default=12, gt=0)
     faq_top_k: int = Field(default=5, gt=0)
     faq_min_score: float = 0.35
-    faq_tool_timeout_seconds: float = Field(default=15, gt=0)
+    faq_tool_timeout_seconds: float = Field(default=30, gt=0)
     knowledge_docs_dir: Path = Path("knowledge_docs")
+
+    retrieval_candidates: int = Field(default=50, gt=0)
+    rag_top_k: int = Field(default=10, gt=0)
+
+    query_rewrite_enabled: bool = True
+    query_rewrite_prompt_path: Path = Path(
+        "app/prompts/query_rewrite_prompt.txt"
+    )
+    query_rewrite_temperature: float = 0.0
+    query_rewrite_max_tokens: int = 256
+    query_rewrite_timeout_seconds: float = Field(default=8, gt=0)
+    query_rewrite_max_retries: int = Field(default=0, ge=0)
+
+    rerank_enabled: bool = True
+    rerank_base_url: str = ""
+    rerank_api_key: str = ""
+    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_top_n: int = Field(default=10, gt=0)
+    rerank_min_score: float = 0.0
+    rerank_timeout_seconds: float = Field(default=10, gt=0)
+    rerank_max_retries: int = Field(default=0, ge=0)
+
+    evidence_check_prompt_path: Path = Path(
+        "app/prompts/evidence_check_prompt.txt"
+    )
+    evidence_check_temperature: float = 0.0
+    evidence_check_max_tokens: int = 256
+    refusal_message: str = (
+        "抱歉，知识库中没有找到能回答这个问题的依据，我不能凭空回答。"
+        "建议您转人工客服进一步确认。"
+    )
+
+    judge_model: str = ""
+    faithfulness_prompt_path: Path = Path(
+        "app/prompts/faithfulness_judge_prompt.txt"
+    )
+    judge_temperature: float = 0.0
+    judge_max_tokens: int = 1024
 
     mining_batch_conversations: int = Field(default=10, gt=0)
     mining_max_messages: int = Field(default=60, gt=0)
