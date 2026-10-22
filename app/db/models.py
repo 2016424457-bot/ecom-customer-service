@@ -2,6 +2,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     Enum,
     ForeignKey,
@@ -109,4 +110,94 @@ class Ticket(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class KnowledgeChunk(Base):
+    __tablename__ = "knowledge_chunks"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    category: Mapped[str] = mapped_column(String(255), nullable=False)
+    questions: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    section_path: Mapped[str | None] = mapped_column(
+        String(512), nullable=True
+    )
+    content_type: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    is_key_clause: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="0"
+    )
+    prev_chunk_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("knowledge_chunks.id"),
+        nullable=True,
+    )
+    next_chunk_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("knowledge_chunks.id"),
+        nullable=True,
+    )
+    vector_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    vectorize_status: Mapped[str] = mapped_column(
+        Enum("pending", "done", name="vectorize_status"),
+        nullable=False,
+        server_default="pending",
+    )
+    source_doc: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default=""
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class QaExtractionStaging(Base):
+    __tablename__ = "qa_extraction_staging"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    batch_no: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_ref: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    category: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        Enum("extracted", "kept", "discarded", name="staging_status"),
+        nullable=False,
+        server_default="extracted",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class KnowledgeMiningState(Base):
+    __tablename__ = "knowledge_mining_state"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=False
+    )
+    last_message_id: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, server_default="0"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )

@@ -11,6 +11,8 @@ dependencies = [
   "openai>=1.0",
   "sqlalchemy[asyncio]>=2.0,<2.1",
   "asyncmy>=0.2",
+  "pymilvus>=2.5,<3",
+  "langchain-text-splitters>=1.0,<2",
 ]
 
 [dependency-groups]

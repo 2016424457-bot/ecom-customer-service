@@ -44,6 +44,28 @@ class Settings(BaseSettings):
     tool_timeout_seconds: float = Field(default=5, gt=0)
     tool_max_retries: int = Field(default=2, ge=0)
 
+    embed_base_url: str = "https://api.siliconflow.cn/v1"
+    embed_api_key: str = ""
+    embed_model: str = "BAAI/bge-m3"
+    embed_dim: int = Field(default=1024, gt=0)
+
+    milvus_uri: str = "./data/milvus_knowledge.db"
+    milvus_collection: str = "knowledge"
+
+    chunk_size: int = Field(default=700, gt=0)
+    chunk_overlap: int = Field(default=120, ge=0)
+    table_max_rows: int = Field(default=12, gt=0)
+    faq_top_k: int = Field(default=5, gt=0)
+    faq_min_score: float = 0.35
+    faq_tool_timeout_seconds: float = Field(default=15, gt=0)
+    knowledge_docs_dir: Path = Path("knowledge_docs")
+
+    mining_batch_conversations: int = Field(default=10, gt=0)
+    mining_max_messages: int = Field(default=60, gt=0)
+    mining_temperature: float = 0.0
+    mining_max_tokens: int = 1024
+    mining_prompt_path: Path = Path("app/prompts/qa_mining_prompt.txt")
+
     system_prompt_path: Path = Path("app/prompts/system_prompt.txt")
     extract_prompt_path: Path = Path("app/prompts/extract_prompt.txt")
 

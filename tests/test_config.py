@@ -96,3 +96,23 @@ def test_ch02_env_overrides(
     assert settings.database_url == "mysql+asyncmy://u:p@db:3306/x"
     assert settings.tool_timeout_seconds == 1.5
     assert settings.tool_max_retries == 0
+
+
+def test_knowledge_settings_defaults(
+    clean_unit_env: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(_env_file=None, openai_api_key="test")
+
+    assert settings.embed_model == "BAAI/bge-m3"
+    assert settings.embed_dim == 1024
+    assert settings.milvus_uri == "./data/milvus_knowledge.db"
+    assert settings.milvus_collection == "knowledge"
+    assert settings.chunk_size == 700
+    assert settings.chunk_overlap == 120
+    assert settings.table_max_rows == 12
+    assert settings.faq_top_k == 5
+    assert settings.faq_min_score == 0.35
+    assert settings.faq_tool_timeout_seconds == 15
+    assert str(settings.knowledge_docs_dir) == "knowledge_docs"
+    assert settings.mining_batch_conversations == 10
+    assert settings.mining_max_messages == 60

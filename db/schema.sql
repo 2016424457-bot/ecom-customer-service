@@ -55,3 +55,52 @@ CREATE TABLE tickets (
   KEY idx_conversation_id (conversation_id),
   CONSTRAINT fk_tickets_conversation FOREIGN KEY (conversation_id) REFERENCES conversations (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='人工工单';
+
+-- =============================================================
+-- CH03:知识库原文权威源、挖矿暂存、挖矿游标
+-- 与 sql/ch03-ddl.sql 保持一致;向量落 Milvus,不在 MySQL
+-- =============================================================
+
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+  id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT 'chunk 主键,与 Milvus 集合主键对齐',
+  category         VARCHAR(255)    NOT NULL                COMMENT '分类 / 上级标题路径,进向量化文本',
+  questions        TEXT            NOT NULL                COMMENT '问法或本节标题,多个问法换行分隔,进向量化文本',
+  answer           TEXT            NOT NULL                COMMENT '正文答案,进向量化文本',
+  section_path     VARCHAR(512)    NULL                    COMMENT '章节路径,元数据,溯源用,不进向量',
+  content_type     VARCHAR(32)     NULL                    COMMENT '内容类型:faq / policy / manual / spec / qa 等,元数据',
+  is_key_clause    TINYINT(1)      NOT NULL DEFAULT 0      COMMENT '是否关键条款,0 否 1 是,元数据',
+  prev_chunk_id    BIGINT UNSIGNED NULL                    COMMENT '前一块指针,元数据',
+  next_chunk_id    BIGINT UNSIGNED NULL                    COMMENT '后一块指针,元数据',
+  vector_id        VARCHAR(64)     NULL                    COMMENT 'Milvus 集合 knowledge 里的主键,写入后回填',
+  vectorize_status ENUM('pending','done') NOT NULL DEFAULT 'pending' COMMENT '待向量化 / 已向量化,双写幂等靠它',
+  source_doc       VARCHAR(255)    NOT NULL DEFAULT ''     COMMENT '来源:知识文档文件名 / faq / conversation:<id>',
+  created_at       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_at       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (id),
+  KEY idx_category (category),
+  KEY idx_vectorize_status (vectorize_status),
+  KEY idx_source_doc (source_doc),
+  CONSTRAINT fk_chunks_prev FOREIGN KEY (prev_chunk_id) REFERENCES knowledge_chunks (id) ON DELETE SET NULL,
+  CONSTRAINT fk_chunks_next FOREIGN KEY (next_chunk_id) REFERENCES knowledge_chunks (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='知识库 chunk 原文权威源';
+
+CREATE TABLE IF NOT EXISTS qa_extraction_staging (
+  id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '暂存行主键',
+  batch_no         VARCHAR(64)     NOT NULL                COMMENT '抽取批次号',
+  source_ref       VARCHAR(255)    NULL                    COMMENT '来源会话 / 导出文件标识',
+  category         VARCHAR(255)    NULL                    COMMENT 'LLM 抽出的分类',
+  question         TEXT            NOT NULL                COMMENT 'LLM 抽出的用户问法',
+  answer           TEXT            NOT NULL                COMMENT 'LLM 抽出的客服答案',
+  status           ENUM('extracted','kept','discarded') NOT NULL DEFAULT 'extracted' COMMENT '已抽出 / 去重保留 / 去重丢弃',
+  created_at       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '抽取写入时间',
+  PRIMARY KEY (id),
+  KEY idx_batch_no (batch_no),
+  KEY idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='历史对话抽 QA 的离线中转暂存表';
+
+CREATE TABLE IF NOT EXISTS knowledge_mining_state (
+  id              TINYINT UNSIGNED NOT NULL DEFAULT 1 COMMENT '单行游标',
+  last_message_id BIGINT UNSIGNED  NOT NULL DEFAULT 0 COMMENT '已成功挖过的最大 messages.id',
+  updated_at      DATETIME         NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='对话挖知识的单行游标';
