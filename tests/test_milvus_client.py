@@ -13,9 +13,19 @@ def clear_milvus_cache():
 class FakeSchema:
     def __init__(self) -> None:
         self.fields: list[tuple[str, object, dict]] = []
+        self.functions: list[dict] = []
 
     def add_field(self, name, dtype, **kwargs) -> None:
         self.fields.append((name, dtype, kwargs))
+
+    def add_function(self, function) -> None:
+        self.functions.append(
+            {
+                "name": function.name,
+                "input_field_names": function.input_field_names,
+                "output_field_names": function.output_field_names,
+            }
+        )
 
 
 class FakeIndexParams:
@@ -29,6 +39,7 @@ class FakeIndexParams:
 class FakeClient:
     def __init__(self) -> None:
         self.collections: set[str] = set()
+        self.descriptions: dict[str, list[dict]] = {}
         self.schema = FakeSchema()
         self.index_params = FakeIndexParams()
         self.auto_id: bool | None = None
@@ -38,6 +49,7 @@ class FakeClient:
         self.search_kwargs: dict | None = None
         self.search_results: list[dict] = []
         self.deleted: tuple | None = None
+        self.dropped: list[str] = []
 
     def has_collection(self, name: str) -> bool:
         return name in self.collections
@@ -54,6 +66,13 @@ class FakeClient:
     ) -> None:
         self.created = (collection_name, schema, index_params)
         self.collections.add(collection_name)
+
+    def describe_collection(self, name: str) -> dict:
+        return {"fields": self.descriptions.get(name, [])}
+
+    def drop_collection(self, name: str) -> None:
+        self.dropped.append(name)
+        self.collections.discard(name)
 
     def load_collection(self, name: str) -> None:
         self.loaded = name
@@ -73,21 +92,41 @@ class FakeClient:
         return [{"id": value} for value in ids]
 
 
-def test_ensure_collection_creates_int64_id_and_dense_vector():
+def test_ensure_collection_creates_bm25_schema():
     client = FakeClient()
 
-    milvus_client.ensure_collection(client, "knowledge", dim=1024)
+    milvus_client.ensure_collection(
+        client, "knowledge", dim=1024, analyzer_type="jieba"
+    )
 
+    fields = {field[0]: field for field in client.schema.fields}
+    assert list(fields) == [
+        "id",
+        "text",
+        "sparse",
+        "dense",
+        "category",
+        "content_type",
+        "section_path",
+        "source_doc",
+    ]
     assert client.auto_id is False
-    assert [field[0] for field in client.schema.fields] == ["id", "dense"]
-    assert client.schema.fields[0][2]["is_primary"] is True
-    assert client.schema.fields[1][2]["dim"] == 1024
+    assert fields["text"][2]["enable_analyzer"] is True
+    assert fields["text"][2]["analyzer_params"] == {"type": "jieba"}
+    assert client.schema.functions[0]["name"] == "text_bm25"
+    assert client.schema.functions[0]["input_field_names"] == ["text"]
+    assert client.schema.functions[0]["output_field_names"] == ["sparse"]
     assert client.index_params.indexes == [
         {
             "field_name": "dense",
             "index_type": "AUTOINDEX",
             "metric_type": "COSINE",
-        }
+        },
+        {
+            "field_name": "sparse",
+            "index_type": "SPARSE_INVERTED_INDEX",
+            "metric_type": "BM25",
+        },
     ]
     assert client.created[0] == "knowledge"
     assert client.loaded == "knowledge"
@@ -96,6 +135,19 @@ def test_ensure_collection_creates_int64_id_and_dense_vector():
 def test_ensure_collection_is_idempotent():
     client = FakeClient()
     client.collections.add("knowledge")
+    client.descriptions["knowledge"] = [
+        {"name": name}
+        for name in (
+            "id",
+            "text",
+            "sparse",
+            "dense",
+            "category",
+            "content_type",
+            "section_path",
+            "source_doc",
+        )
+    ]
 
     milvus_client.ensure_collection(client, "knowledge")
 
@@ -103,18 +155,51 @@ def test_ensure_collection_is_idempotent():
     assert client.loaded == "knowledge"
 
 
-def test_upsert_vectors_maps_ids_and_dense_field():
+def test_ensure_collection_rejects_old_schema():
     client = FakeClient()
+    client.collections.add("knowledge")
+    client.descriptions["knowledge"] = [{"name": "id"}, {"name": "dense"}]
 
-    milvus_client.upsert_vectors(
-        client, [1, 2], [[0.1, 0.2], [0.3, 0.4]], "knowledge"
+    with pytest.raises(RuntimeError, match="--recreate"):
+        milvus_client.ensure_collection(client, "knowledge")
+
+
+def test_recreate_collection_drops_and_creates():
+    client = FakeClient()
+    client.collections.add("knowledge")
+
+    milvus_client.recreate_collection(client, "knowledge")
+
+    assert client.dropped == ["knowledge"]
+    assert client.created[0] == "knowledge"
+
+
+def test_upsert_vectors_maps_text_and_metadata():
+    client = FakeClient()
+    record = milvus_client.VectorRecord(
+        id=1,
+        text="分类\n问题\n答案",
+        vector=[0.1, 0.2],
+        category="分类",
+        content_type="policy",
+        section_path="分类 / 问题",
+        source_doc="docs.md",
     )
+
+    milvus_client.upsert_vectors(client, [record], "knowledge")
 
     assert client.upserted == (
         "knowledge",
         [
-            {"id": 1, "dense": [0.1, 0.2]},
-            {"id": 2, "dense": [0.3, 0.4]},
+            {
+                "id": 1,
+                "text": "分类\n问题\n答案",
+                "dense": [0.1, 0.2],
+                "category": "分类",
+                "content_type": "policy",
+                "section_path": "分类 / 问题",
+                "source_doc": "docs.md",
+            }
         ],
     )
 

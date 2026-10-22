@@ -13,7 +13,7 @@ from app.knowledge.milvus_client import (
     upsert_vectors,
 )
 from app.knowledge.sources import FAQ_SOURCE
-from app.knowledge.types import Chunk
+from app.knowledge.types import Chunk, VectorRecord
 
 Embedder = Callable[
     [list[str], Settings], Awaitable[list[list[float]]]
@@ -21,7 +21,7 @@ Embedder = Callable[
 
 
 class VectorStore(Protocol):
-    def upsert(self, ids: list[int], vectors: list[list[float]]) -> None:
+    def upsert(self, records: list[VectorRecord]) -> None:
         ...
 
     def delete(self, ids: list[int]) -> int:
@@ -36,11 +36,14 @@ class MilvusStore:
         self.collection = settings.milvus_collection
         self.client = get_client(settings)
         ensure_collection(
-            self.client, self.collection, dim=settings.embed_dim
+            self.client,
+            self.collection,
+            dim=settings.embed_dim,
+            analyzer_type=settings.milvus_analyzer_type,
         )
 
-    def upsert(self, ids: list[int], vectors: list[list[float]]) -> None:
-        upsert_vectors(self.client, ids, vectors, self.collection)
+    def upsert(self, records: list[VectorRecord]) -> None:
+        upsert_vectors(self.client, records, self.collection)
 
     def delete(self, ids: list[int]) -> int:
         return delete_vectors(self.client, ids, self.collection)
@@ -175,9 +178,21 @@ async def vectorize_pending(
                     f"embedding dim {len(vector)} != {settings.embed_dim}"
                 )
 
-        await acall(
-            vector_store.upsert, [row.id for row in batch], vectors
-        )
+        records = [
+            VectorRecord(
+                id=row.id,
+                text=text,
+                vector=vector,
+                category=row.category,
+                content_type=row.content_type,
+                section_path=row.section_path,
+                source_doc=row.source_doc,
+            )
+            for row, text, vector in zip(
+                batch, texts, vectors, strict=True
+            )
+        ]
+        await acall(vector_store.upsert, records)
         for row in batch:
             await repository.mark_chunk_vectorized(row.id, str(row.id))
         await repository.commit()

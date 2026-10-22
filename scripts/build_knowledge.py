@@ -16,6 +16,7 @@ from app.knowledge.build import (
     vectorize_pending,
     verify_vectors,
 )
+from app.knowledge.milvus_client import get_client, recreate_collection
 from app.knowledge.sources import DOCS
 
 
@@ -30,6 +31,11 @@ def parse_args() -> argparse.Namespace:
         "--reset",
         action="store_true",
         help="先删除对应来源的 MySQL 行与 Milvus 向量再重建",
+    )
+    parser.add_argument(
+        "--recreate",
+        action="store_true",
+        help="删除并重建 Milvus 集合(schema 升级后必须跑一次)",
     )
     parser.add_argument(
         "--no-faq", action="store_true", help="跳过 faq 表导入"
@@ -71,6 +77,14 @@ async def run(args: argparse.Namespace) -> int:
                 args.docs_dir or settings.knowledge_docs_dir
             )
             written = 0
+
+            if args.recreate:
+                recreate_collection(
+                    get_client(settings),
+                    settings.milvus_collection,
+                    dim=settings.embed_dim,
+                    analyzer_type=settings.milvus_analyzer_type,
+                )
 
             for filename, content_type in DOCS.items():
                 path = docs_dir / filename

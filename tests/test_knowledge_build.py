@@ -22,6 +22,8 @@ class Row:
     questions: str
     answer: str
     source_doc: str
+    content_type: str | None = None
+    section_path: str | None = None
     vectorize_status: str = "pending"
     vector_id: str | None = None
 
@@ -53,7 +55,15 @@ class FakeKnowledgeRepository:
         is_key_clause,
         source_doc,
     ) -> int:
-        row = Row(self._next_id, category, questions, answer, source_doc)
+        row = Row(
+            self._next_id,
+            category,
+            questions,
+            answer,
+            source_doc,
+            content_type,
+            section_path,
+        )
         self._next_id += 1
         self.rows.append(row)
         return row.id
@@ -99,16 +109,16 @@ class FakeKnowledgeRepository:
 
 class FakeStore:
     def __init__(self) -> None:
-        self.upserted: list[tuple[list[int], list[list[float]]]] = []
+        self.upserted: list[list] = []
         self.deleted: list[list[int]] = []
         self.existing: set[int] = set()
         self.fail_upsert = False
 
-    def upsert(self, ids, vectors):
+    def upsert(self, records):
         if self.fail_upsert:
             raise RuntimeError("upsert failed")
-        self.upserted.append((list(ids), list(vectors)))
-        self.existing.update(ids)
+        self.upserted.append(list(records))
+        self.existing.update(record.id for record in records)
 
     def delete(self, ids):
         self.deleted.append(list(ids))
@@ -193,8 +203,8 @@ async def test_vectorize_rerun_only_processes_pending(
         repository, settings, store=store, embedder=fake_embed
     )
 
-    assert store.upserted[0][0] == [1]
-    assert store.upserted[1][0] == [2]
+    assert [record.id for record in store.upserted[0]] == [1]
+    assert [record.id for record in store.upserted[1]] == [2]
     assert [row.vectorize_status for row in repository.rows] == [
         "done",
         "done",
@@ -213,7 +223,8 @@ async def test_upsert_then_mark_failure_rerun_marks_done(
         )
 
     assert repository.rows[0].vectorize_status == "pending"
-    assert store.upserted == [([1], [[0.5] * 1024])]
+    assert [record.id for record in store.upserted[0]] == [1]
+    assert store.upserted[0][0].vector == [0.5] * 1024
 
     await vectorize_pending(
         repository, settings, store=store, embedder=fake_embed
@@ -221,7 +232,26 @@ async def test_upsert_then_mark_failure_rerun_marks_done(
 
     assert repository.rows[0].vectorize_status == "done"
     assert repository.rows[0].vector_id == "1"
-    assert [item[0] for item in store.upserted] == [[1], [1]]
+    assert [
+        [record.id for record in batch] for batch in store.upserted
+    ] == [[1], [1]]
+
+
+async def test_vectorize_pending_passes_text_and_metadata(
+    repository, store, settings
+):
+    await write_pending(repository, [chunk("a")])
+
+    await vectorize_pending(
+        repository, settings, store=store, embedder=fake_embed
+    )
+
+    record = store.upserted[0][0]
+    assert record.text == "分类\n问题\na"
+    assert record.category == "分类"
+    assert record.section_path == "分类 / 问题"
+    assert record.content_type == "policy"
+    assert record.source_doc == "docs.md"
 
 
 async def test_build_document_skips_existing_source(

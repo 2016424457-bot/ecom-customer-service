@@ -13,6 +13,17 @@ class Chunk:
 
 
 @dataclass(frozen=True)
+class VectorRecord:
+    id: int
+    text: str
+    vector: list[float]
+    category: str
+    content_type: str | None
+    section_path: str | None
+    source_doc: str
+
+
+@dataclass(frozen=True)
 class KnowledgeHit:
     id: int
     category: str

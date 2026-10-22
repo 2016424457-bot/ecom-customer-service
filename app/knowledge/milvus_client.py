@@ -2,14 +2,28 @@ import asyncio
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from pymilvus import DataType, MilvusClient
+from pymilvus import DataType, Function, FunctionType, MilvusClient
 
 from app.config import Settings
+from app.knowledge.types import VectorRecord
 
 T = TypeVar("T")
 
 _CLIENTS: dict[str, MilvusClient] = {}
-_ENSURED: set[tuple[int, str, int]] = set()
+_ENSURED: set[tuple] = set()
+
+REQUIRED_FIELDS = frozenset(
+    {
+        "id",
+        "text",
+        "sparse",
+        "dense",
+        "category",
+        "content_type",
+        "section_path",
+        "source_doc",
+    }
+)
 
 
 def reset_client_cache() -> None:
@@ -37,25 +51,64 @@ async def acall(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
 
 
 def ensure_collection(
-    client: Any, collection: str, dim: int = 1024
+    client: Any,
+    collection: str,
+    dim: int = 1024,
+    analyzer_type: str = "jieba",
+    max_length: int = 4096,
 ) -> None:
-    cache_key = (id(client), collection, dim)
+    cache_key = (id(client), collection, dim, analyzer_type)
     if cache_key in _ENSURED:
         return
     if client.has_collection(collection):
+        description = client.describe_collection(collection)
+        fields = {
+            field["name"] for field in description.get("fields", [])
+        }
+        missing = REQUIRED_FIELDS - fields
+        if missing:
+            raise RuntimeError(
+                "Milvus collection schema is outdated; run "
+                "build_knowledge.py --recreate"
+            )
         client.load_collection(collection)
         _ENSURED.add(cache_key)
         return
 
     schema = client.create_schema(auto_id=False)
     schema.add_field("id", DataType.INT64, is_primary=True)
+    schema.add_field(
+        "text",
+        DataType.VARCHAR,
+        max_length=max_length,
+        enable_analyzer=True,
+        analyzer_params={"type": analyzer_type},
+    )
+    schema.add_field("sparse", DataType.SPARSE_FLOAT_VECTOR)
     schema.add_field("dense", DataType.FLOAT_VECTOR, dim=dim)
+    schema.add_field("category", DataType.VARCHAR, max_length=255)
+    schema.add_field("content_type", DataType.VARCHAR, max_length=32)
+    schema.add_field("section_path", DataType.VARCHAR, max_length=512)
+    schema.add_field("source_doc", DataType.VARCHAR, max_length=255)
+    schema.add_function(
+        Function(
+            name="text_bm25",
+            input_field_names=["text"],
+            output_field_names=["sparse"],
+            function_type=FunctionType.BM25,
+        )
+    )
 
     index_params = client.prepare_index_params()
     index_params.add_index(
         field_name="dense",
         index_type="AUTOINDEX",
         metric_type="COSINE",
+    )
+    index_params.add_index(
+        field_name="sparse",
+        index_type="SPARSE_INVERTED_INDEX",
+        metric_type="BM25",
     )
     client.create_collection(
         collection_name=collection,
@@ -66,19 +119,45 @@ def ensure_collection(
     _ENSURED.add(cache_key)
 
 
+def recreate_collection(
+    client: Any,
+    collection: str,
+    dim: int = 1024,
+    analyzer_type: str = "jieba",
+    max_length: int = 4096,
+) -> None:
+    if client.has_collection(collection):
+        client.drop_collection(collection)
+    _ENSURED.discard((id(client), collection, dim, analyzer_type))
+    ensure_collection(
+        client,
+        collection,
+        dim=dim,
+        analyzer_type=analyzer_type,
+        max_length=max_length,
+    )
+
+
 def upsert_vectors(
     client: Any,
-    ids: list[int],
-    vectors: list[list[float]],
+    records: list[VectorRecord],
     collection: str,
 ) -> None:
-    if not ids:
+    if not records:
         return
     client.upsert(
         collection_name=collection,
         data=[
-            {"id": int(chunk_id), "dense": list(vector)}
-            for chunk_id, vector in zip(ids, vectors, strict=True)
+            {
+                "id": int(record.id),
+                "text": record.text,
+                "dense": list(record.vector),
+                "category": record.category,
+                "content_type": record.content_type,
+                "section_path": record.section_path,
+                "source_doc": record.source_doc,
+            }
+            for record in records
         ],
     )
 
@@ -93,6 +172,7 @@ def dense_search(
         collection_name=collection,
         data=[list(vector)],
         limit=top_k,
+        anns_field="dense",
         output_fields=["id"],
         search_params={"metric_type": "COSINE"},
     )
