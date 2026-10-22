@@ -1,0 +1,5 @@
+{"transcript": "用户: 我买的耳机不合适，能退吗？\n客服: 签收后 7 天内，商品完好、附件齐全，可以申请无理由退货；定制商品和已拆封的贴身用品除外。", "expect_questions_any": ["退"], "expect_answer_any": ["7 天", "7天", "无理由"], "note": "退货政策"}
+{"transcript": "用户: 退货运费谁出？\n客服: 质量问题由我们承担，七天无理由退货由买家承担；如果是我们发错货，运费也由我们承担。", "expect_questions_any": ["运费"], "expect_answer_any": ["买家", "商家", "我们"], "note": "运费责任"}
+{"transcript": "用户: 能开发票吗？\n客服: 支持电子普通发票，下单备注抬头和税号，发货后在订单详情页下载。", "expect_questions_any": ["发票"], "expect_answer_any": ["税号", "电子发票", "订单详情"], "note": "发票"}
+{"transcript": "用户: 耳机怎么配对？\n客服: 打开盒盖，长按充电盒按键 3 秒，灯快闪后在手机蓝牙里选「示例商城 ANC 耳机」。", "expect_questions_any": ["配对"], "expect_answer_any": ["3 秒", "蓝牙"], "note": "商品使用"}
+{"transcript": "用户: 我的订单什么时候到？\n客服: 我帮您查一下，请稍等。", "expect_empty": true, "note": "未解决的对话不应抽取"}
