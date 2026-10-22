@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import (
     Conversation,
     Faq,
+    FaithCase,
     KnowledgeChunk,
     KnowledgeMiningState,
     LowConfidenceQuestion,
@@ -396,6 +397,122 @@ class KnowledgeRepository:
         )
         rows.reverse()
         return rows
+
+    async def get_chunk_by_id(
+        self, chunk_id: int
+    ) -> KnowledgeChunk | None:
+        return await self.session.get(KnowledgeChunk, chunk_id)
+
+    async def commit(self) -> None:
+        await self.session.commit()
+
+
+class FaithCaseRepository:
+    """Persistence boundary for the faithfulness forensics ledger."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert_case(
+        self,
+        *,
+        eval_id: str,
+        bucket: str,
+        query: str,
+        strategy: str,
+        answer: str,
+        reason: str,
+        citations: list[dict] | None,
+        judge_model: str | None,
+    ) -> FaithCase:
+        existing = await self.session.scalar(
+            select(FaithCase).where(FaithCase.eval_id == eval_id)
+        )
+        now = datetime.now()
+        if existing is None:
+            case = FaithCase(
+                eval_id=eval_id,
+                bucket=bucket,
+                query=query,
+                strategy=strategy,
+                answer=answer,
+                reason=reason,
+                citations=citations,
+                judge_model=judge_model,
+                status="未解决",
+                seen_count=1,
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+            self.session.add(case)
+            await self.session.flush()
+            return case
+
+        existing.bucket = bucket
+        existing.query = query
+        existing.strategy = strategy
+        existing.answer = answer
+        existing.reason = reason
+        existing.citations = citations
+        existing.judge_model = judge_model
+        existing.seen_count += 1
+        existing.last_seen_at = now
+        if existing.status != "未解决":
+            existing.status = "未解决"
+            existing.resolution = None
+        await self.session.flush()
+        return existing
+
+    async def list_cases(
+        self,
+        status: str | None = None,
+        bucket: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[FaithCase], int]:
+        stmt = select(FaithCase)
+        count_stmt = select(func.count()).select_from(FaithCase)
+        if status is not None:
+            stmt = stmt.where(FaithCase.status == status)
+            count_stmt = count_stmt.where(
+                FaithCase.status == status
+            )
+        if bucket is not None:
+            stmt = stmt.where(FaithCase.bucket == bucket)
+            count_stmt = count_stmt.where(
+                FaithCase.bucket == bucket
+            )
+        stmt = (
+            stmt.order_by(FaithCase.last_seen_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        items = list(await self.session.scalars(stmt))
+        total = await self.session.scalar(count_stmt) or 0
+        return items, int(total)
+
+    async def get_case(self, case_id: int) -> FaithCase | None:
+        return await self.session.get(FaithCase, case_id)
+
+    async def update_status(
+        self,
+        case_id: int,
+        status: str,
+        resolution: str | None,
+    ) -> FaithCase | None:
+        case = await self.session.get(FaithCase, case_id)
+        if case is None:
+            return None
+        if status != "未解决" and not (resolution or "").strip():
+            raise ValueError("resolution is required")
+        case.status = status
+        case.resolution = (
+            resolution if status != "未解决" else None
+        )
+        if status != "未解决":
+            case.resolved_at = datetime.now()
+        await self.session.flush()
+        return case
 
     async def commit(self) -> None:
         await self.session.commit()

@@ -1,4 +1,6 @@
+from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -79,3 +81,46 @@ class AfterSalesExtraction(BaseModel):
             "用户明确表达的期望方案；未明确说明则为 null，不要替用户编造"
         ),
     )
+
+
+class KnowledgeChunkDetail(BaseModel):
+    """Source chunk shown when a citation is clicked."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    category: str
+    questions: str
+    answer: str
+    section_path: str | None
+    content_type: str | None
+    source_doc: str | None
+
+
+class FaithCaseOut(BaseModel):
+    """One hallucination case in the faithfulness ledger."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    eval_id: str
+    bucket: str
+    query: str
+    strategy: str
+    answer: str
+    reason: str
+    citations: list[dict] | None
+    judge_model: str | None
+    status: str
+    seen_count: int
+    first_seen_at: datetime
+    last_seen_at: datetime
+    resolution: str | None
+    resolved_at: datetime | None
+
+
+class FaithCaseUpdate(BaseModel):
+    """Manual status change for a faithfulness case."""
+
+    status: Literal["未解决", "已解决", "无需解决"]
+    resolution: str | None = Field(default=None, max_length=300)
