@@ -54,25 +54,47 @@ class SlowFaqTool:
         raise TimeoutError("slow")
 
 
-def make_runtime_client(
-    settings, prompt_builder, responses, *, search_result, checker
+def make_stream_client(
+    settings,
+    prompt_builder,
+    responses,
+    *,
+    search_result,
+    checker,
+    search_calls=None,
 ):
     repo = FakeRepository()
+    model = FakeChatModel(responses)
 
     async def fake_search(keyword, category=None, content_type=None):
+        if search_calls is not None:
+            search_calls.append(keyword)
         return search_result
 
     runtime = Runtime(
         settings=settings,
         prompt_builder=prompt_builder,
-        chat_model=FakeChatModel(responses),
+        chat_model=model,
         extraction_model=None,
         locks=ConversationLocks(),
         repository=repo,
         faq_search=fake_search,
         evidence_checker=checker,
     )
-    return TestClient(create_app(runtime=runtime)), repo
+    return TestClient(create_app(runtime=runtime)), repo, model
+
+
+def make_runtime_client(
+    settings, prompt_builder, responses, *, search_result, checker
+):
+    client, repo, _ = make_stream_client(
+        settings,
+        prompt_builder,
+        responses,
+        search_result=search_result,
+        checker=checker,
+    )
+    return client, repo
 
 
 @pytest.fixture
@@ -208,3 +230,118 @@ async def test_query_faq_is_not_retried_on_timeout(
 
     assert response.status_code == 200
     assert tool.calls == 1
+
+
+async def test_second_query_faq_call_is_rejected(settings, prompt_builder):
+    calls = []
+    checker = FakeChecker(EvidenceAssessment(useful=True, reason="足够"))
+    client, repo, _ = make_stream_client(
+        settings,
+        prompt_builder,
+        [
+            [
+                tool_chunk(
+                    "query_faq", '{"keyword":"退货运费谁出"}', "call_1"
+                ),
+                tool_chunk("query_faq", '{"keyword":"换货"}', "call_2"),
+            ],
+            [AIMessageChunk(content="退货运费由买家承担 [1]")],
+        ],
+        search_result=faq_result(),
+        checker=checker,
+        search_calls=calls,
+    )
+
+    with client:
+        response = client.post(
+            "/api/chat/stream",
+            json={"message": "退货运费谁出，顺便问换货"},
+        )
+
+    events = parse_sse(response.text)
+    tool_events = [data for name, data in events if name == "tool"]
+    assert [data["status"] for data in tool_events] == [
+        "running",
+        "done",
+        "running",
+        "error",
+    ]
+    assert tool_events[-1]["code"] == "duplicate_faq"
+    assert calls == ["退货运费谁出"]
+    assert events[-1][1]["citations"][0]["chunk_id"] == 7
+
+
+async def test_second_query_faq_does_not_skip_refusal(
+    settings, prompt_builder
+):
+    calls = []
+    checker = FakeChecker(EvidenceAssessment(useful=False, reason="证据不足"))
+    client, repo, _ = make_stream_client(
+        settings,
+        prompt_builder,
+        [
+            [
+                tool_chunk(
+                    "query_faq", '{"keyword":"支持货到付款吗"}', "call_1"
+                ),
+                tool_chunk("query_faq", '{"keyword":"货到付款"}', "call_2"),
+            ],
+            [AIMessageChunk(content="我查一下。")],
+        ],
+        search_result=RetrievalResult("hybrid_rerank", "货到付款", True, []),
+        checker=checker,
+        search_calls=calls,
+    )
+
+    with client:
+        response = client.post(
+            "/api/chat/stream", json={"message": "你们支持货到付款吗？"}
+        )
+
+    events = parse_sse(response.text)
+    assert events[-1][1]["refused"] is True
+    assert repo.low_confidence[0]["source"] == "self_check"
+    assert calls == ["支持货到付款吗"]
+
+
+async def test_second_pass_uses_rendered_evidence(
+    settings, prompt_builder
+):
+    checker = FakeChecker(EvidenceAssessment(useful=True, reason="足够"))
+    client, repo, model = make_stream_client(
+        settings,
+        prompt_builder,
+        [
+            [
+                tool_chunk(
+                    "query_faq", '{"keyword":"退货运费谁出"}', "call_1"
+                )
+            ],
+            [AIMessageChunk(content="退货运费由买家承担 [1]")],
+        ],
+        search_result=faq_result(),
+        checker=checker,
+    )
+
+    with client:
+        response = client.post(
+            "/api/chat/stream", json={"message": "退货运费谁出"}
+        )
+
+    assert response.status_code == 200
+    tool_messages = [
+        message
+        for message in model.calls[1]
+        if getattr(message, "type", "") == "tool"
+    ]
+    assert len(tool_messages) == 1
+    content = tool_messages[0].content
+    assert content.startswith("[1] 章节：")
+    assert "退货运费由买家承担。" in content
+    assert '"chunk_id": 7' not in content
+    stored = [
+        row.content
+        for _, row in repo.messages
+        if row.role == "tool"
+    ]
+    assert '"chunk_id": 7' in stored[0]

@@ -220,6 +220,16 @@ async def verify_vectors(
     return len(missing)
 
 
+async def requeue_done_chunks(repository: Any) -> int:
+    rows = await repository.list_done_chunks()
+    ids = [row.id for row in rows]
+    if not ids:
+        return 0
+    await repository.mark_chunks_pending(ids)
+    await repository.commit()
+    return len(ids)
+
+
 async def reset_source(
     repository: Any,
     source_doc: str,

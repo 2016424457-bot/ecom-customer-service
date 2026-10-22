@@ -55,8 +55,11 @@ SSE 事件：
 ### 1. 安装依赖
 
 ```bash
+uv lock
 uv sync
 ```
+
+> 本分支新增的 `jieba`、`cryptography` 尚未写入当前 `uv.lock`（实现环境无法访问 PyPI）；首次请先 `uv lock`，再 `uv sync`，并提交更新后的 lock。
 
 ### 2. 准备数据库
 
@@ -73,6 +76,12 @@ mysql -h 127.0.0.1 -u root -p ecom_customer_service < db/seed.sql
 
 ```bash
 mysql -h 127.0.0.1 -u root -p ecom_customer_service < sql/ch03-ddl.sql
+```
+
+已有 CH03 数据库时，再执行 CH04 迁移（可重复执行）：
+
+```bash
+mysql -h 127.0.0.1 -u root -p ecom_customer_service < sql/ch04-ddl.sql
 ```
 
 也可以改用 Docker（宿主端口 3307）：

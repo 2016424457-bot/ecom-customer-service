@@ -13,11 +13,12 @@ from app.config import Settings
 from app.db.repositories import KnowledgeRepository
 from app.errors import ERROR_MESSAGES, AppError, map_upstream_error
 from app.history import trim_history
+from app.knowledge.evidence import render_evidence_block
 from app.knowledge.search import search_knowledge_result
 from app.prompt_builder import PromptBuilder
 from app.services.chat_history import to_langchain
 from app.session_id import parse_conversation_id
-from app.services.tool_exec import ToolRegistry
+from app.services.tool_exec import ToolRegistry, ToolResult
 from app.sessions import ConversationLocks
 from app.tools import build_tools
 
@@ -180,6 +181,8 @@ async def stream_chat(
             refused = False
             reranked = False
             faq_payload: dict | None = None
+            faq_called = False
+            successful_tool_names: list[str] = []
 
             if tool_calls:
                 await repository.add_message(
@@ -206,13 +209,47 @@ async def stream_chat(
                             "tool_call_id": call_id,
                         },
                     )
-                    result = await registry.execute(name, arguments)
+                    duplicate_faq = name == "query_faq" and faq_called
+                    if duplicate_faq:
+                        result = ToolResult(
+                            name=name,
+                            ok=False,
+                            content=json.dumps(
+                                {
+                                    "error": {
+                                        "code": "duplicate_faq",
+                                        "message": (
+                                            "query_faq 每轮只能调用一次；"
+                                            "请使用已返回的证据。"
+                                        ),
+                                    }
+                                },
+                                ensure_ascii=False,
+                            ),
+                            error_code="duplicate_faq",
+                            duration_ms=0.0,
+                            attempts=0,
+                        )
+                    else:
+                        result = await registry.execute(name, arguments)
+
+                    llm_content = result.content
                     if name == "query_faq" and result.ok:
                         try:
-                            faq_payload = json.loads(result.content)
+                            payload = json.loads(result.content)
                         except (TypeError, ValueError):
                             logger.warning("query_faq_payload_invalid")
+                        else:
+                            faq_called = True
+                            faq_payload = payload
+                            llm_content = (
+                                render_evidence_block(
+                                    payload.get("items") or []
+                                )
+                                or "（无检索结果）"
+                            )
                     if result.ok:
+                        successful_tool_names.append(name)
                         yield (
                             "tool",
                             {
@@ -235,7 +272,7 @@ async def stream_chat(
                         )
 
                     tool_message = ToolMessage(
-                        content=result.content, tool_call_id=call_id
+                        content=llm_content, tool_call_id=call_id
                     )
                     tool_messages.append(tool_message)
                     await repository.add_message(
@@ -258,7 +295,7 @@ async def stream_chat(
                     if (
                         assessment is not None
                         and not assessment.useful
-                        and len(tool_calls) == 1
+                        and successful_tool_names == ["query_faq"]
                     ):
                         refusal = settings.refusal_message
                         await repository.insert_low_confidence_question(

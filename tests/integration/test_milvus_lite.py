@@ -76,3 +76,38 @@ def test_milvus_lite_round_trip(tmp_path, clean_unit_env):
     assert milvus_client.delete_vectors(client, [1], collection) == 1
     assert milvus_client.has_ids(client, [1], collection) == set()
     milvus_client.reset_client_cache()
+
+
+def test_upsert_accepts_faq_record_without_section_path(
+    tmp_path, clean_unit_env
+):
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="test",
+        milvus_uri=str(tmp_path / "faq.db"),
+    )
+    milvus_client.reset_client_cache()
+    client = milvus_client.get_client(settings)
+    collection = "knowledge"
+    milvus_client.ensure_collection(
+        client, collection, analyzer_type="jieba"
+    )
+
+    milvus_client.upsert_vectors(
+        client,
+        [
+            VectorRecord(
+                id=1,
+                text="支付\n支持货到付款吗\n暂不支持货到付款。",
+                vector=[1.0] + [0.0] * 1023,
+                category="支付",
+                content_type="faq",
+                section_path=None,
+                source_doc="faq",
+            )
+        ],
+        collection,
+    )
+
+    assert milvus_client.has_ids(client, [1], collection) == {1}
+    milvus_client.reset_client_cache()

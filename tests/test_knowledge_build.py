@@ -322,6 +322,21 @@ async def test_verify_vectors_marks_missing_done_as_pending(
     assert repository.rows[1].vectorize_status == "pending"
 
 
+async def test_requeue_done_chunks_marks_all_done_pending(repository):
+    from app.knowledge.build import requeue_done_chunks
+
+    await write_pending(repository, [chunk("a"), chunk("b")])
+    repository.rows[0].vectorize_status = "done"
+    repository.rows[0].vector_id = "1"
+
+    assert await requeue_done_chunks(repository) == 1
+    assert [row.vectorize_status for row in repository.rows] == [
+        "pending",
+        "pending",
+    ]
+    assert repository.rows[0].vector_id is None
+
+
 async def test_build_faq_imports_real_questions(
     repository, settings
 ):

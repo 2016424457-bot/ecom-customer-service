@@ -160,8 +160,8 @@ def upsert_vectors(
                 "text": record.text,
                 "dense": list(record.vector),
                 "category": record.category,
-                "content_type": record.content_type,
-                "section_path": record.section_path,
+                "content_type": record.content_type or "",
+                "section_path": record.section_path or "",
                 "source_doc": record.source_doc,
             }
             for record in records

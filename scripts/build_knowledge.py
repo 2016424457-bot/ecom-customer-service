@@ -13,6 +13,7 @@ from app.db.session import create_engine_and_session
 from app.knowledge.build import (
     build_document,
     build_faq,
+    requeue_done_chunks,
     vectorize_pending,
     verify_vectors,
 )
@@ -35,7 +36,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--recreate",
         action="store_true",
-        help="删除并重建 Milvus 集合(schema 升级后必须跑一次)",
+        help=(
+            "删除并重建 Milvus 集合，并把所有 done 行改回 pending "
+            "重新向量化(schema 升级后跑一次)"
+        ),
     )
     parser.add_argument(
         "--no-faq", action="store_true", help="跳过 faq 表导入"
@@ -85,6 +89,8 @@ async def run(args: argparse.Namespace) -> int:
                     dim=settings.embed_dim,
                     analyzer_type=settings.milvus_analyzer_type,
                 )
+                requeued = await requeue_done_chunks(repository)
+                print(f"recreate: {requeued} done chunks -> pending")
 
             for filename, content_type in DOCS.items():
                 path = docs_dir / filename

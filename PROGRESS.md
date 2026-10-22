@@ -2,7 +2,7 @@
 
 - 日期：2026-10-22
 - 分支：`worktree-ch04-retrieval-quality`
-- 状态：功能代码、单元测试、评估集定位校验、前端静态验证完成；真实检索评估、Faithfulness 报告与端到端验收待用户在终端执行（需要 `.env`、`uv sync`、重建 Milvus、rerank key）
+- 状态：功能代码、单元测试、评估集定位校验、前端静态验证、整分支 review 与修复完成；真实检索评估、Faithfulness 报告与端到端验收待用户在终端执行（需要 `.env`、`uv lock`/`uv sync`、重建 Milvus、rerank key）
 
 ## 一、项目简介
 
@@ -62,7 +62,8 @@
 
 | 检查项 | 结果 | 备注 |
 |--------|------|------|
-| 单元测试 `pytest -m "not integration"` | **194 passed, 2 skipped, 22 deselected** | 2026-10-22，主 checkout 的 `.venv` |
+| 单元测试 `pytest -m "not integration"` | **202 passed, 2 skipped, 22 deselected** | 2026-10-22，主 checkout 的 `.venv` |
+| 整分支 code review | **1 Critical + 6 Important 已修复；1 Important 待用户终端** | Sonnet 5（Opus 402 余额不足）；`uv.lock` 需用户 `uv lock` |
 | 评估集定位校验 | **48 条 / 22 chunks / 0 missing gold** | 用 chunker + FAQ seed 在内存中核对 |
 | `node --check` | 通过 | `chat.js`、`faith-cases.js` |
 | 前端静态预览 | 通过 | 引用角标、来源弹层 404 错误态、👍 点亮/锁定/「已反馈」/刷新恢复；台账卡片渲染 + PATCH body |
@@ -77,6 +78,7 @@
 前提：在 worktree 根目录执行；把主 checkout 的 `.env` 复制过来（或注入环境变量），然后：
 
 ```bash
+uv lock   # 把新增的 jieba/cryptography 写入 lock；实现沙箱无法访问 PyPI
 uv sync
 mysql -h 127.0.0.1 -u root -p ecom_customer_service < sql/ch04-ddl.sql
 uv run python scripts/smoke_rerank.py

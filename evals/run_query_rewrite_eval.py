@@ -15,6 +15,24 @@ CASES_PATH = Path("evals/ch04_query_rewrite_cases.jsonl")
 MIN_PASS_RATE = 0.8
 
 
+def score_rewrite(
+    case: dict, rewritten: str
+) -> tuple[bool, list[str], list[str], bool]:
+    fallback = rewritten.strip() == case["query"].strip()
+    missing = [
+        term
+        for term in case.get("expect_terms", [])
+        if term not in rewritten
+    ]
+    lost = [
+        term
+        for term in case.get("keep_terms", [])
+        if term not in rewritten
+    ]
+    ok = not fallback and not missing and not lost
+    return ok, missing, lost, fallback
+
+
 async def main() -> int:
     settings = Settings()
     rewriter = QueryRewriter(
@@ -28,20 +46,12 @@ async def main() -> int:
         case = json.loads(line)
         total += 1
         rewritten = await rewriter.rewrite(case["query"])
-        missing = [
-            term
-            for term in case.get("expect_terms", [])
-            if term not in rewritten
-        ]
-        lost = [
-            term
-            for term in case.get("keep_terms", [])
-            if term not in rewritten
-        ]
-        ok = not missing and not lost
+        ok, missing, lost, fallback = score_rewrite(case, rewritten)
         passed += int(ok)
         mark = "PASS" if ok else "FAIL"
         print(f"[{mark}] {case['query']} -> {rewritten}")
+        if fallback:
+            print("       fallback: rewrite returned the original question")
         if missing:
             print(f"       missing: {missing}")
         if lost:

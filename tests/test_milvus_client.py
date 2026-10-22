@@ -210,6 +210,25 @@ def test_upsert_vectors_maps_text_and_metadata():
     )
 
 
+def test_upsert_vectors_coerces_missing_optional_metadata():
+    client = FakeClient()
+    record = milvus_client.VectorRecord(
+        id=2,
+        text="支付\n支持货到付款吗\n暂不支持。",
+        vector=[0.1, 0.2],
+        category="支付",
+        content_type=None,
+        section_path=None,
+        source_doc="faq",
+    )
+
+    milvus_client.upsert_vectors(client, [record], "knowledge")
+
+    row = client.upserted[1][0]
+    assert row["section_path"] == ""
+    assert row["content_type"] == ""
+
+
 def test_dense_search_returns_id_score_pairs():
     client = FakeClient()
     client.search_results = [

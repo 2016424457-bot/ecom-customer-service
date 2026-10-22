@@ -156,6 +156,32 @@ async def test_hybrid_rerank_reorders_and_sets_reranked(settings):
     assert reranker.calls[0][2] == settings.rerank_top_n
 
 
+async def test_zero_rerank_min_score_keeps_negative_scores(settings):
+    from app.knowledge.rerank import RerankHit
+
+    assert settings.rerank_min_score == 0.0
+    backend = FakeBackend([], [], [(1, 0.03), (2, 0.02)])
+    reranker = FakeReranker(
+        [
+            RerankHit(index=1, score=-3.0),
+            RerankHit(index=0, score=-5.0),
+        ]
+    )
+    result = await retrieve(
+        "问题",
+        repository=FakeRepository(rows()),
+        settings=settings,
+        strategy=RetrievalStrategy.HYBRID_RERANK,
+        backend=backend,
+        embedder=fake_embed,
+        rewriter=FakeRewriter(),
+        reranker=reranker,
+    )
+
+    assert [hit.id for hit in result.hits] == [2, 1]
+    assert result.reranked is True
+
+
 async def test_rerank_failure_falls_back_to_hybrid_order(settings):
     class FailingReranker:
         async def rerank(self, query, documents, top_n):

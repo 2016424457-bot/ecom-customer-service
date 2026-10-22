@@ -229,7 +229,10 @@ async def _rerank(
     for rank in ranked:
         if not 0 <= rank.index < len(hits):
             continue
-        if rank.score < settings.rerank_min_score:
+        if (
+            settings.rerank_min_score != 0.0
+            and rank.score < settings.rerank_min_score
+        ):
             continue
         ordered.append(replace(hits[rank.index], score=rank.score))
     return ordered[:top_k], True
