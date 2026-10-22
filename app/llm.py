@@ -6,6 +6,7 @@ from langchain_openai import ChatOpenAI
 from app.config import Settings
 from app.knowledge.query_understanding import QueryRewrite
 from app.knowledge.schemas import QaExtraction
+from app.knowledge.self_check import EvidenceAssessment
 from app.schemas import AfterSalesExtraction
 
 
@@ -81,5 +82,20 @@ def build_rewrite_model(settings: Settings) -> Runnable:
     chat_model = ChatOpenAI(**kwargs)
     return chat_model.with_structured_output(
         QueryRewrite,
+        method=settings.structured_output_method,
+    )
+
+
+def build_evidence_check_model(settings: Settings) -> Runnable:
+    """Create the structured-output runnable used for evidence checks."""
+    chat_model = ChatOpenAI(
+        **build_model_kwargs(
+            settings,
+            temperature=settings.evidence_check_temperature,
+            max_tokens=settings.evidence_check_max_tokens,
+        )
+    )
+    return chat_model.with_structured_output(
+        EvidenceAssessment,
         method=settings.structured_output_method,
     )
