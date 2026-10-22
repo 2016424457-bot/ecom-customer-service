@@ -48,6 +48,8 @@ class FakeClient:
         self.upserted: tuple | None = None
         self.search_kwargs: dict | None = None
         self.search_results: list[dict] = []
+        self.hybrid_kwargs: dict | None = None
+        self.hybrid_results: list[dict] = []
         self.deleted: tuple | None = None
         self.dropped: list[str] = []
 
@@ -83,6 +85,10 @@ class FakeClient:
     def search(self, **kwargs):
         self.search_kwargs = kwargs
         return [self.search_results]
+
+    def hybrid_search(self, **kwargs):
+        self.hybrid_kwargs = kwargs
+        return [self.hybrid_results]
 
     def delete(self, collection_name, ids):
         self.deleted = (collection_name, ids)
@@ -226,3 +232,53 @@ def test_delete_vectors_and_has_ids():
     assert milvus_client.delete_vectors(client, [1, 2], "knowledge") == 2
     assert client.deleted == ("knowledge", [1, 2])
     assert milvus_client.has_ids(client, [3, 4], "knowledge") == {3, 4}
+
+
+def test_dense_search_uses_filter_param():
+    client = FakeClient()
+    client.search_results = [{"id": 1, "distance": 0.9}]
+
+    milvus_client.dense_search(
+        client, [0.1], 5, "knowledge", filter_expr='content_type == "policy"'
+    )
+
+    assert client.search_kwargs["filter"] == 'content_type == "policy"'
+    assert client.search_kwargs["anns_field"] == "dense"
+
+
+def test_bm25_search_uses_sparse_field_and_filter():
+    client = FakeClient()
+    client.search_results = [{"id": 2, "distance": -1.2}]
+
+    milvus_client.bm25_search(
+        client,
+        "ANC-06 降噪",
+        5,
+        "knowledge",
+        filter_expr='content_type == "spec"',
+    )
+
+    assert client.search_kwargs["anns_field"] == "sparse"
+    assert client.search_kwargs["filter"] == 'content_type == "spec"'
+    assert client.search_kwargs["data"] == ["ANC-06 降噪"]
+
+
+def test_hybrid_search_builds_dense_and_sparse_requests_with_expr():
+    client = FakeClient()
+    client.hybrid_results = [{"id": 1, "distance": 0.03}]
+
+    milvus_client.hybrid_search(
+        client,
+        [0.1],
+        "ANC-06 降噪",
+        50,
+        "knowledge",
+        filter_expr='category like "商品规格%"',
+    )
+
+    reqs = client.hybrid_kwargs["reqs"]
+    assert reqs[0].anns_field == "dense"
+    assert reqs[1].anns_field == "sparse"
+    assert reqs[0].expr == 'category like "商品规格%"'
+    assert reqs[1].expr == 'category like "商品规格%"'
+    assert client.hybrid_kwargs["limit"] == 50

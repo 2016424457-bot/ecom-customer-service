@@ -2,7 +2,14 @@ import asyncio
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from pymilvus import DataType, Function, FunctionType, MilvusClient
+from pymilvus import (
+    AnnSearchRequest,
+    DataType,
+    Function,
+    FunctionType,
+    MilvusClient,
+    RRFRanker,
+)
 
 from app.config import Settings
 from app.knowledge.types import VectorRecord
@@ -167,14 +174,70 @@ def dense_search(
     vector: list[float],
     top_k: int,
     collection: str,
+    filter_expr: str | None = None,
 ) -> list[tuple[int, float]]:
     results = client.search(
         collection_name=collection,
         data=[list(vector)],
         limit=top_k,
         anns_field="dense",
+        filter=filter_expr or "",
         output_fields=["id"],
         search_params={"metric_type": "COSINE"},
+    )
+    return [
+        (int(hit["id"]), float(hit["distance"])) for hit in results[0]
+    ]
+
+
+def bm25_search(
+    client: Any,
+    text: str,
+    top_k: int,
+    collection: str,
+    filter_expr: str | None = None,
+) -> list[tuple[int, float]]:
+    results = client.search(
+        collection_name=collection,
+        data=[text],
+        limit=top_k,
+        anns_field="sparse",
+        filter=filter_expr or "",
+        output_fields=["id"],
+    )
+    return [
+        (int(hit["id"]), float(hit["distance"])) for hit in results[0]
+    ]
+
+
+def hybrid_search(
+    client: Any,
+    vector: list[float],
+    text: str,
+    limit: int,
+    collection: str,
+    filter_expr: str | None = None,
+) -> list[tuple[int, float]]:
+    dense_req = AnnSearchRequest(
+        data=[list(vector)],
+        anns_field="dense",
+        param={"metric_type": "COSINE"},
+        limit=limit,
+        expr=filter_expr,
+    )
+    sparse_req = AnnSearchRequest(
+        data=[text],
+        anns_field="sparse",
+        param={"metric_type": "BM25"},
+        limit=limit,
+        expr=filter_expr,
+    )
+    results = client.hybrid_search(
+        collection_name=collection,
+        reqs=[dense_req, sparse_req],
+        ranker=RRFRanker(),
+        limit=limit,
+        output_fields=["id"],
     )
     return [
         (int(hit["id"]), float(hit["distance"])) for hit in results[0]
