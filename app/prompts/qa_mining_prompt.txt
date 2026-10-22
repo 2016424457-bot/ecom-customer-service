@@ -7,6 +7,3 @@
 4. 分类只能是：退货、换货、发货、运费、发票、售后、商品、其他。
 5. 没有可复用问答时，questions、answers、categories 三个数组都返回空数组。
 6. questions、answers、categories 三个数组必须一一对应、长度一致。
-
-对话：
-{transcript}
