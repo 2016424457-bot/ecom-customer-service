@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#1f3b2f" />
   <title>示例商城 · 售后客服</title>
-  <link rel="stylesheet" href="/static/chat.css?v=3" />
+  <link rel="stylesheet" href="/static/chat.css?v=4" />
 </head>
 <body>
   <div class="app-shell">
@@ -52,6 +52,22 @@
     </div>
   </div>
 
-  <script src="/static/chat.js?v=3"></script>
+  <dialog id="sourceDialog" class="source-dialog">
+    <div class="source-head">
+      <div>
+        <p class="source-kicker">Citation</p>
+        <h2 id="sourceTitle">引用来源</h2>
+      </div>
+      <button id="closeSource" class="dialog-close" type="button" aria-label="关闭">×</button>
+    </div>
+    <p class="source-meta">
+      <span id="sourcePath"></span>
+      <span id="sourceDoc"></span>
+    </p>
+    <p id="sourceQuestion" class="source-question"></p>
+    <div id="sourceAnswer" class="source-answer"></div>
+  </dialog>
+
+  <script src="/static/chat.js?v=4"></script>
 </body>
 </html>

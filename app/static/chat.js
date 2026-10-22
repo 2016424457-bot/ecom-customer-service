@@ -140,7 +140,11 @@
     composer.classList.toggle("is-busy", next);
   }
 
-  function createMessage(role, text, { typing = false, tools = [] } = {}) {
+  function createMessage(
+    role,
+    text,
+    { typing = false, tools = [], showFeedback = false } = {},
+  ) {
     const row = document.createElement("div");
     row.className = `msg ${role}`;
     row.dataset.role = role;
@@ -159,6 +163,12 @@
     const textEl = document.createElement("div");
     textEl.className = "bubble-text";
 
+    const feedbackEl = document.createElement("div");
+    feedbackEl.className = "feedback-row";
+    if (showFeedback) {
+      feedbackEl.classList.add("is-hidden");
+    }
+
     if (typing) {
       textEl.innerHTML =
         '<span class="typing" aria-label="正在输入"><i></i><i></i><i></i></span>';
@@ -166,13 +176,90 @@
       textEl.textContent = text;
     }
 
-    bubble.append(toolWrap, textEl);
+    bubble.append(toolWrap, textEl, feedbackEl);
     for (const tool of tools) updateToolBadge(toolWrap, tool);
 
     row.append(avatar, bubble);
     messagesEl.append(row);
     scrollToBottom();
-    return { row, bubble, textEl, toolWrap };
+    return { row, bubble, textEl, toolWrap, feedbackEl };
+  }
+
+  function renderAnswer(textEl, text, citations) {
+    const byNumber = new Map();
+    for (const citation of Array.isArray(citations) ? citations : []) {
+      const number = Number(citation && citation.n);
+      if (Number.isFinite(number)) byNumber.set(number, citation);
+    }
+
+    textEl.textContent = "";
+    const pattern = /\[(\d+)\]/g;
+    let lastIndex = 0;
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      if (match.index > lastIndex) {
+        textEl.append(
+          document.createTextNode(text.slice(lastIndex, match.index)),
+        );
+      }
+      const number = Number(match[1]);
+      const citation = byNumber.get(number);
+      if (citation) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "citation-chip";
+        button.dataset.n = String(number);
+        button.dataset.chunkId = String(citation.chunk_id);
+        button.textContent = `[${number}]`;
+        button.title = citation.section_path || "查看来源";
+        button.setAttribute(
+          "aria-label",
+          `查看引用 ${number} 的来源`,
+        );
+        textEl.append(button);
+      } else {
+        textEl.append(document.createTextNode(match[0]));
+      }
+      lastIndex = pattern.lastIndex;
+    }
+    if (lastIndex < text.length) {
+      textEl.append(document.createTextNode(text.slice(lastIndex)));
+    }
+  }
+
+  function renderFeedback(feedbackEl, item) {
+    feedbackEl.textContent = "";
+    const locked = item.feedback === "up" || item.feedback === "down";
+
+    const buttons = [
+      { value: "up", label: "👍", aria: "这条回答有帮助" },
+      { value: "down", label: "👎", aria: "这条回答没有帮助" },
+    ].map(({ value, label, aria }) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "feedback-btn";
+      button.dataset.value = value;
+      button.textContent = label;
+      button.setAttribute("aria-label", aria);
+      button.disabled = locked;
+      if (item.feedback === value) {
+        button.classList.add("is-selected");
+      }
+      button.addEventListener("click", () => {
+        if (item.feedback) return;
+        item.feedback = value;
+        saveHistory();
+        renderFeedback(feedbackEl, item);
+      });
+      return button;
+    });
+
+    const status = document.createElement("span");
+    status.className = "feedback-status";
+    status.textContent = locked ? "已反馈" : "";
+
+    feedbackEl.append(...buttons, status);
+    feedbackEl.classList.remove("is-hidden");
   }
 
   function createToolBadge(name) {
@@ -224,7 +311,14 @@
       return;
     }
     for (const item of history) {
-      createMessage(item.role, item.text, { tools: item.tools || [] });
+      const view = createMessage(item.role, item.text, {
+        tools: item.tools || [],
+        showFeedback: item.role === "assistant",
+      });
+      if (item.role === "assistant") {
+        renderAnswer(view.textEl, item.text, item.citations);
+        renderFeedback(view.feedbackEl, item);
+      }
     }
     scrollToBottom("auto");
   }
@@ -318,8 +412,18 @@
     appendHistory("user", text);
     createMessage("user", text);
 
-    const placeholder = createMessage("assistant", "", { typing: true });
-    const assistantItem = { role: "assistant", text: "", tools: [] };
+    const placeholder = createMessage("assistant", "", {
+      typing: true,
+      showFeedback: true,
+    });
+    const assistantItem = {
+      role: "assistant",
+      text: "",
+      tools: [],
+      citations: [],
+      refused: false,
+      feedback: null,
+    };
     history.push(assistantItem);
 
     let gotToken = false;
@@ -393,6 +497,16 @@
 
         if (event === "done") {
           sawDone = true;
+          assistantItem.citations = Array.isArray(data && data.citations)
+            ? data.citations
+            : [];
+          assistantItem.refused = Boolean(data && data.refused);
+          renderAnswer(
+            placeholder.textEl,
+            assistantItem.text,
+            assistantItem.citations,
+          );
+          renderFeedback(placeholder.feedbackEl, assistantItem);
           return;
         }
 
@@ -484,6 +598,62 @@
     autoResize();
     void sendMessage();
   });
+
+  async function openSource(chunkId, number) {
+    const dialog = document.getElementById("sourceDialog");
+    if (!dialog || typeof dialog.showModal !== "function") return;
+
+    const title = document.getElementById("sourceTitle");
+    const path = document.getElementById("sourcePath");
+    const doc = document.getElementById("sourceDoc");
+    const question = document.getElementById("sourceQuestion");
+    const answer = document.getElementById("sourceAnswer");
+
+    title.textContent = `引用 [${number}]`;
+    path.textContent = "加载中…";
+    doc.textContent = "";
+    question.textContent = "";
+    answer.textContent = "";
+    dialog.showModal();
+
+    try {
+      const response = await fetch(
+        `/api/knowledge/chunks/${encodeURIComponent(chunkId)}`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) {
+        throw new Error(`来源加载失败（${response.status}）`);
+      }
+      const data = await response.json();
+      path.textContent = data.section_path || "未标注章节";
+      doc.textContent = data.source_doc || "";
+      question.textContent = data.questions
+        ? `问法：${data.questions}`
+        : "";
+      answer.textContent = data.answer || "";
+    } catch (error) {
+      path.textContent = "来源加载失败";
+      answer.textContent =
+        error instanceof Error ? error.message : "请稍后重试";
+    }
+  }
+
+  messagesEl.addEventListener("click", (event) => {
+    const chip = event.target.closest(".citation-chip");
+    if (!chip) return;
+    void openSource(chip.dataset.chunkId, chip.dataset.n);
+  });
+
+  const sourceDialog = document.getElementById("sourceDialog");
+  const closeSource = document.getElementById("closeSource");
+  if (closeSource && sourceDialog) {
+    closeSource.addEventListener("click", () => sourceDialog.close());
+  }
+  if (sourceDialog) {
+    sourceDialog.addEventListener("click", (event) => {
+      if (event.target === sourceDialog) sourceDialog.close();
+    });
+  }
 
   renderHistory();
   autoResize();
