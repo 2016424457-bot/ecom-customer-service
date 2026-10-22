@@ -28,7 +28,10 @@ from app.knowledge.build import (
     vectorize_pending,
 )
 from app.knowledge.milvus_client import acall
-from app.knowledge.search import search_knowledge
+from app.knowledge.search import (
+    search_knowledge,
+    search_knowledge_result,
+)
 from app.knowledge.sources import DOCS
 from app.tools.faq import build_faq_tool
 
@@ -70,7 +73,7 @@ async def phase_retrieve(
     ), "top-3 does not contain shipping fee text"
 
     search = partial(
-        search_knowledge,
+        search_knowledge_result,
         repository=repository,
         settings=settings,
         strategy="vector",
@@ -78,13 +81,18 @@ async def phase_retrieve(
     result = await build_faq_tool(search).ainvoke(
         {"keyword": "邮费是多少"}
     )
-    assert set(result) == {"keyword", "count", "items"}
+    assert set(result) == {"keyword", "count", "items", "retrieval"}
     assert result["keyword"] == "邮费是多少"
     assert result["count"] > 0
     assert set(result["items"][0]) == {
+        "n",
+        "chunk_id",
+        "section_path",
+        "source_doc",
         "question",
         "answer",
         "category",
+        "score",
     }
     print(
         f"PASS retrieve: {hits[0].questions} ({hits[0].score:.3f}), "

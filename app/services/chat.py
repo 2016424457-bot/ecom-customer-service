@@ -13,7 +13,7 @@ from app.config import Settings
 from app.db.repositories import KnowledgeRepository
 from app.errors import ERROR_MESSAGES, AppError, map_upstream_error
 from app.history import trim_history
-from app.knowledge.search import search_knowledge
+from app.knowledge.search import search_knowledge_result
 from app.prompt_builder import PromptBuilder
 from app.services.chat_history import to_langchain
 from app.session_id import parse_conversation_id
@@ -86,6 +86,8 @@ async def stream_chat(
     prompt_builder: PromptBuilder,
     settings: Settings,
     locks: ConversationLocks,
+    faq_search: Any = None,
+    evidence_checker: Any = None,
 ) -> AsyncIterator[Event]:
     """Stream one turn: model-selected tool call, execution, then answer.
 
@@ -123,17 +125,20 @@ async def stream_chat(
             tools = build_tools(
                 repository,
                 conversation_id,
-                faq_search=partial(
-                    search_knowledge,
-                    repository=knowledge_repository,
-                    settings=settings,
+                faq_search=(
+                    faq_search
+                    or partial(
+                        search_knowledge_result,
+                        repository=knowledge_repository,
+                        settings=settings,
+                    )
                 ),
             )
             registry = ToolRegistry(
                 tools,
                 timeout_seconds=settings.tool_timeout_seconds,
                 max_retries=settings.tool_max_retries,
-                retry_disabled=frozenset({"create_ticket"}),
+                retry_disabled=frozenset({"create_ticket", "query_faq"}),
                 timeout_overrides={
                     "query_faq": settings.faq_tool_timeout_seconds
                 },
@@ -171,6 +176,10 @@ async def stream_chat(
                 if call.get("name") and call.get("id")
             ]
             final_text_parts = first_text_parts
+            citations: list[dict] = []
+            refused = False
+            reranked = False
+            faq_payload: dict | None = None
 
             if tool_calls:
                 await repository.add_message(
@@ -198,6 +207,11 @@ async def stream_chat(
                         },
                     )
                     result = await registry.execute(name, arguments)
+                    if name == "query_faq" and result.ok:
+                        try:
+                            faq_payload = json.loads(result.content)
+                        except (TypeError, ValueError):
+                            logger.warning("query_faq_payload_invalid")
                     if result.ok:
                         yield (
                             "tool",
@@ -232,27 +246,80 @@ async def stream_chat(
                     )
                     await repository.commit()
 
-                ai_message = AIMessage(
-                    content="".join(first_text_parts), tool_calls=tool_calls
-                )
-                final_messages = messages + [ai_message] + tool_messages
-                final_text_parts = []
-                async for chunk in chat_model.astream(final_messages):
-                    text = chunk_text(getattr(chunk, "content", None))
-                    if text:
-                        final_text_parts.append(text)
+                if faq_payload is not None:
+                    retrieval = faq_payload.get("retrieval") or {}
+                    reranked = bool(retrieval.get("reranked", False))
+                    items = faq_payload.get("items") or []
+                    assessment = None
+                    if evidence_checker is not None:
+                        assessment = await evidence_checker.assess(
+                            user_message, items
+                        )
+                    if (
+                        assessment is not None
+                        and not assessment.useful
+                        and len(tool_calls) == 1
+                    ):
+                        refusal = settings.refusal_message
+                        await repository.insert_low_confidence_question(
+                            conversation_id,
+                            user_message,
+                            "self_check",
+                            assessment.reason,
+                        )
+                        final_text_parts = [refusal]
+                        refused = True
                         token_events += 1
-                        yield ("token", {"delta": text})
+                        yield ("token", {"delta": refusal})
+                    else:
+                        citations = [
+                            {
+                                key: item[key]
+                                for key in (
+                                    "n",
+                                    "chunk_id",
+                                    "section_path",
+                                    "source_doc",
+                                    "question",
+                                    "category",
+                                    "score",
+                                )
+                            }
+                            for item in items
+                        ]
 
-                    chunk_usage = getattr(chunk, "usage_metadata", None)
-                    if chunk_usage:
-                        usage = chunk_usage
-                    response_metadata = (
-                        getattr(chunk, "response_metadata", None) or {}
+                if not refused:
+                    ai_message = AIMessage(
+                        content="".join(first_text_parts),
+                        tool_calls=tool_calls,
                     )
-                    reason = response_metadata.get("finish_reason")
-                    if reason:
-                        finish_reason = reason
+                    final_messages = (
+                        messages + [ai_message] + tool_messages
+                    )
+                    final_text_parts = []
+                    async for chunk in chat_model.astream(
+                        final_messages
+                    ):
+                        text = chunk_text(
+                            getattr(chunk, "content", None)
+                        )
+                        if text:
+                            final_text_parts.append(text)
+                            token_events += 1
+                            yield ("token", {"delta": text})
+
+                        chunk_usage = getattr(
+                            chunk, "usage_metadata", None
+                        )
+                        if chunk_usage:
+                            usage = chunk_usage
+                        response_metadata = (
+                            getattr(chunk, "response_metadata", None)
+                            or {}
+                        )
+                        reason = response_metadata.get("finish_reason")
+                        if reason:
+                            finish_reason = reason
 
             final_text = "".join(final_text_parts)
             if final_text:
@@ -292,6 +359,9 @@ async def stream_chat(
                     "finish_reason": finish_reason,
                     "usage": usage,
                     "tool_calls": tool_names,
+                    "citations": citations,
+                    "refused": refused,
+                    "reranked": reranked,
                 },
             )
     except Exception as exc:

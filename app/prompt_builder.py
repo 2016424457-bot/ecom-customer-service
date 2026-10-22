@@ -43,6 +43,14 @@ class PromptBuilder:
         """Return the raw extraction prompt text."""
         return self._extract_prompt
 
+    def render_system_text(self, today: date | None = None) -> str:
+        """Render the system prompt with brand, hours, and date."""
+        return self._system_template.format(
+            brand_name=self._brand_name,
+            service_hours=self._service_hours,
+            today=(today or date.today()).isoformat(),
+        )
+
     def build_messages(
         self,
         history: list[BaseMessage],
@@ -51,13 +59,8 @@ class PromptBuilder:
         today: date | None = None,
     ) -> list[BaseMessage]:
         """Render the system message, trimmed history, and user message."""
-        system_text = self._system_template.format(
-            brand_name=self._brand_name,
-            service_hours=self._service_hours,
-            today=(today or date.today()).isoformat(),
-        )
         messages = self._chat_prompt.format_messages(
-            system_text=system_text,
+            system_text=self.render_system_text(today),
             history=history,
             message=user_message,
         )

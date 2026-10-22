@@ -27,6 +27,7 @@ class FakeRepository:
         self.commits = 0
         self.status_updates: list[tuple[int, str]] = []
         self.tickets: list[Any] = []
+        self.low_confidence: list[dict] = []
         self._next_id = 1
 
     async def get_or_create_conversation(self, session_id, user_id: str):
@@ -69,6 +70,18 @@ class FakeRepository:
 
     async def search_faq(self, keyword: str, limit: int = 5):
         return []
+
+    async def insert_low_confidence_question(
+        self, conversation_id, raw_question, source, reason
+    ):
+        self.low_confidence.append(
+            {
+                "conversation_id": conversation_id,
+                "raw_question": raw_question,
+                "source": source,
+                "reason": reason,
+            }
+        )
 
     async def next_ticket_no(self, day) -> str:
         return "T20261021001"

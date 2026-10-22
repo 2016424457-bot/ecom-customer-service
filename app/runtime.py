@@ -12,7 +12,12 @@ from sqlalchemy.ext.asyncio import (
 from app.config import Settings
 from app.db.repositories import ChatRepository
 from app.db.session import create_engine_and_session
-from app.llm import build_chat_model, build_extraction_model
+from app.knowledge.self_check import EvidenceChecker
+from app.llm import (
+    build_chat_model,
+    build_evidence_check_model,
+    build_extraction_model,
+)
 from app.prompt_builder import PromptBuilder
 from app.sessions import ConversationLocks
 
@@ -29,6 +34,8 @@ class Runtime:
     session_factory: async_sessionmaker[AsyncSession] | None = None
     repository: Any = None
     engine: AsyncEngine | None = None
+    faq_search: Any = None
+    evidence_checker: Any = None
 
     @asynccontextmanager
     async def repository_scope(self) -> AsyncIterator[Any]:
@@ -59,6 +66,10 @@ def build_runtime(settings: Settings) -> Runtime:
         ),
         chat_model=build_chat_model(settings),
         extraction_model=build_extraction_model(settings),
+        evidence_checker=EvidenceChecker(
+            build_evidence_check_model(settings),
+            settings.evidence_check_prompt_path,
+        ),
         locks=ConversationLocks(settings.max_sessions),
         session_factory=session_factory,
         engine=engine,

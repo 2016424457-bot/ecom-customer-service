@@ -101,46 +101,82 @@ async def test_query_logistics_shape():
     assert result["latest_event"]
 
 
-async def test_query_faq_returns_vector_hits_with_unchanged_contract():
-    async def fake_search(keyword: str):
-        return [
-            KnowledgeHit(
-                id=1,
-                category="运费",
-                questions="邮费怎么算？",
-                answer="满 99 包邮。",
-                score=0.9,
-                section_path="退货与退款政策 / 退货运费与邮费",
-                content_type="policy",
-            )
-        ]
+async def test_query_faq_returns_ranked_items_and_retrieval_meta():
+    from app.knowledge.types import RetrievalResult
 
-    tool = build_faq_tool(fake_search)
+    hits = [
+        KnowledgeHit(
+            id=11,
+            category="运费",
+            questions="邮费怎么算？",
+            answer="满 99 包邮。",
+            score=0.93,
+            section_path="退货与退款政策 / 退货运费与邮费",
+            content_type="policy",
+            source_doc="returns-policy.md",
+        ),
+        KnowledgeHit(
+            id=12,
+            category="运费",
+            questions="退货运费谁出？",
+            answer="质量问题商家承担。",
+            score=0.88,
+            section_path="退货与退款政策 / 退货运费与邮费",
+            content_type="policy",
+            source_doc="returns-policy.md",
+        ),
+    ]
 
-    result = await tool.ainvoke({"keyword": "邮费是多少"})
+    async def fake_search(keyword, category=None, content_type=None):
+        return RetrievalResult(
+            strategy="hybrid_rerank",
+            rewritten_query="退货运费",
+            reranked=True,
+            hits=hits,
+        )
 
-    assert result == {
-        "keyword": "邮费是多少",
-        "count": 1,
-        "items": [
-            {
-                "question": "邮费怎么算？",
-                "answer": "满 99 包邮。",
-                "category": "运费",
-            }
-        ],
+    result = await build_faq_tool(fake_search).ainvoke(
+        {"keyword": "运费谁出"}
+    )
+
+    assert result["count"] == 2
+    assert [item["n"] for item in result["items"]] == [1, 2]
+    assert result["items"][0]["chunk_id"] == 11
+    assert result["items"][0]["section_path"] == (
+        "退货与退款政策 / 退货运费与邮费"
+    )
+    assert result["retrieval"] == {
+        "strategy": "hybrid_rerank",
+        "reranked": True,
+        "rewritten_query": "退货运费",
     }
 
 
-async def test_query_faq_empty_result_keeps_contract():
-    async def fake_search(keyword: str):
-        return []
+async def test_query_faq_empty_result_keeps_shape():
+    from app.knowledge.types import RetrievalResult
 
-    tool = build_faq_tool(fake_search)
+    async def fake_search(keyword, category=None, content_type=None):
+        return RetrievalResult(
+            strategy="hybrid_rerank",
+            rewritten_query=keyword,
+            reranked=False,
+            hits=[],
+        )
 
-    result = await tool.ainvoke({"keyword": "邮费是多少"})
+    result = await build_faq_tool(fake_search).ainvoke(
+        {"keyword": "邮费是多少"}
+    )
 
-    assert result == {"keyword": "邮费是多少", "count": 0, "items": []}
+    assert result == {
+        "keyword": "邮费是多少",
+        "count": 0,
+        "items": [],
+        "retrieval": {
+            "strategy": "hybrid_rerank",
+            "reranked": False,
+            "rewritten_query": "邮费是多少",
+        },
+    }
 
 
 async def test_create_ticket_writes_and_flips_status(fake_repo):

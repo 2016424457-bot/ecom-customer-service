@@ -432,17 +432,29 @@ async def test_query_faq_wraps_chat_repository_with_knowledge_repository(
     captured: dict[str, Any] = {}
 
     async def fake_search(query, *, repository, settings, **kwargs):
+        from app.knowledge.types import KnowledgeHit, RetrievalResult
+
         captured["repository"] = repository
-        return [
-            SimpleNamespace(
-                questions="邮费怎么算？",
-                answer="满 99 包邮。",
-                category="运费",
-            )
-        ]
+        return RetrievalResult(
+            strategy="hybrid_rerank",
+            rewritten_query=query,
+            reranked=True,
+            hits=[
+                KnowledgeHit(
+                    id=1,
+                    category="运费",
+                    questions="邮费怎么算？",
+                    answer="满 99 包邮。",
+                    score=0.9,
+                    section_path=None,
+                    content_type="policy",
+                    source_doc="faq",
+                )
+            ],
+        )
 
     monkeypatch.setattr(
-        "app.services.chat.search_knowledge", fake_search
+        "app.services.chat.search_knowledge_result", fake_search
     )
     model = FakeChatModel(
         [

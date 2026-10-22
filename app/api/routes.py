@@ -29,6 +29,8 @@ async def chat_stream_endpoint(
             prompt_builder=runtime.prompt_builder,
             settings=runtime.settings,
             locks=runtime.locks,
+            faq_search=runtime.faq_search,
+            evidence_checker=runtime.evidence_checker,
         ):
             yield ServerSentEvent(event=event, data=data)
 

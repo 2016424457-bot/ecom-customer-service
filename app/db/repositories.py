@@ -8,6 +8,7 @@ from app.db.models import (
     Faq,
     KnowledgeChunk,
     KnowledgeMiningState,
+    LowConfidenceQuestion,
     Message,
     QaExtractionStaging,
     Ticket,
@@ -134,6 +135,23 @@ class ChatRepository:
             self.session.add(ticket)
             await self.session.flush()
         return ticket
+
+    async def insert_low_confidence_question(
+        self,
+        conversation_id: int | None,
+        raw_question: str,
+        source: str,
+        reason: str | None,
+    ) -> LowConfidenceQuestion:
+        row = LowConfidenceQuestion(
+            conversation_id=conversation_id,
+            raw_question=raw_question,
+            source=source,
+            reason=reason,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
 
 
 class KnowledgeRepository:
