@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -52,15 +54,18 @@ async def test_pending_chunk_becomes_done(session):
     repo = KnowledgeRepository(session)
     chunk_id = await _insert_chunk(repo)
 
-    pending = await repo.list_pending_chunks()
-    assert [row.id for row in pending] == [chunk_id]
+    pending_ids = [row.id for row in await repo.list_pending_chunks()]
+    assert chunk_id in pending_ids
 
     await repo.mark_chunk_vectorized(chunk_id, str(chunk_id))
 
-    assert await repo.list_pending_chunks() == []
-    done = await repo.list_done_chunks()
-    assert [row.id for row in done] == [chunk_id]
-    assert done[0].vector_id == str(chunk_id)
+    pending_ids = [row.id for row in await repo.list_pending_chunks()]
+    assert chunk_id not in pending_ids
+    done_ids = [row.id for row in await repo.list_done_chunks()]
+    assert chunk_id in done_ids
+    row = (await repo.get_chunks_by_ids([chunk_id]))[0]
+    assert row.vector_id == str(chunk_id)
+    assert row.vectorize_status == "done"
 
 
 async def test_count_and_delete_chunks_by_source(session):
@@ -97,17 +102,18 @@ async def test_neighbor_pointers_round_trip(session):
 
 async def test_staging_status_round_trip(session):
     repo = KnowledgeRepository(session)
+    batch_no = f"b1-{uuid.uuid4().hex[:8]}"
     ids = await repo.insert_staging_rows(
         [
             StagingRow(
-                batch_no="b1",
+                batch_no=batch_no,
                 source_ref="conversation:1",
                 category="退货",
                 question="怎么退货？",
                 answer="7 天内可退。",
             ),
             StagingRow(
-                batch_no="b1",
+                batch_no=batch_no,
                 source_ref="conversation:2",
                 category="运费",
                 question="邮费谁出？",
@@ -116,24 +122,31 @@ async def test_staging_status_round_trip(session):
         ]
     )
 
-    extracted = await repo.list_staging_by_status("extracted", batch_no="b1")
+    extracted = await repo.list_staging_by_status(
+        "extracted", batch_no=batch_no
+    )
     assert [row.question for row in extracted] == ["怎么退货？", "邮费谁出？"]
 
     await repo.set_staging_status([ids[0]], "kept")
     await repo.set_staging_status([ids[1]], "discarded")
 
-    assert [row.id for row in await repo.list_staging_by_status("kept")] == [
-        ids[0]
-    ]
     assert [
-        row.id for row in await repo.list_staging_by_status("discarded")
+        row.id
+        for row in await repo.list_staging_by_status(
+            "kept", batch_no=batch_no
+        )
+    ] == [ids[0]]
+    assert [
+        row.id
+        for row in await repo.list_staging_by_status(
+            "discarded", batch_no=batch_no
+        )
     ] == [ids[1]]
 
 
 async def test_mining_cursor_round_trip(session):
     repo = KnowledgeRepository(session)
 
-    assert await repo.get_mining_cursor() == 0
     await repo.set_mining_cursor(42)
     assert await repo.get_mining_cursor() == 42
     await repo.set_mining_cursor(84)

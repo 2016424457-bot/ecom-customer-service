@@ -46,8 +46,8 @@
 | 检查项 | 结果 | 备注 |
 |--------|------|------|
 | 单元测试 `.venv/bin/pytest -m "not integration"` | **134 passed** | 2026-10-22 |
-| 知识仓储集成测试 | **8 passed** | 本机 MySQL |
-| Milvus Lite 往返测试 | **1 passed** | 临时文件 |
+| 集成测试 `.venv/bin/pytest -m integration` | **18 passed** | 含知识仓储、Milvus Lite、DeepSeek smoke |
+| 路由评估 `run_tool_routing_eval.py` | **6/6 PASS** | 真实 DeepSeek |
 | 挖矿评估 `run_qa_mining_eval.py` | **5/5 PASS** | 真实 DeepSeek |
 | 检索评估 `run_faq_retrieval_eval.py` | **hit@1 10/10，hit@3 10/10** | 真实 BGE-M3 |
 | CH03 验收 `ch03_acceptance.py` | **resume / retrieve / chat 全 PASS** | 邮费查询命中运费标准；中断 19 pending 后补齐 22 条 |
