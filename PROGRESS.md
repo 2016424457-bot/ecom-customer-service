@@ -1,8 +1,8 @@
 # 电商智能客服 CH04 — 当前进度与打包说明
 
 - 日期：2026-10-22
-- 分支：`worktree-ch04-retrieval-quality`
-- 状态：功能代码、单元测试、评估集定位校验、前端静态验证、整分支 review 与修复完成；真实检索评估、Faithfulness 报告与端到端验收待用户在终端执行（需要 `.env`、`uv lock`/`uv sync`、重建 Milvus、rerank key）
+- 功能分支：`worktree-ch04-retrieval-quality`（已 fast-forward 合并到 `ch01-pure-chat`）
+- 状态：功能代码、单元测试、评估集定位校验、前端静态验证、整分支 review 与修复、本地合并完成；真实检索评估、Faithfulness 报告与端到端验收待用户在终端执行（需要 `.env`、`uv lock`/`uv sync`、重建 Milvus、rerank key）
 
 ## 一、项目简介
 
