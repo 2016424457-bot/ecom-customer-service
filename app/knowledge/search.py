@@ -1,99 +1,52 @@
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Callable
 
 from app.config import Settings
 from app.knowledge.embeddings import embed_query
-from app.knowledge.milvus_client import (
-    acall,
-    dense_search,
-    ensure_collection,
-    get_client,
+from app.knowledge.retrieval import (
+    Reranker,
+    RetrievalResult,
+    RetrievalStrategy,
+    SearchBackend,
+    retrieve,
 )
 from app.knowledge.types import KnowledgeHit
 
 
-class Searcher(Protocol):
-    async def search(
-        self, vector: list[float], top_k: int
-    ) -> list[tuple[int, float]]:
-        ...
-
-
-class MilvusSearcher:
-    def __init__(self, settings: Settings) -> None:
-        self.settings = settings
-        self.collection = settings.milvus_collection
-        self._client = None
-
-    async def _ensure(self) -> None:
-        if self._client is not None:
-            return
-        self._client = await acall(get_client, self.settings)
-        await acall(
-            ensure_collection,
-            self._client,
-            self.collection,
-            self.settings.embed_dim,
-        )
-
-    async def search(
-        self, vector: list[float], top_k: int
-    ) -> list[tuple[int, float]]:
-        await self._ensure()
-        return await acall(
-            dense_search, self._client, vector, top_k, self.collection
-        )
-
-
-Embedder = Callable[[str, Settings], Awaitable[list[float]]]
-
-
-async def search_knowledge(
-    query: str,
+async def search_knowledge_result(
+    question: str,
     *,
     repository: Any,
     settings: Settings,
+    strategy: RetrievalStrategy | str = RetrievalStrategy.HYBRID_RERANK,
     top_k: int | None = None,
-    min_score: float | None = None,
+    candidates: int | None = None,
     category: str | None = None,
-    searcher: Searcher | None = None,
-    embedder: Embedder = embed_query,
+    content_type: str | None = None,
+    min_score: float | None = None,
+    backend: SearchBackend | None = None,
+    embedder: Callable = embed_query,
+    rewriter: Any | None = None,
+    reranker: Reranker | None = None,
+) -> RetrievalResult:
+    return await retrieve(
+        question,
+        repository=repository,
+        settings=settings,
+        strategy=strategy,
+        top_k=top_k,
+        candidates=candidates,
+        category=category,
+        content_type=content_type,
+        min_score=min_score,
+        backend=backend,
+        embedder=embedder,
+        rewriter=rewriter,
+        reranker=reranker,
+    )
+
+
+async def search_knowledge(
+    question: str, **kwargs: Any
 ) -> list[KnowledgeHit]:
-    active_searcher = (
-        searcher if searcher is not None else MilvusSearcher(settings)
-    )
-    vector = await embedder(query, settings)
-    hits = await active_searcher.search(
-        vector, top_k if top_k is not None else settings.faq_top_k
-    )
-    if not hits:
-        return []
-
-    rows = await repository.get_chunks_by_ids(
-        [chunk_id for chunk_id, _ in hits]
-    )
-    by_id = {row.id: row for row in rows}
-    threshold = (
-        settings.faq_min_score if min_score is None else min_score
-    )
-
-    results: list[KnowledgeHit] = []
-    for chunk_id, score in hits:
-        row = by_id.get(chunk_id)
-        if row is None or row.vectorize_status != "done":
-            continue
-        if score < threshold:
-            continue
-        if category is not None and row.category != category:
-            continue
-        results.append(
-            KnowledgeHit(
-                id=row.id,
-                category=row.category,
-                questions=row.questions,
-                answer=row.answer,
-                score=score,
-                section_path=row.section_path,
-                content_type=row.content_type,
-            )
-        )
-    return results
+    result = await search_knowledge_result(question, **kwargs)
+    return result.hits

@@ -46,6 +46,7 @@ async def main() -> int:
                     case["query"],
                     repository=repository,
                     settings=settings,
+                    strategy="vector",
                     top_k=3,
                     min_score=0.0,
                 )

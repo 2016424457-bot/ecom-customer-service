@@ -58,6 +58,7 @@ async def phase_retrieve(
         "邮费是多少",
         repository=repository,
         settings=settings,
+        strategy="vector",
         top_k=3,
     )
     assert hits, "邮费是多少 did not hit the knowledge base"
@@ -69,7 +70,10 @@ async def phase_retrieve(
     ), "top-3 does not contain shipping fee text"
 
     search = partial(
-        search_knowledge, repository=repository, settings=settings
+        search_knowledge,
+        repository=repository,
+        settings=settings,
+        strategy="vector",
     )
     result = await build_faq_tool(search).ainvoke(
         {"keyword": "邮费是多少"}

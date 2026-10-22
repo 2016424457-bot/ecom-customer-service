@@ -36,6 +36,14 @@ class KnowledgeHit:
 
 
 @dataclass(frozen=True)
+class RetrievalResult:
+    strategy: str
+    rewritten_query: str
+    reranked: bool
+    hits: list[KnowledgeHit]
+
+
+@dataclass(frozen=True)
 class QaPair:
     question: str
     answer: str
