@@ -2,6 +2,17 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class Chunk:
+    category: str
+    questions: str
+    answer: str
+    section_path: str | None
+    content_type: str
+    is_key_clause: bool
+    source_doc: str
+
+
+@dataclass(frozen=True)
 class StagingRow:
     batch_no: str
     source_ref: str | None
