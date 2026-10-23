@@ -102,12 +102,14 @@ async def agent_endpoint(
                 evidence_checker=runtime.evidence_checker,
                 faq_search=runtime.faq_search,
             )
-            out = await graph_runtime.run_turn(
-                deps,
-                conversation_id=conversation.id,
-                user_id=payload.user_id,
-                message=payload.message,
-            )
+            lock = runtime.locks.lock_for(str(conversation.id))
+            async with lock:
+                out = await graph_runtime.run_turn(
+                    deps,
+                    conversation_id=conversation.id,
+                    user_id=payload.user_id,
+                    message=payload.message,
+                )
         except graph_runtime.ConversationNotFound:
             raise HTTPException(status_code=404, detail="会话不存在")
         except HTTPException:

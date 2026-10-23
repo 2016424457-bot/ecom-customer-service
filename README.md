@@ -59,6 +59,7 @@ SSE 事件：
 | `tool` | 工具状态：`{name, arguments, status: done/error, duration_ms, tool_call_id}`；`create_ticket` 拦截为提议，不出现 |
 | `citations` | 知识类强制检索的引用列表，`{items: [{n, chunk_id, section_path, ...}]}` |
 | `actions` | 转人工/建工单可选项：`{event: "actions", items: [{type: "transfer_human"} | {type: "create_ticket", draft: {...}}]}` |
+| `reset` | Agent 工具轮结束时清空当前流式文本；前端清空气泡文本但保留工具徽标 |
 | `token` | 回答文本增量；闲聊/投诉/兜底的固定话术整块输出 |
 | `done` | `{session_id, intent, route, tool_calls, citations, suggested_actions, steps, tokens_used, trace, refused, answer}` |
 | `error` | `{code, message}` |
@@ -414,7 +415,7 @@ make eval-ch05
 - 挖矿去重是规范化问题文本的精确去重，换说法的近重复可能同时入库；挖矿质量受 LLM 波动影响，评估集只是底线。
 - CH05 起 `create_ticket` 只写 `tickets`，不再把会话状态改成“已转人工”；转人工是前端模拟，不接真人系统。Agent 调 `create_ticket` 只生成前端可选项，不会自动建单；只有 `POST /api/actions/create-ticket` 会写库。
 - 业务数据类（物流/订单/售后）Agent 自调 `query_faq` 时，本章不把 FAQ 结果回收成 `citations`；引用只在知识类强制检索路径产出。
-- SSE 按 `agent_llm` 节点过滤 token；工具调用轮的过渡文本可能先显示再被最终答案覆盖，Prompt 已要求模型不要在工具轮输出长篇过渡语。
+- SSE 按 `agent_llm` 节点过滤 token；工具调用轮的过渡文本可能先短暂显示，随后 `reset` 清空气泡文本；最终气泡只保留最终答案。Prompt 仍要求模型不要在工具轮输出长篇过渡语。
 - 建工单表单不预填后端 `draft`，类别与描述由用户当场填写；这是 spec §6.3 的有意设计。
 - 没有用户认证、限流、计费或多租户隔离，不要直接暴露到公网。
 - 默认只监听 `127.0.0.1`，仅适合本地开发与验收。

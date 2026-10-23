@@ -575,6 +575,12 @@
           return;
         }
 
+        if (event === "reset") {
+          assistantItem.text = "";
+          placeholder.textEl.textContent = "";
+          return;
+        }
+
         if (event === "token" && data && typeof data.delta === "string") {
           if (!gotToken) {
             gotToken = true;

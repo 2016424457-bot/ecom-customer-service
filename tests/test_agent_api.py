@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.api import routes
 from app.schemas import AgentRequest
+from app.sessions import ConversationLocks
 
 
 class FakeRepository:
@@ -39,6 +40,7 @@ def _runtime(repository):
         prompt_builder=object(),
         evidence_checker=None,
         faq_search=None,
+        locks=ConversationLocks(),
     )
 
 

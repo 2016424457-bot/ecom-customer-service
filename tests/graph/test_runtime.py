@@ -56,6 +56,25 @@ class FakeGraph:
         yield (
             "updates",
             {
+                "agent_llm": {
+                    "messages": [
+                        AIMessage(
+                            "",
+                            tool_calls=[
+                                {
+                                    "name": "query_order",
+                                    "args": {"order_id": "1001"},
+                                    "id": "t0",
+                                }
+                            ],
+                        )
+                    ]
+                }
+            },
+        )
+        yield (
+            "updates",
+            {
                 "agent_tools": {
                     "trace": {
                         "tools": [
@@ -152,6 +171,7 @@ async def test_stream_turn_filters_and_maps_events(monkeypatch):
     tools = [data["name"] for kind, data in events if kind == "tool"]
 
     assert kinds[0] == "session"
+    assert "reset" in kinds
     assert deltas == ["已", "发货", "抱歉"]
     assert tools == ["query_logistics"]
     assert any(kind == "citations" for kind in kinds)

@@ -245,6 +245,13 @@ async def stream_turn(
                 continue
             if node in DETERMINISTIC_ANSWER_NODES and update.get("answer"):
                 yield ("token", {"delta": update["answer"]})
+            if node == "agent_llm":
+                for message in update.get("messages", []):
+                    if (
+                        isinstance(message, AIMessage)
+                        and message.tool_calls
+                    ):
+                        yield ("reset", {"reason": "tool_step"})
             if node == "forced_rag" and update.get("citations"):
                 yield ("citations", {"items": update["citations"]})
             if node == "agent_tools":
