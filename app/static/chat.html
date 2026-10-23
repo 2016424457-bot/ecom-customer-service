@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#1f3b2f" />
   <title>示例商城 · 售后客服</title>
-  <link rel="stylesheet" href="/static/chat.css?v=4" />
+  <link rel="stylesheet" href="/static/chat.css?v=5" />
 </head>
 <body>
   <div class="app-shell">
@@ -52,6 +52,36 @@
     </div>
   </div>
 
+  <dialog id="ticketDialog" class="ticket-dialog">
+    <form id="ticketForm" class="ticket-form" novalidate>
+      <div class="source-head">
+        <div>
+          <p class="source-kicker">Ticket</p>
+          <h2>创建工单</h2>
+        </div>
+        <button id="closeTicket" class="dialog-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <label class="form-row">
+        <span>反馈类别</span>
+        <select id="ticketType" required>
+          <option value="" disabled selected>请选择</option>
+          <option value="售后">售后</option>
+          <option value="投诉">投诉</option>
+          <option value="咨询">咨询</option>
+        </select>
+      </label>
+      <label class="form-row">
+        <span>反馈描述</span>
+        <textarea id="ticketDescription" rows="4" maxlength="4000" required placeholder="请描述您遇到的问题…"></textarea>
+      </label>
+      <p id="ticketError" class="form-error" role="alert"></p>
+      <div class="ticket-actions">
+        <button id="cancelTicket" class="action-btn" type="button">取消</button>
+        <button id="submitTicket" class="action-btn primary" type="submit">提交工单</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="sourceDialog" class="source-dialog">
     <div class="source-head">
       <div>
@@ -68,6 +98,6 @@
     <div id="sourceAnswer" class="source-answer"></div>
   </dialog>
 
-  <script src="/static/chat.js?v=4"></script>
+  <script src="/static/chat.js?v=5"></script>
 </body>
 </html>

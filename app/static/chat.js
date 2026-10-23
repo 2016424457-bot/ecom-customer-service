@@ -6,6 +6,7 @@
   const HISTORY_KEY = "ecom-chat-history";
   const STREAM_URL = "/api/chat/stream";
   const HEALTH_URL = "/health";
+  const TICKET_URL = "/api/actions/create-ticket";
   const MAX_INPUT = 8000;
 
   const WELCOME =
@@ -41,11 +42,20 @@
   const suggestions = document.getElementById("suggestions");
   const statusDot = document.getElementById("statusDot");
   const statusText = document.getElementById("statusText");
+  const ticketDialog = document.getElementById("ticketDialog");
+  const ticketForm = document.getElementById("ticketForm");
+  const ticketType = document.getElementById("ticketType");
+  const ticketDescription = document.getElementById("ticketDescription");
+  const ticketError = document.getElementById("ticketError");
+  const closeTicket = document.getElementById("closeTicket");
+  const cancelTicket = document.getElementById("cancelTicket");
+  const submitTicket = document.getElementById("submitTicket");
 
   let sessionId = loadSessionId();
   let userId = loadUserId();
   let history = loadHistory();
   let busy = false;
+  let pendingTicket = null;
 
   function uuid() {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -262,6 +272,82 @@
     feedbackEl.classList.remove("is-hidden");
   }
 
+  function showTicketError(text) {
+    if (ticketError) ticketError.textContent = text || "";
+  }
+
+  function appendAssistantMessage(text) {
+    history.push({ role: "assistant", text });
+    saveHistory();
+    createMessage("assistant", text);
+    scrollToBottom();
+  }
+
+  function renderActions(bubble, item) {
+    const actions = Array.isArray(item && item.actions)
+      ? item.actions
+      : [];
+    if (!actions.length || bubble.querySelector(".action-bar")) return;
+
+    const bar = document.createElement("div");
+    bar.className = "action-bar";
+
+    for (const action of actions) {
+      if (!action || typeof action.type !== "string") continue;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "action-btn";
+
+      if (action.type === "transfer_human") {
+        button.textContent = action.handled ? "已转人工" : "转人工";
+        button.disabled = Boolean(action.handled);
+        button.addEventListener("click", () => {
+          if (action.handled) return;
+          action.handled = true;
+          saveHistory();
+          button.disabled = true;
+          button.textContent = "已转人工";
+          appendAssistantMessage("已转接人工客服");
+          appendAssistantMessage(
+            "您好，我是客服小猫，请问有什么可以帮您的",
+          );
+        });
+      } else if (action.type === "create_ticket") {
+        button.textContent = action.handled
+          ? `已建单${action.ticket_no ? " " + action.ticket_no : ""}`
+          : "建工单";
+        button.disabled = Boolean(action.handled);
+        button.addEventListener("click", () => {
+          if (action.handled) return;
+          openTicketDialog(action, button);
+        });
+      } else {
+        continue;
+      }
+      bar.append(button);
+    }
+
+    if (bar.children.length) {
+      bubble.append(bar);
+      scrollToBottom();
+    }
+  }
+
+  function openTicketDialog(action, button) {
+    if (!ticketDialog || typeof ticketDialog.showModal !== "function") {
+      return;
+    }
+    pendingTicket = { action, button };
+    if (ticketForm) ticketForm.reset();
+    showTicketError("");
+    if (!ticketDialog.open) ticketDialog.showModal();
+    if (ticketType) ticketType.focus();
+  }
+
+  function closeTicketDialog() {
+    if (ticketDialog && ticketDialog.open) ticketDialog.close();
+  }
+
   function createToolBadge(name) {
     const badge = document.createElement("span");
     badge.className = "tool-badge";
@@ -318,6 +404,7 @@
       if (item.role === "assistant") {
         renderAnswer(view.textEl, item.text, item.citations);
         renderFeedback(view.feedbackEl, item);
+        renderActions(view.bubble, item);
       }
     }
     scrollToBottom("auto");
@@ -421,6 +508,7 @@
       text: "",
       tools: [],
       citations: [],
+      actions: [],
       refused: false,
       feedback: null,
     };
@@ -482,6 +570,11 @@
           return;
         }
 
+        if (event === "actions" && data && Array.isArray(data.items)) {
+          assistantItem.actions = data.items;
+          return;
+        }
+
         if (event === "token" && data && typeof data.delta === "string") {
           if (!gotToken) {
             gotToken = true;
@@ -501,12 +594,20 @@
             ? data.citations
             : [];
           assistantItem.refused = Boolean(data && data.refused);
+          if (
+            data &&
+            Array.isArray(data.suggested_actions) &&
+            data.suggested_actions.length
+          ) {
+            assistantItem.actions = data.suggested_actions;
+          }
           renderAnswer(
             placeholder.textEl,
             assistantItem.text,
             assistantItem.citations,
           );
           renderFeedback(placeholder.feedbackEl, assistantItem);
+          renderActions(placeholder.bubble, assistantItem);
           return;
         }
 
@@ -519,11 +620,12 @@
 
       placeholder.bubble.classList.remove("typing-state", "streaming");
 
-      if (!assistantItem.text) {
+      if (!assistantItem.text && !assistantItem.actions.length) {
         placeholder.row.remove();
         history.pop();
         addErrorMessage("没有收到回复，请稍后重试。");
       } else {
+        renderActions(placeholder.bubble, assistantItem);
         saveHistory();
         if (!sawDone) {
           addErrorMessage("连接中断，当前回复可能不完整。");
@@ -531,9 +633,12 @@
       }
     } catch (error) {
       placeholder.bubble.classList.remove("typing-state", "streaming");
-      if (!assistantItem.text) {
+      if (!assistantItem.text && !assistantItem.actions.length) {
         placeholder.row.remove();
         history.pop();
+      } else {
+        renderActions(placeholder.bubble, assistantItem);
+        saveHistory();
       }
       const message =
         error instanceof Error && error.message
@@ -564,6 +669,8 @@
     if (history.length && !window.confirm("开始新对话？当前页面消息会清空。")) {
       return;
     }
+    closeTicketDialog();
+    pendingTicket = null;
     history = [];
     saveHistory();
     sessionId = uuid();
@@ -643,6 +750,82 @@
     if (!chip) return;
     void openSource(chip.dataset.chunkId, chip.dataset.n);
   });
+
+  if (ticketForm) {
+    ticketForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!pendingTicket) return;
+
+      const type = ticketType ? ticketType.value : "";
+      const description = ticketDescription
+        ? ticketDescription.value.trim()
+        : "";
+      if (!type) {
+        showTicketError("请选择反馈类别");
+        return;
+      }
+      if (!description) {
+        showTicketError("请填写反馈描述");
+        return;
+      }
+
+      const conversationId = Number(sessionId);
+      if (!Number.isInteger(conversationId) || conversationId <= 0) {
+        showTicketError("会话尚未建立，请先发送一条消息");
+        return;
+      }
+
+      if (submitTicket) submitTicket.disabled = true;
+      try {
+        const response = await fetch(TICKET_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversation_id: conversationId,
+            ticket_type: type,
+            description,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(
+            typeof data.detail === "string"
+              ? data.detail
+              : "工单创建失败，请稍后重试",
+          );
+        }
+
+        pendingTicket.action.handled = true;
+        pendingTicket.action.ticket_no = data.ticket_no;
+        saveHistory();
+        pendingTicket.button.disabled = true;
+        pendingTicket.button.textContent = `已建单 ${data.ticket_no}`;
+        appendAssistantMessage(`工单已创建：${data.ticket_no}`);
+        closeTicketDialog();
+      } catch (error) {
+        showTicketError(
+          error instanceof Error
+            ? error.message
+            : "工单创建失败，请稍后重试",
+        );
+      } finally {
+        if (submitTicket) submitTicket.disabled = false;
+      }
+    });
+  }
+
+  if (closeTicket) closeTicket.addEventListener("click", closeTicketDialog);
+  if (cancelTicket) cancelTicket.addEventListener("click", closeTicketDialog);
+  if (ticketDialog) {
+    ticketDialog.addEventListener("click", (event) => {
+      if (event.target === ticketDialog) closeTicketDialog();
+    });
+    ticketDialog.addEventListener("close", () => {
+      pendingTicket = null;
+      if (ticketForm) ticketForm.reset();
+      showTicketError("");
+    });
+  }
 
   const sourceDialog = document.getElementById("sourceDialog");
   const closeSource = document.getElementById("closeSource");
