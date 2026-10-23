@@ -1,7 +1,13 @@
+import json
 import logging
 from typing import Any
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 
 from app.graph.state import merge_trace
 from app.knowledge.evidence import (
@@ -220,3 +226,157 @@ async def confidence_check(state: dict, *, deps: Any) -> dict:
     """Record the generation-time gate decision for observability."""
     decision = "strong" if state.get("evidence_strong") else "weak"
     return {"trace": merge_trace(state, confidence=decision)}
+
+
+_KNOWLEDGE_EVIDENCE_HINT = (
+    "\n\n## 已检索到的知识证据（请直接引用，不要再调用 query_faq；"
+    "仍可按需调用订单/物流/商品工具）\n"
+)
+
+
+def _agent_messages(state: dict, deps: Any) -> list:
+    system = (
+        deps.prompt_builder.render_system_text()
+        + "\n\n"
+        + deps.agent_prompt
+    )
+    if state.get("route") == "knowledge" and state.get("evidence"):
+        system += _KNOWLEDGE_EVIDENCE_HINT + state["evidence"]
+    return [SystemMessage(content=system), *state.get("messages", [])]
+
+
+def _total_tokens(message: AIMessage) -> int:
+    usage = getattr(message, "usage_metadata", None) or {}
+    total = usage.get("total_tokens")
+    if isinstance(total, int):
+        return total
+    return int(usage.get("input_tokens") or 0) + int(
+        usage.get("output_tokens") or 0
+    )
+
+
+async def agent_llm(state: dict, *, deps: Any) -> dict:
+    """ReAct reasoning step: one model call with tools bound."""
+    model = deps.chat_model.bind_tools(deps.tools)
+    ai: AIMessage = await model.ainvoke(_agent_messages(state, deps))
+    return {
+        "messages": [ai],
+        "steps": state.get("steps", 0) + 1,
+        "tokens_used": state.get("tokens_used", 0) + _total_tokens(ai),
+    }
+
+
+def _faq_evidence(content: str) -> str:
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return content
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not items:
+        return content
+    return render_evidence_block(items)
+
+
+async def agent_tools(state: dict, *, deps: Any) -> dict:
+    """ReAct action step: execute tools; create_ticket becomes a proposal."""
+    last = state["messages"][-1]
+    existing = list(state.get("trace", {}).get("tools", []))
+    trace_tools: list[dict] = []
+    tool_messages: list[ToolMessage] = []
+    actions = list(state.get("suggested_actions", []))
+
+    for call in last.tool_calls:
+        name = call["name"]
+        args = call.get("args") or {}
+        call_id = call["id"]
+
+        if name == "create_ticket":
+            draft = {
+                "description": args.get("description", ""),
+                "ticket_type": args.get("ticket_type", "咨询"),
+            }
+            if not any(
+                action.get("type") == "create_ticket"
+                and action.get("draft") == draft
+                for action in actions
+            ):
+                actions.append({"type": "create_ticket", "draft": draft})
+            tool_messages.append(
+                ToolMessage(
+                    content=(
+                        "已把『建工单』选项交给用户自行确认。"
+                        "请用一句话简要说明并停止，不要再调用任何工具。"
+                    ),
+                    tool_call_id=call_id,
+                    name=name,
+                )
+            )
+            trace_tools.append(
+                {
+                    "name": name,
+                    "ok": True,
+                    "error_code": None,
+                    "duration_ms": 0.0,
+                    "args": args,
+                    "intercepted": True,
+                }
+            )
+            continue
+
+        duplicate_faq = name == "query_faq" and any(
+            item.get("name") == "query_faq" and item.get("ok")
+            for item in existing + trace_tools
+        )
+        if duplicate_faq:
+            tool_messages.append(
+                ToolMessage(
+                    content=(
+                        '{"error": {"code": "duplicate_faq", '
+                        '"message": "query_faq 每轮只能调用一次；'
+                        '请使用已返回的证据。"}}'
+                    ),
+                    tool_call_id=call_id,
+                    name=name,
+                )
+            )
+            trace_tools.append(
+                {
+                    "name": name,
+                    "ok": False,
+                    "error_code": "duplicate_faq",
+                    "duration_ms": 0.0,
+                    "args": args,
+                    "intercepted": True,
+                }
+            )
+            continue
+
+        result = await deps.tool_registry.execute(name, args)
+        content = result.content
+        if name == "query_faq" and result.ok:
+            content = _faq_evidence(result.content)
+        tool_messages.append(
+            ToolMessage(
+                content=content,
+                tool_call_id=call_id,
+                name=name,
+            )
+        )
+        trace_tools.append(
+            {
+                "name": name,
+                "ok": result.ok,
+                "error_code": result.error_code,
+                "duration_ms": result.duration_ms,
+                "args": args,
+                "intercepted": False,
+            }
+        )
+
+    out: dict[str, Any] = {
+        "messages": tool_messages,
+        "trace": merge_trace(state, tools=existing + trace_tools),
+    }
+    if actions:
+        out["suggested_actions"] = actions
+    return out
