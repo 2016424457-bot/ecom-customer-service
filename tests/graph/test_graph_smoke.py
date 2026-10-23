@@ -238,6 +238,71 @@ async def test_complaint_route_skips_model_and_offers_actions():
 
 
 @pytest.mark.asyncio
+async def test_chitchat_route_skips_model_and_returns_fixed_reply():
+    model = FakeModel([])
+    deps = _deps(intent="闲聊", model=model)
+
+    events = [
+        event
+        async for event in runtime.stream_turn(
+            deps, conversation_id=13, user_id="u1", message="你好"
+        )
+    ]
+
+    done = events[-1][1]
+    assert done["route"] == "chitchat"
+    assert done["tool_calls"] == []
+    assert done["tokens_used"] == 0
+    assert done["answer"] == nodes.CHITCHAT_REPLY
+    assert model.calls == []
+
+
+@pytest.mark.asyncio
+async def test_complex_question_uses_two_sequential_tools():
+    model = FakeModel(
+        [
+            AIMessage(
+                "",
+                tool_calls=[
+                    {
+                        "name": "query_order",
+                        "args": {"order_id": "1001"},
+                        "id": "t1",
+                    }
+                ],
+            ),
+            AIMessage(
+                "",
+                tool_calls=[
+                    {
+                        "name": "query_logistics",
+                        "args": {"tracking_no": "SF1"},
+                        "id": "t2",
+                    }
+                ],
+            ),
+            AIMessage("订单已发货，正在派送中。"),
+        ]
+    )
+    deps = _deps(intent="物流", model=model)
+
+    events = [
+        event
+        async for event in runtime.stream_turn(
+            deps,
+            conversation_id=14,
+            user_id="u1",
+            message="订单1001我买了什么，帮我再查一下物流",
+        )
+    ]
+
+    done = events[-1][1]
+    assert done["tool_calls"] == ["query_order", "query_logistics"]
+    assert done["steps"] == 3
+    assert len(model.calls) == 3
+
+
+@pytest.mark.asyncio
 async def test_run_turn_real_graph_non_streaming():
     model = FakeModel([AIMessage("非流式答复")])
     deps = _deps(intent="订单", model=model)
