@@ -50,7 +50,7 @@ CH05 把 CH02–CH04 的「模型选一次工具 → 执行 → 二次生成」�
 
 | 检查项 | 结果 | 备注 |
 |--------|------|------|
-| 单元测试 `pytest -m "not integration"` | **253 passed, 26 deselected** | 2026-10-23，主 checkout `.venv` |
+| 单元测试 `pytest -m "not integration"` | **254 passed, 26 deselected** | 2026-10-23，主 checkout `.venv` |
 | `node --check app/static/chat.js` | 通过 | 前端语法 |
 | 前端静态 mock 浏览器验收 | 通过 | 两按钮独立、转人工双消息、建工单空提交拦截/成功/取消、刷新保留；截图 `dev-notes/ch05-acceptance3-mock.jpg` |
 | 真实 AsyncSqliteSaver 冒烟 | **待用户终端** | 依赖未装；`uv lock && uv sync` 后跑 `python -m scripts.smoke_langgraph` |
