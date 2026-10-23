@@ -44,6 +44,11 @@ class ChatRepository:
         await self.session.flush()
         return conversation
 
+    async def get_conversation(
+        self, conversation_id: int
+    ) -> Conversation | None:
+        return await self.session.get(Conversation, conversation_id)
+
     async def list_messages(self, conversation_id: int) -> list[Message]:
         rows = await self.session.scalars(
             select(Message)

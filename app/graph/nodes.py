@@ -9,6 +9,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+from app.graph.routing import route_by_intent
 from app.graph.state import merge_trace
 from app.knowledge.evidence import (
     citation_items_full,
@@ -137,9 +138,14 @@ async def coref(state: dict, *, deps: Any) -> dict:
 
 
 async def classify_intent(state: dict, *, deps: Any) -> dict:
-    """Classify the user message into one of the seven intents."""
+    """Classify the user message and record its route in state."""
     intent = await deps.intent_classifier.classify(_user_text(state))
-    return {"intent": intent, "trace": merge_trace(state, intent=intent)}
+    route = route_by_intent({"intent": intent})
+    return {
+        "intent": intent,
+        "route": route,
+        "trace": merge_trace(state, intent=intent, route=route),
+    }
 
 
 def _weak_evidence(state: dict, **trace: Any) -> dict:
@@ -319,6 +325,7 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
                     "duration_ms": 0.0,
                     "args": args,
                     "intercepted": True,
+                    "tool_call_id": call_id,
                 }
             )
             continue
@@ -347,6 +354,7 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
                     "duration_ms": 0.0,
                     "args": args,
                     "intercepted": True,
+                    "tool_call_id": call_id,
                 }
             )
             continue
@@ -370,6 +378,7 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
                 "duration_ms": result.duration_ms,
                 "args": args,
                 "intercepted": False,
+                "tool_call_id": call_id,
             }
         )
 

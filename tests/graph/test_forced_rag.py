@@ -74,6 +74,7 @@ async def test_classify_intent_uses_classifier():
     )
 
     assert out["intent"] == "订单"
+    assert out["route"] == "business"
     assert out["trace"]["intent"] == "订单"
     assert deps.intent_classifier.calls == ["订单1001什么状态"]
 
