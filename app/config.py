@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     max_stored_messages: int = Field(default=50, gt=0)
     max_sessions: int = Field(default=1000, gt=0)
 
+    # ch05 graph orchestration
+    max_agent_steps: int = Field(default=6, gt=0)
+    checkpointer_db_path: str = "data/ch05_checkpoints.sqlite"
+    intent_prompt_path: Path = Path("app/prompts/intent_prompt.txt")
+    agent_prompt_path: Path = Path("app/prompts/agent_prompt.txt")
+    intent_temperature: float = 0.0
+    intent_max_tokens: int = 128
+
     database_url: str = (
         "mysql+asyncmy://root:123456@127.0.0.1:3306/ecom_customer_service"
         "?charset=utf8mb4"

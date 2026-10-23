@@ -32,13 +32,13 @@ def build_model_kwargs(
 
 def build_chat_model(settings: Settings) -> ChatOpenAI:
     """Create the streaming chat model."""
-    return ChatOpenAI(
-        **build_model_kwargs(
-            settings,
-            temperature=settings.chat_temperature,
-            max_tokens=settings.chat_max_tokens,
-        )
+    kwargs = build_model_kwargs(
+        settings,
+        temperature=settings.chat_temperature,
+        max_tokens=settings.chat_max_tokens,
     )
+    kwargs["streaming"] = True
+    return ChatOpenAI(**kwargs)
 
 
 def build_extraction_model(settings: Settings) -> Runnable:
