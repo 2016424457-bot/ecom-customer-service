@@ -5,6 +5,7 @@ from langchain_openai import ChatOpenAI
 
 from app.config import Settings
 from app.evaluation.judge import FaithfulnessVerdict
+from app.graph.intent import IntentResult
 from app.knowledge.query_understanding import QueryRewrite
 from app.knowledge.schemas import QaExtraction
 from app.knowledge.self_check import EvidenceAssessment
@@ -39,6 +40,21 @@ def build_chat_model(settings: Settings) -> ChatOpenAI:
     )
     kwargs["streaming"] = True
     return ChatOpenAI(**kwargs)
+
+
+def build_intent_model(settings: Settings) -> Runnable:
+    """Create the structured-output runnable used for intent classification."""
+    chat_model = ChatOpenAI(
+        **build_model_kwargs(
+            settings,
+            temperature=settings.intent_temperature,
+            max_tokens=settings.intent_max_tokens,
+        )
+    )
+    return chat_model.with_structured_output(
+        IntentResult,
+        method=settings.structured_output_method,
+    )
 
 
 def build_extraction_model(settings: Settings) -> Runnable:
