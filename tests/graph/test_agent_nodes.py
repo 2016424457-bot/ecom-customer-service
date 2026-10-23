@@ -231,6 +231,24 @@ async def test_agent_tools_rejects_duplicate_query_faq():
 
 
 @pytest.mark.asyncio
+async def test_agent_tools_skips_malformed_tool_calls():
+    registry = FakeRegistry()
+    last = SimpleNamespace(
+        tool_calls=[
+            {"args": {}, "id": "bad"},
+            {"name": "query_order", "args": {}, "id": "ok"},
+        ]
+    )
+
+    out = await nodes.agent_tools(
+        {"messages": [last]}, deps=_deps(registry=registry)
+    )
+
+    assert registry.calls == [("query_order", {})]
+    assert len(out["messages"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_agent_tools_renders_query_faq_evidence():
     class FaqRegistry:
         async def execute(self, name, arguments):

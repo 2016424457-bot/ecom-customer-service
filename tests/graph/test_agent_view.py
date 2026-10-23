@@ -32,6 +32,42 @@ def test_views_rebuilt_from_messages():
     assert results[0].ok is True
 
 
+def test_views_ignore_prior_turns():
+    prior_ai = AIMessage(
+        "",
+        tool_calls=[{"name": "query_faq", "args": {}, "id": "old"}],
+    )
+    prior_tool = ToolMessage(
+        content="{}", tool_call_id="old", name="query_faq"
+    )
+    current_ai = AIMessage(
+        "",
+        tool_calls=[
+            {"name": "query_logistics", "args": {}, "id": "new"}
+        ],
+    )
+    current_tool = ToolMessage(
+        content="{}", tool_call_id="new", name="query_logistics"
+    )
+    state = {
+        "messages": [
+            HumanMessage("first"),
+            prior_ai,
+            prior_tool,
+            AIMessage("old answer"),
+            HumanMessage("second"),
+            current_ai,
+            current_tool,
+            AIMessage("new answer"),
+        ]
+    }
+
+    calls, results = _views_from_state(state)
+
+    assert [call.id for call in calls] == ["new"]
+    assert [result.tool_call_id for result in results] == ["new"]
+
+
 def test_error_tool_result_is_marked_not_ok():
     ai = AIMessage(
         "",

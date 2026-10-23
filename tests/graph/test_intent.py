@@ -36,6 +36,16 @@ async def test_pure_chitchat_skips_model(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_common_pure_greetings_skip_model(tmp_path: Path):
+    model = FakeModel(error=AssertionError("model must not be called"))
+    classifier = _classifier(model, tmp_path)
+
+    for text in ["你好呀", "早上好", "在吗？", "晚安"]:
+        assert await classifier.classify(text) == "闲聊"
+    assert model.calls == []
+
+
+@pytest.mark.asyncio
 async def test_classifier_returns_structured_intent(tmp_path: Path):
     model = FakeModel(result=IntentResult(intent="订单"))
     classifier = _classifier(model, tmp_path)

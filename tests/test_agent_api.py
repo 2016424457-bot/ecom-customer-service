@@ -27,7 +27,21 @@ class FakeRepository:
         return None
 
 
-def _runtime(repository):
+class RecordingLocks:
+    def __init__(self) -> None:
+        self.keys: list[str] = []
+
+    def lock_for(self, key: str):
+        self.keys.append(key)
+
+        @asynccontextmanager
+        async def acquired():
+            yield
+
+        return acquired()
+
+
+def _runtime(repository, locks=None):
     @asynccontextmanager
     async def repository_scope():
         yield repository
@@ -40,7 +54,7 @@ def _runtime(repository):
         prompt_builder=object(),
         evidence_checker=None,
         faq_search=None,
-        locks=ConversationLocks(),
+        locks=locks or ConversationLocks(),
     )
 
 
@@ -76,14 +90,16 @@ async def test_agent_endpoint_returns_tool_views(monkeypatch):
         routes.graph_runtime, "build_deps", lambda **kwargs: object()
     )
     monkeypatch.setattr(routes.graph_runtime, "run_turn", fake_run)
+    locks = RecordingLocks()
 
     response = await routes.agent_endpoint(
         AgentRequest(
             user_id="u1", message="物流到哪了", conversation_id=5
         ),
-        _runtime(FakeRepository()),
+        _runtime(FakeRepository(), locks),
     )
 
+    assert locks.keys == ["5"]
     assert response.conversation_id == 5
     assert response.answer == "正在派送中。"
     assert response.tool_calls[0].name == "query_logistics"

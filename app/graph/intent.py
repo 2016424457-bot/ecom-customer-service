@@ -11,7 +11,8 @@ logger = logging.getLogger(__name__)
 INTENTS = ("物流", "订单", "商品咨询", "退款退货", "售后", "投诉", "闲聊")
 
 CHITCHAT_RE = re.compile(
-    r"^(你好|您好|在吗|在么|谢谢|多谢|再见|拜拜|哈喽|hi|hello)"
+    r"^(你好呀?|您好呀?|早上好|中午好|下午好|晚上好|早安|晚安|"
+    r"在吗|在么|在不在|谢谢|多谢|再见|拜拜|哈喽|hi|hello)"
     r"[!！。,.，?？\s]*$",
     re.IGNORECASE,
 )

@@ -4,7 +4,7 @@ from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.sse import EventSourceResponse, ServerSentEvent
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.errors import AppError, map_upstream_error
@@ -41,12 +41,20 @@ def _message_text(content: Any) -> str:
     return ""
 
 
+def _current_turn_messages(state: dict) -> list:
+    messages = state.get("messages", [])
+    for index in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[index], HumanMessage):
+            return messages[index:]
+    return messages
+
+
 def _views_from_state(
     state: dict,
 ) -> tuple[list[ToolCallView], list[ToolResultView]]:
     calls: list[ToolCallView] = []
     results: list[ToolResultView] = []
-    for message in state.get("messages", []):
+    for message in _current_turn_messages(state):
         if isinstance(message, AIMessage) and message.tool_calls:
             for call in message.tool_calls:
                 calls.append(
