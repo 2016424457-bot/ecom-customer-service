@@ -380,3 +380,46 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
     if actions:
         out["suggested_actions"] = actions
     return out
+
+
+def resolve_answer(state: dict) -> str:
+    """Return the final answer from a deterministic node or the last AI message."""
+    if state.get("answer"):
+        return state["answer"]
+    for message in reversed(state.get("messages", [])):
+        if isinstance(message, AIMessage):
+            text = _content_text(message.content)
+            if text:
+                return text
+    return ""
+
+
+async def log_node(state: dict, *, deps: Any) -> dict:
+    """Log the turn trace and persist the assistant message for audit."""
+    answer = resolve_answer(state)
+    messages = state.get("messages", [])
+    last = messages[-1] if messages else None
+    updates: dict[str, Any] = {}
+
+    if state.get("answer") and not (
+        isinstance(last, AIMessage)
+        and _content_text(last.content) == answer
+    ):
+        updates["messages"] = [AIMessage(content=answer)]
+
+    if state.get("conversation_id"):
+        await deps.repository.add_message(
+            state["conversation_id"], "assistant", content=answer or None
+        )
+        await deps.repository.commit()
+
+    logger.info(
+        "ch05 turn conv=%s intent=%s route=%s steps=%s tokens=%s trace=%s",
+        state.get("conversation_id"),
+        state.get("intent"),
+        state.get("route"),
+        state.get("steps"),
+        state.get("tokens_used"),
+        state.get("trace", {}),
+    )
+    return updates
