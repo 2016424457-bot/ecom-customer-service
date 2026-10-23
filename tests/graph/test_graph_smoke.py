@@ -238,6 +238,21 @@ async def test_complaint_route_skips_model_and_offers_actions():
 
 
 @pytest.mark.asyncio
+async def test_run_turn_real_graph_non_streaming():
+    model = FakeModel([AIMessage("非流式答复")])
+    deps = _deps(intent="订单", model=model)
+
+    out = await runtime.run_turn(
+        deps, conversation_id=12, user_id="u1", message="订单1001"
+    )
+
+    assert out["conversation_id"] == 12
+    assert out["state"]["route"] == "business"
+    assert out["state"]["messages"][-1].content == "非流式答复"
+    assert deps.repository.rows[-1][1] == "assistant"
+
+
+@pytest.mark.asyncio
 async def test_checkpointer_carries_history_across_turns():
     first = FakeModel([AIMessage("第一轮答复")])
     deps = _deps(intent="订单", model=first)
