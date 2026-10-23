@@ -182,7 +182,7 @@ async def test_query_faq_empty_result_keeps_shape():
     }
 
 
-async def test_create_ticket_writes_and_flips_status(fake_repo):
+async def test_create_ticket_writes_without_flipping_status(fake_repo):
     tool = build_ticket_tool(fake_repo, conversation_id=7)
 
     result = await tool.ainvoke(
@@ -191,7 +191,7 @@ async def test_create_ticket_writes_and_flips_status(fake_repo):
 
     assert result["ticket_no"].startswith("T")
     assert result["status"] == "待处理"
-    assert fake_repo.status_updates == [(7, "已转人工")]
+    assert fake_repo.status_updates == []
     assert fake_repo.tickets[0].description == "耳机有杂音"
 
 

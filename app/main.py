@@ -6,6 +6,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.actions import router as actions_router
 from app.api.routes import router
 from app.config import Settings
 from app.errors import AppError
@@ -38,6 +39,7 @@ def create_app(
         "/static", StaticFiles(directory=STATIC_DIR), name="static"
     )
     application.include_router(router)
+    application.include_router(actions_router)
 
     @application.get("/", include_in_schema=False)
     async def index() -> RedirectResponse:

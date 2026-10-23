@@ -105,6 +105,28 @@ class AgentResponse(BaseModel):
     suggested_actions: list[dict] = Field(default_factory=list)
 
 
+class CreateTicketRequest(BaseModel):
+    """Payload for the user-clicked create-ticket action."""
+
+    conversation_id: int
+    description: str = Field(min_length=1, max_length=4000)
+    ticket_type: Literal["售后", "投诉", "咨询"]
+
+    @field_validator("description")
+    @classmethod
+    def reject_blank_description(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("description must not be whitespace-only")
+        return value
+
+
+class CreateTicketResponse(BaseModel):
+    """Created ticket summary returned to the frontend."""
+
+    ticket_no: str
+    status: str
+
+
 class AfterSalesExtraction(BaseModel):
     """Fixed fields extracted from an after-sales message."""
 
