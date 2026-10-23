@@ -21,6 +21,7 @@ from app.llm import (
     build_chat_model,
     build_evidence_check_model,
     build_extraction_model,
+    build_intent_model,
 )
 from app.prompt_builder import PromptBuilder
 from app.sessions import ConversationLocks
@@ -33,6 +34,7 @@ class Runtime:
     settings: Settings
     prompt_builder: PromptBuilder
     chat_model: Any
+    intent_model: Any
     extraction_model: Any
     locks: ConversationLocks
     session_factory: async_sessionmaker[AsyncSession] | None = None
@@ -93,6 +95,7 @@ def build_runtime(settings: Settings) -> Runtime:
             service_hours=settings.service_hours,
         ),
         chat_model=build_chat_model(settings),
+        intent_model=build_intent_model(settings),
         extraction_model=build_extraction_model(settings),
         evidence_checker=EvidenceChecker(
             build_evidence_check_model(settings),

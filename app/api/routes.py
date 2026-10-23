@@ -1,23 +1,138 @@
 """HTTP routes for the chat API."""
 
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.sse import EventSourceResponse, ServerSentEvent
+from langchain_core.messages import AIMessage, ToolMessage
+from sqlalchemy.exc import SQLAlchemyError
 
+from app.errors import AppError, map_upstream_error
+from app.graph import runtime as graph_runtime
+from app.graph.nodes import resolve_answer
 from app.runtime import Runtime, get_runtime
 from app.schemas import (
     AfterSalesExtraction,
+    AgentRequest,
+    AgentResponse,
     ChatExtractRequest,
     ChatRequest,
     FaithCaseOut,
     FaithCaseUpdate,
     KnowledgeChunkDetail,
+    ToolCallView,
+    ToolResultView,
 )
 from app.services.chat import stream_chat
 from app.services.extraction import extract_after_sales
 
 router = APIRouter()
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
+def _views_from_state(
+    state: dict,
+) -> tuple[list[ToolCallView], list[ToolResultView]]:
+    calls: list[ToolCallView] = []
+    results: list[ToolResultView] = []
+    for message in state.get("messages", []):
+        if isinstance(message, AIMessage) and message.tool_calls:
+            for call in message.tool_calls:
+                calls.append(
+                    ToolCallView(
+                        id=call.get("id", ""),
+                        name=call.get("name", ""),
+                        args=call.get("args") or {},
+                    )
+                )
+        elif isinstance(message, ToolMessage):
+            results.append(
+                ToolResultView(
+                    tool_call_id=message.tool_call_id,
+                    name=getattr(message, "name", "") or "",
+                    ok=getattr(message, "status", "success") != "error",
+                    content=_message_text(message.content),
+                )
+            )
+    return calls, results
+
+
+@router.post("/api/agent", response_model=AgentResponse)
+async def agent_endpoint(
+    payload: AgentRequest,
+    runtime: Runtime = Depends(get_runtime),
+) -> AgentResponse:
+    """Run one graph turn without streaming; used by evaluations."""
+    async with runtime.repository_scope() as repository:
+        try:
+            if payload.conversation_id is not None:
+                conversation = await repository.get_conversation(
+                    payload.conversation_id
+                )
+                if conversation is None:
+                    raise HTTPException(
+                        status_code=404, detail="会话不存在"
+                    )
+            else:
+                conversation = (
+                    await repository.get_or_create_conversation(
+                        None, payload.user_id
+                    )
+                )
+                await repository.commit()
+
+            deps = graph_runtime.build_deps(
+                settings=runtime.settings,
+                chat_model=runtime.chat_model,
+                intent_model=runtime.intent_model,
+                prompt_builder=runtime.prompt_builder,
+                repository=repository,
+                conversation_id=conversation.id,
+                evidence_checker=runtime.evidence_checker,
+                faq_search=runtime.faq_search,
+            )
+            out = await graph_runtime.run_turn(
+                deps,
+                conversation_id=conversation.id,
+                user_id=payload.user_id,
+                message=payload.message,
+            )
+        except graph_runtime.ConversationNotFound:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        except HTTPException:
+            raise
+        except SQLAlchemyError:
+            raise HTTPException(
+                status_code=503, detail="数据库暂时不可用,请稍后重试"
+            )
+        except AppError:
+            raise
+        except Exception as exc:
+            error = map_upstream_error(exc)
+            raise HTTPException(
+                status_code=error.status_code, detail=error.message
+            )
+
+    state = out["state"]
+    calls, results = _views_from_state(state)
+    return AgentResponse(
+        conversation_id=out["conversation_id"],
+        answer=resolve_answer(state),
+        tool_calls=calls,
+        tool_results=results,
+        suggested_actions=state.get("suggested_actions", []) or [],
+    )
 
 
 @router.post("/api/chat/stream", response_class=EventSourceResponse)

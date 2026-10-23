@@ -315,6 +315,7 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
                     ),
                     tool_call_id=call_id,
                     name=name,
+                    status="success",
                 )
             )
             trace_tools.append(
@@ -344,6 +345,7 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
                     ),
                     tool_call_id=call_id,
                     name=name,
+                    status="error",
                 )
             )
             trace_tools.append(
@@ -368,6 +370,7 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
                 content=content,
                 tool_call_id=call_id,
                 name=name,
+                status="success" if result.ok else "error",
             )
         )
         trace_tools.append(

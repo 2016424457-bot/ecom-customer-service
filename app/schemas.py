@@ -60,6 +60,51 @@ class ErrorResponse(BaseModel):
     message: str
 
 
+class ToolCallView(BaseModel):
+    """One tool call selected by the agent."""
+
+    id: str
+    name: str
+    args: dict = Field(default_factory=dict)
+
+
+class ToolResultView(BaseModel):
+    """One tool result fed back to the agent."""
+
+    tool_call_id: str
+    name: str = ""
+    ok: bool = True
+    content: str = ""
+
+
+class AgentRequest(BaseModel):
+    """Payload for the non-streaming graph endpoint."""
+
+    user_id: str = Field(
+        default="anonymous",
+        pattern=r"^[A-Za-z0-9_-]{1,64}$",
+    )
+    message: str = Field(min_length=1, max_length=8000)
+    conversation_id: int | None = None
+
+    @field_validator("message")
+    @classmethod
+    def reject_blank_message(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("message must not be whitespace-only")
+        return value
+
+
+class AgentResponse(BaseModel):
+    """Non-streaming graph result used by /api/agent and evaluations."""
+
+    conversation_id: int
+    answer: str
+    tool_calls: list[ToolCallView] = Field(default_factory=list)
+    tool_results: list[ToolResultView] = Field(default_factory=list)
+    suggested_actions: list[dict] = Field(default_factory=list)
+
+
 class AfterSalesExtraction(BaseModel):
     """Fixed fields extracted from an after-sales message."""
 
