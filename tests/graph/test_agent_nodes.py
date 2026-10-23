@@ -108,6 +108,19 @@ async def test_agent_llm_accumulates_steps_and_tokens():
 
 
 @pytest.mark.asyncio
+async def test_agent_llm_empty_answer_uses_fallback():
+    model = FakeModel(AIMessage(""))
+
+    out = await nodes.agent_llm(
+        {"messages": [HumanMessage("hi")], "steps": 0, "tokens_used": 0},
+        deps=_deps(model=model),
+    )
+
+    assert out["answer"] == nodes.EMPTY_REPLY
+    assert out["messages"][0].content == nodes.EMPTY_REPLY
+
+
+@pytest.mark.asyncio
 async def test_agent_tools_executes_normal_tool():
     registry = FakeRegistry()
     ai = AIMessage(

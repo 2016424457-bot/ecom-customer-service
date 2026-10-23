@@ -38,6 +38,10 @@ STEP_CAP_REPLY = (
     "这个问题处理步骤较多，我先帮您转接人工客服，"
     "您也可以创建一个工单，我们会尽快跟进。"
 )
+EMPTY_REPLY = (
+    "抱歉，我这边暂时没有生成有效回复，"
+    "请换个说法或转人工客服。"
+)
 
 
 def _content_text(content: Any) -> str:
@@ -265,10 +269,20 @@ async def agent_llm(state: dict, *, deps: Any) -> dict:
     """ReAct reasoning step: one model call with tools bound."""
     model = deps.chat_model.bind_tools(deps.tools)
     ai: AIMessage = await model.ainvoke(_agent_messages(state, deps))
+    steps = state.get("steps", 0) + 1
+    tokens = state.get("tokens_used", 0) + _total_tokens(ai)
+    if not ai.tool_calls and not _content_text(ai.content):
+        fallback = AIMessage(content=EMPTY_REPLY)
+        return {
+            "messages": [fallback],
+            "answer": EMPTY_REPLY,
+            "steps": steps,
+            "tokens_used": tokens,
+        }
     return {
         "messages": [ai],
-        "steps": state.get("steps", 0) + 1,
-        "tokens_used": state.get("tokens_used", 0) + _total_tokens(ai),
+        "steps": steps,
+        "tokens_used": tokens,
     }
 
 
@@ -292,9 +306,11 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
     actions = list(state.get("suggested_actions", []))
 
     for call in last.tool_calls:
-        name = call["name"]
+        name = call.get("name")
+        call_id = call.get("id")
+        if not name or not call_id:
+            continue
         args = call.get("args") or {}
-        call_id = call["id"]
 
         if name == "create_ticket":
             draft = {

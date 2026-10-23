@@ -193,11 +193,12 @@ def _graph_input(
 def _tool_events(update: dict) -> list[dict]:
     events: list[dict] = []
     for item in update.get("trace", {}).get("tools", []):
-        if item.get("name") == "create_ticket":
+        name = item.get("name")
+        if not name or name == "create_ticket":
             continue
         events.append(
             {
-                "name": item["name"],
+                "name": name,
                 "status": "done" if item.get("ok") else "error",
                 "duration_ms": item.get("duration_ms", 0.0),
                 "code": item.get("error_code"),
