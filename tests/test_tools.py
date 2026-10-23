@@ -81,6 +81,8 @@ async def test_query_order_shape():
     assert result["status"] in {"已支付", "已发货", "已完成"}
     assert isinstance(result["amount"], float)
     assert result["items"]
+    assert result["tracking_no"].startswith("SF")
+    assert len(result["tracking_no"]) == 14
 
 
 async def test_query_product_shape():
@@ -93,11 +95,12 @@ async def test_query_product_shape():
 
 
 async def test_query_logistics_shape():
-    result = await query_logistics.ainvoke({"order_id": "1001"})
+    result = await query_logistics.ainvoke(
+        {"tracking_no": "SF123456789012"}
+    )
 
-    assert result["order_id"] == "1001"
+    assert result["tracking_no"] == "SF123456789012"
     assert result["status"] in {"运输中", "派送中", "已签收"}
-    assert result["tracking_no"]
     assert result["latest_event"]
 
 

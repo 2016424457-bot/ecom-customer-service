@@ -22,5 +22,6 @@ def query_order(order_id: str) -> dict:
             }
         ],
         "amount": round(random.uniform(39, 899), 2),
+        "tracking_no": "SF" + "".join(random.choices("0123456789", k=12)),
         "created_at": created.isoformat(),
     }

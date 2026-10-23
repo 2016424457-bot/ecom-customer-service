@@ -145,7 +145,7 @@ def test_stream_route_emits_tool_events(
         settings=settings,
         prompt_builder=prompt_builder,
         responses=[
-            [tool_chunk("query_logistics", '{"order_id":"1001"}', "call_1")],
+            [tool_chunk("query_logistics", '{"tracking_no":"SF123456789012"}', "call_1")],
             [AIMessageChunk(content="已发货")],
         ],
     )

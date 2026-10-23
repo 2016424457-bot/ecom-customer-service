@@ -50,6 +50,9 @@ def _evaluate(
     if "expect_order_id" in case:
         if str(args.get("order_id")) != case["expect_order_id"]:
             return False, f"order_id={args.get('order_id')!r}"
+    if "expect_tracking_no" in case:
+        if str(args.get("tracking_no")) != case["expect_tracking_no"]:
+            return False, f"tracking_no={args.get('tracking_no')!r}"
     if "expect_keyword_contains" in case:
         keyword = str(args.get("keyword", ""))
         if case["expect_keyword_contains"] not in keyword:

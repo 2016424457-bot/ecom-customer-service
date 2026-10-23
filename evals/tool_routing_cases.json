@@ -1,8 +1,13 @@
 [
   {
     "message": "订单 1001 的物流到哪了",
-    "expect_tool": "query_logistics",
+    "expect_tool": "query_order",
     "expect_order_id": "1001"
+  },
+  {
+    "message": "物流单号 SF123456789012 到哪了",
+    "expect_tool": "query_logistics",
+    "expect_tracking_no": "SF123456789012"
   },
   {
     "message": "退货政策是什么",

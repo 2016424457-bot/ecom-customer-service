@@ -110,7 +110,9 @@ async def main() -> int:
 
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            events = await run_case(client, "订单 1001 的物流到哪了")
+            events = await run_case(
+                client, "物流单号 SF123456789012 到哪了"
+            )
             conversation_id = int(session_id_of(events))
             tools = running_tools(events)
             answer = answer_text(events)

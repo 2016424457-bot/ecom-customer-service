@@ -112,7 +112,7 @@ async def test_tool_round_emits_status_and_converges(
     repo = FakeRepository()
     model = FakeChatModel(
         [
-            [_tool_chunk("query_logistics", '{"order_id":"1001"}', "call_1")],
+            [_tool_chunk("query_logistics", '{"tracking_no":"SF123456789012"}', "call_1")],
             [AIMessageChunk(content="已"), AIMessageChunk(content="发货")],
         ]
     )
@@ -256,7 +256,7 @@ async def test_second_turn_sees_previous_tool_messages(
     locks = ConversationLocks()
     first_model = FakeChatModel(
         [
-            [_tool_chunk("query_logistics", '{"order_id":"1001"}', "call_1")],
+            [_tool_chunk("query_logistics", '{"tracking_no":"SF123456789012"}', "call_1")],
             [AIMessageChunk(content="已发货")],
         ]
     )

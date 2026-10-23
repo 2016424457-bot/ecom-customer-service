@@ -176,7 +176,9 @@ async def test_multi_tool_turn_is_not_refused(settings, prompt_builder):
         [
             [
                 tool_chunk(
-                    "query_logistics", '{"order_id":"1001"}', "call_1"
+                    "query_logistics",
+                    '{"tracking_no":"SF123456789012"}',
+                    "call_1",
                 ),
                 tool_chunk(
                     "query_faq", '{"keyword":"退货运费谁出"}', "call_2"
