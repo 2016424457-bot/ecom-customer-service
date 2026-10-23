@@ -153,8 +153,19 @@ async def chat_stream_endpoint(
             locks=runtime.locks,
             faq_search=runtime.faq_search,
             evidence_checker=runtime.evidence_checker,
+            intent_model=runtime.intent_model,
         ):
             yield ServerSentEvent(event=event, data=data)
+
+
+@router.post("/api/chat", response_class=EventSourceResponse)
+async def chat_endpoint(
+    payload: ChatRequest,
+    runtime: Runtime = Depends(get_runtime),
+) -> AsyncIterator[ServerSentEvent]:
+    """Alias for /api/chat/stream kept for the CH05 spec."""
+    async for event in chat_stream_endpoint(payload, runtime):
+        yield event
 
 
 @router.post("/api/chat/extract", response_model=AfterSalesExtraction)

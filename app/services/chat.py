@@ -1,26 +1,16 @@
-"""Streaming chat orchestration with one round of tool calling."""
+"""Streaming chat adapter: one turn delegated to the CH05 LangGraph."""
 
-import json
 import logging
-import time
 import uuid
-from functools import partial
 from typing import Any, AsyncIterator
 
-from langchain_core.messages import AIMessage, ToolMessage
-
 from app.config import Settings
-from app.db.repositories import KnowledgeRepository
 from app.errors import ERROR_MESSAGES, AppError, map_upstream_error
-from app.history import trim_history
-from app.knowledge.evidence import render_evidence_block
-from app.knowledge.search import search_knowledge_result
+from app.graph import runtime as graph_runtime
+from app.graph.intent import IntentResult
 from app.prompt_builder import PromptBuilder
-from app.services.chat_history import to_langchain
 from app.session_id import parse_conversation_id
-from app.services.tool_exec import ToolRegistry, ToolResult
 from app.sessions import ConversationLocks
-from app.tools import build_tools
 
 logger = logging.getLogger(__name__)
 
@@ -50,31 +40,11 @@ def chunk_text(content: Any) -> str:
     return ""
 
 
-def _usage_tokens(usage: dict[str, Any] | None) -> tuple[Any, Any]:
-    if not usage:
-        return None, None
-    return usage.get("input_tokens"), usage.get("output_tokens")
-
-
 def _lock_key(session_id: str | None) -> str:
     conversation_id = parse_conversation_id(session_id)
     if conversation_id is not None:
         return str(conversation_id)
     return session_id or f"new:{uuid.uuid4()}"
-
-
-def _openai_tool_calls(tool_calls: list[dict]) -> list[dict]:
-    return [
-        {
-            "id": call["id"],
-            "type": "function",
-            "function": {
-                "name": call["name"],
-                "arguments": json.dumps(call["args"], ensure_ascii=False),
-            },
-        }
-        for call in tool_calls
-    ]
 
 
 async def stream_chat(
@@ -89,318 +59,45 @@ async def stream_chat(
     locks: ConversationLocks,
     faq_search: Any = None,
     evidence_checker: Any = None,
+    intent_model: Any = None,
 ) -> AsyncIterator[Event]:
-    """Stream one turn: model-selected tool call, execution, then answer.
-
-    The first upstream pass is bound to the five tools; if it requests tool
-    calls they are executed once and their results are fed back. The second
-    pass is never bound to tools, so the turn converges after one round.
-    """
-    started = time.perf_counter()
+    """Run one graph turn and map its events to the existing SSE contract."""
     lock = locks.lock_for(_lock_key(session_id))
-
     try:
         async with lock:
             conversation = await repository.get_or_create_conversation(
                 session_id, user_id
             )
-            conversation_id = conversation.id
-            yield ("session", {"session_id": str(conversation_id)})
-
-            rows = await repository.list_messages(conversation_id)
-            history = trim_history(
-                to_langchain(rows), settings.history_token_budget
-            )
-            messages = prompt_builder.build_messages(history, user_message)
-
-            await repository.add_message(
-                conversation_id, "user", content=user_message
-            )
             await repository.commit()
 
-            knowledge_repository = repository
-            if not hasattr(knowledge_repository, "get_chunks_by_ids"):
-                session = getattr(repository, "session", None)
-                if session is not None:
-                    knowledge_repository = KnowledgeRepository(session)
-            tools = build_tools(
-                repository,
-                conversation_id,
-                faq_search=(
-                    faq_search
-                    or partial(
-                        search_knowledge_result,
-                        repository=knowledge_repository,
-                        settings=settings,
-                    )
-                ),
-            )
-            registry = ToolRegistry(
-                tools,
-                timeout_seconds=settings.tool_timeout_seconds,
-                max_retries=settings.tool_max_retries,
-                retry_disabled=frozenset({"create_ticket", "query_faq"}),
-                timeout_overrides={
-                    "query_faq": settings.faq_tool_timeout_seconds
-                },
-            )
-
-            token_events = 0
-            usage: dict[str, Any] | None = None
-            finish_reason: str | None = None
-            tool_names: list[str] = []
-
-            gathered = None
-            first_text_parts: list[str] = []
-            async for chunk in chat_model.bind_tools(tools).astream(messages):
-                text = chunk_text(getattr(chunk, "content", None))
-                if text:
-                    first_text_parts.append(text)
-                    token_events += 1
-                    yield ("token", {"delta": text})
-
-                chunk_usage = getattr(chunk, "usage_metadata", None)
-                if chunk_usage:
-                    usage = chunk_usage
-                response_metadata = (
-                    getattr(chunk, "response_metadata", None) or {}
-                )
-                reason = response_metadata.get("finish_reason")
-                if reason:
-                    finish_reason = reason
-
-                gathered = chunk if gathered is None else gathered + chunk
-
-            tool_calls = [
-                call
-                for call in (getattr(gathered, "tool_calls", None) or [])
-                if call.get("name") and call.get("id")
-            ]
-            final_text_parts = first_text_parts
-            citations: list[dict] = []
-            refused = False
-            reranked = False
-            faq_payload: dict | None = None
-            faq_called = False
-            successful_tool_names: list[str] = []
-
-            if tool_calls:
-                await repository.add_message(
-                    conversation_id,
-                    "assistant",
-                    content=None,
-                    tool_calls=_openai_tool_calls(tool_calls),
-                )
-                await repository.commit()
-
-                tool_messages: list[ToolMessage] = []
-                for call in tool_calls:
-                    name = call["name"]
-                    arguments = call.get("args") or {}
-                    call_id = call["id"]
-                    tool_names.append(name)
-
-                    yield (
-                        "tool",
-                        {
-                            "name": name,
-                            "arguments": arguments,
-                            "status": "running",
-                            "tool_call_id": call_id,
-                        },
-                    )
-                    duplicate_faq = name == "query_faq" and faq_called
-                    if duplicate_faq:
-                        result = ToolResult(
-                            name=name,
-                            ok=False,
-                            content=json.dumps(
-                                {
-                                    "error": {
-                                        "code": "duplicate_faq",
-                                        "message": (
-                                            "query_faq 每轮只能调用一次；"
-                                            "请使用已返回的证据。"
-                                        ),
-                                    }
-                                },
-                                ensure_ascii=False,
-                            ),
-                            error_code="duplicate_faq",
-                            duration_ms=0.0,
-                            attempts=0,
-                        )
-                    else:
-                        result = await registry.execute(name, arguments)
-
-                    llm_content = result.content
-                    if name == "query_faq" and result.ok:
-                        try:
-                            payload = json.loads(result.content)
-                        except (TypeError, ValueError):
-                            logger.warning("query_faq_payload_invalid")
-                        else:
-                            faq_called = True
-                            faq_payload = payload
-                            llm_content = (
-                                render_evidence_block(
-                                    payload.get("items") or []
-                                )
-                                or "（无检索结果）"
-                            )
-                    if result.ok:
-                        successful_tool_names.append(name)
-                        yield (
-                            "tool",
-                            {
-                                "name": name,
-                                "status": "done",
-                                "duration_ms": result.duration_ms,
-                                "tool_call_id": call_id,
-                            },
-                        )
-                    else:
-                        yield (
-                            "tool",
-                            {
-                                "name": name,
-                                "status": "error",
-                                "duration_ms": result.duration_ms,
-                                "code": result.error_code,
-                                "tool_call_id": call_id,
-                            },
-                        )
-
-                    tool_message = ToolMessage(
-                        content=llm_content, tool_call_id=call_id
-                    )
-                    tool_messages.append(tool_message)
-                    await repository.add_message(
-                        conversation_id,
-                        "tool",
-                        content=result.content,
-                        tool_call_id=call_id,
-                    )
-                    await repository.commit()
-
-                if faq_payload is not None:
-                    retrieval = faq_payload.get("retrieval") or {}
-                    reranked = bool(retrieval.get("reranked", False))
-                    items = faq_payload.get("items") or []
-                    assessment = None
-                    if evidence_checker is not None:
-                        assessment = await evidence_checker.assess(
-                            user_message, items
-                        )
-                    if (
-                        assessment is not None
-                        and not assessment.useful
-                        and successful_tool_names == ["query_faq"]
-                    ):
-                        refusal = settings.refusal_message
-                        await repository.insert_low_confidence_question(
-                            conversation_id,
-                            user_message,
-                            "self_check",
-                            assessment.reason,
-                        )
-                        final_text_parts = [refusal]
-                        refused = True
-                        token_events += 1
-                        yield ("token", {"delta": refusal})
-                    else:
-                        citations = [
-                            {
-                                key: item[key]
-                                for key in (
-                                    "n",
-                                    "chunk_id",
-                                    "section_path",
-                                    "source_doc",
-                                    "question",
-                                    "category",
-                                    "score",
-                                )
-                            }
-                            for item in items
-                        ]
-
-                if not refused:
-                    ai_message = AIMessage(
-                        content="".join(first_text_parts),
-                        tool_calls=tool_calls,
-                    )
-                    final_messages = (
-                        messages + [ai_message] + tool_messages
-                    )
-                    final_text_parts = []
-                    async for chunk in chat_model.astream(
-                        final_messages
-                    ):
-                        text = chunk_text(
-                            getattr(chunk, "content", None)
-                        )
-                        if text:
-                            final_text_parts.append(text)
-                            token_events += 1
-                            yield ("token", {"delta": text})
-
-                        chunk_usage = getattr(
-                            chunk, "usage_metadata", None
-                        )
-                        if chunk_usage:
-                            usage = chunk_usage
-                        response_metadata = (
-                            getattr(chunk, "response_metadata", None)
-                            or {}
-                        )
-                        reason = response_metadata.get("finish_reason")
-                        if reason:
-                            finish_reason = reason
-
-            final_text = "".join(final_text_parts)
-            if final_text:
-                await repository.add_message(
-                    conversation_id, "assistant", content=final_text
-                )
-            await repository.touch_conversation(conversation_id)
-            await repository.commit()
-
-            latency_ms = round((time.perf_counter() - started) * 1000, 1)
-            input_tokens, output_tokens = _usage_tokens(usage)
-            logger.info(
-                "chat_stream event=chat_stream outcome=done "
-                "session_id=%s latency_ms=%s token_events=%d "
-                "input_tokens=%s output_tokens=%s tool_calls=%s "
-                "error_code=None",
-                conversation_id,
-                latency_ms,
-                token_events,
-                input_tokens,
-                output_tokens,
-                ",".join(tool_names) or "-",
-            )
-            if settings.log_content:
-                logger.info(
-                    "chat_stream content session_id=%s "
-                    "user_message=%r assistant_message=%r",
-                    conversation_id,
-                    user_message,
-                    final_text,
+            if intent_model is None:
+                intent_model = chat_model.with_structured_output(
+                    IntentResult,
+                    method=settings.structured_output_method,
                 )
 
-            yield (
-                "done",
-                {
-                    "session_id": str(conversation_id),
-                    "finish_reason": finish_reason,
-                    "usage": usage,
-                    "tool_calls": tool_names,
-                    "citations": citations,
-                    "refused": refused,
-                    "reranked": reranked,
-                },
+            deps = graph_runtime.build_deps(
+                settings=settings,
+                chat_model=chat_model,
+                intent_model=intent_model,
+                prompt_builder=prompt_builder,
+                repository=repository,
+                conversation_id=conversation.id,
+                evidence_checker=evidence_checker,
+                faq_search=faq_search,
             )
+            async for event, data in graph_runtime.stream_turn(
+                deps,
+                conversation_id=conversation.id,
+                user_id=user_id,
+                message=user_message,
+            ):
+                yield event, data
+    except graph_runtime.ConversationNotFound:
+        yield (
+            "error",
+            {"code": "conversation_not_found", "message": "会话不存在"},
+        )
     except Exception as exc:
         error = map_upstream_error(exc)
         if error.code == "parse_error":
@@ -411,22 +108,12 @@ async def stream_chat(
                 message=ERROR_MESSAGES["upstream_error"],
                 status_code=502,
             )
-        latency_ms = round((time.perf_counter() - started) * 1000, 1)
         logger.warning(
             "chat_stream event=chat_stream outcome=error "
-            "session_id=%s latency_ms=%s token_events=0 "
-            "input_tokens=None output_tokens=None error_code=%s "
-            "error_type=%s error=%r",
+            "session_id=%s error_code=%s error_type=%s error=%r",
             session_id,
-            latency_ms,
             error.code,
             type(exc).__name__,
             exc,
         )
-        if settings.log_content:
-            logger.warning(
-                "chat_stream content session_id=%s user_message=%r",
-                session_id,
-                user_message,
-            )
         yield ("error", {"code": error.code, "message": error.message})

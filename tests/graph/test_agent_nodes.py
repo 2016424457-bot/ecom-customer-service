@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -214,6 +215,51 @@ async def test_agent_tools_rejects_duplicate_query_faq():
 
     assert registry.calls == [("query_faq", {"keyword": "退货"})]
     assert second_out["trace"]["tools"][-1]["error_code"] == "duplicate_faq"
+
+
+@pytest.mark.asyncio
+async def test_agent_tools_renders_query_faq_evidence():
+    class FaqRegistry:
+        async def execute(self, name, arguments):
+            return ToolResult(
+                name=name,
+                ok=True,
+                content=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "n": 1,
+                                "chunk_id": 11,
+                                "section_path": "政策/退货",
+                                "question": "退货政策",
+                                "answer": "7天无理由。",
+                                "category": "退货",
+                                "source_doc": "returns.md",
+                                "score": 0.9,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                error_code=None,
+                duration_ms=1.0,
+                attempts=1,
+            )
+
+    ai = AIMessage(
+        "",
+        tool_calls=[
+            {"name": "query_faq", "args": {"keyword": "退货"}, "id": "1"}
+        ],
+    )
+
+    out = await nodes.agent_tools(
+        {"messages": [ai], "conversation_id": 5},
+        deps=_deps(registry=FaqRegistry()),
+    )
+
+    assert "[1]" in out["messages"][0].content
+    assert "7天无理由" in out["messages"][0].content
 
 
 def test_tool_registry_is_still_used():

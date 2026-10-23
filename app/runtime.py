@@ -34,9 +34,9 @@ class Runtime:
     settings: Settings
     prompt_builder: PromptBuilder
     chat_model: Any
-    intent_model: Any
     extraction_model: Any
     locks: ConversationLocks
+    intent_model: Any = None
     session_factory: async_sessionmaker[AsyncSession] | None = None
     repository: Any = None
     engine: AsyncEngine | None = None

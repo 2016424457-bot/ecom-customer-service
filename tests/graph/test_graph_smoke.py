@@ -13,6 +13,7 @@ from app.services.tool_exec import ToolResult
 class FakeRepository:
     def __init__(self) -> None:
         self.rows: list[tuple] = []
+        self.low_confidence: list[dict] = []
 
     async def get_conversation(self, conversation_id):
         return SimpleNamespace(id=conversation_id, user_id="u1")
@@ -21,6 +22,19 @@ class FakeRepository:
         self, conversation_id, role, content=None, **kwargs
     ):
         self.rows.append((conversation_id, role, content))
+        return 1
+
+    async def insert_low_confidence_question(
+        self, conversation_id, raw_question, source, reason
+    ):
+        self.low_confidence.append(
+            {
+                "conversation_id": conversation_id,
+                "raw_question": raw_question,
+                "source": source,
+                "reason": reason,
+            }
+        )
         return 1
 
     async def commit(self) -> None:
@@ -166,6 +180,37 @@ async def test_knowledge_route_forces_retrieval_and_injects_evidence(
     assert done["citations"][0]["n"] == 1
     assert done["trace"]["forced_rag"] is True
     assert "[1]" in model.calls[0][0].content
+
+
+@pytest.mark.asyncio
+async def test_weak_knowledge_short_circuits_before_agent(monkeypatch):
+    async def empty_search(*args, **kwargs):
+        return RetrievalResult(
+            strategy="hybrid_rerank",
+            rewritten_query="注销账号",
+            reranked=True,
+            hits=[],
+        )
+
+    monkeypatch.setattr(nodes, "search_knowledge_result", empty_search)
+    model = FakeModel([])
+    deps = _deps(intent="商品咨询", model=model)
+
+    events = [
+        event
+        async for event in runtime.stream_turn(
+            deps, conversation_id=10, user_id="u1", message="怎么注销账号"
+        )
+    ]
+
+    done = events[-1][1]
+    assert done["route"] == "knowledge"
+    assert done["refused"] is True
+    assert done["answer"] == nodes.FALLBACK_REPLY
+    assert model.calls == []
+    assert deps.repository.low_confidence[0]["source"] == (
+        "retrieval_low_conf"
+    )
 
 
 @pytest.mark.asyncio
