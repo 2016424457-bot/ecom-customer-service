@@ -65,11 +65,12 @@ def answer_text(events: list[tuple[str, dict[str, Any]]]) -> str:
 
 
 def running_tools(events: list[tuple[str, dict[str, Any]]]) -> list[str]:
-    return [
-        data["name"]
-        for event, data in events
-        if event == "tool" and data.get("status") == "running"
-    ]
+    """Collect tool names from both legacy running/done pairs and CH05 done-only events."""
+    names: list[str] = []
+    for event, data in events:
+        if event == "tool" and data.get("name") not in names:
+            names.append(data["name"])
+    return names
 
 
 def done_payload(events: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
@@ -142,8 +143,12 @@ async def main() -> int:
             conversation_id = int(session_id_of(events))
             tools = running_tools(events)
             answer = answer_text(events)
-            if "query_faq" not in tools:
-                failures.append(f"faq tool: {tools}")
+            done = done_payload(events)
+            forced_rag = bool(done.get("trace", {}).get("forced_rag"))
+            if "query_faq" not in tools and not forced_rag:
+                failures.append(
+                    f"faq tool/forced_rag: tools={tools} trace={done.get('trace')}"
+                )
             if not (
                 "退货" in answer
                 or "7" in answer
@@ -161,19 +166,25 @@ async def main() -> int:
             conversation_id = int(session_id_of(events))
             tools = running_tools(events)
             answer = answer_text(events)
-            _, _, tool_content = await database_check(
-                engine, conversation_id
-            )
-            if "query_faq" not in tools:
-                failures.append(f"postage tool: {tools}")
-            try:
-                payload = json.loads(tool_content or "{}")
-            except json.JSONDecodeError:
-                payload = {}
-            if payload.get("count", 0) <= 0:
+            done = done_payload(events)
+            forced_rag = bool(done.get("trace", {}).get("forced_rag"))
+            if "query_faq" not in tools and not forced_rag:
                 failures.append(
-                    f"postage FAQ count: {payload.get('count')!r}"
+                    f"postage tool/forced_rag: tools={tools} trace={done.get('trace')}"
                 )
+            payload: dict[str, Any] = {}
+            if "query_faq" in tools:
+                _, _, tool_content = await database_check(
+                    engine, conversation_id
+                )
+                try:
+                    payload = json.loads(tool_content or "{}")
+                except json.JSONDecodeError:
+                    payload = {}
+                if payload.get("count", 0) <= 0:
+                    failures.append(
+                        f"postage FAQ count: {payload.get('count')!r}"
+                    )
             if "运费" not in answer and "邮费" not in answer:
                 failures.append(
                     f"postage answer lacks shipping fee: {answer!r}"

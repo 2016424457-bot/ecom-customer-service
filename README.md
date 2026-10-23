@@ -1,13 +1,26 @@
-# 电商智能客服（CH04：检索质量进阶）
+# 电商智能客服（CH05：Workflow + Agent 混合架构）
 
-基于 FastAPI + LangChain + SQLAlchemy + MySQL + Milvus 的电商售后客服后端。CH04 在 CH03 的 dense 检索上加入 Milvus 原生 BM25 + dense 混合召回、bge-reranker-v2-m3 精排、引用/拒答与评估体系：
+基于 FastAPI + LangChain + LangGraph + SQLAlchemy + MySQL + Milvus 的电商售后客服后端。CH05 用 LangGraph 编排一条确定性骨架，把主力 Agent 放进骨架中心：
 
-- `POST /api/chat/stream`：SSE 流式对话；模型先决定调用哪个工具，后端执行后回灌，最终回答仍逐 token 输出。
-- 五个业务工具：`query_order`、`query_product`、`query_logistics`、`query_faq`、`create_ticket`。
-- 聊天记录（含工具调用与结果）落 `conversations` / `messages` 表，数据库是上下文唯一来源。
+- `POST /api/chat/stream` / `POST /api/chat`：SSE 流式对话；骨架依次走指代消解 → 意图识别 → 7→4 分流 → 知识类强制检索/证据闸 → 主力 ReAct Agent → 日志。
+- `POST /api/agent`：非流式图入口，返回 answer、tool_calls、tool_results、suggested_actions，供评估。
+- 五个业务工具：`query_order`、`query_product`、`query_logistics`、`query_faq`、`create_ticket`；Agent 的 `create_ticket` 只表达“建议建单”，不自动写库。
+- 转人工 / 建工单是两件事：后端只产出可选项，前端各渲染按钮；转人工纯前端模拟，建工单由用户填表后调 `POST /api/actions/create-ticket` 才写 `tickets`。
+- 图状态用 `ConversationState` 贯穿，checkpointer 按 `thread_id=conversation_id` 持久化；MySQL 存 user/assistant 审计与低置信池，checkpointer 持有含工具消息的图历史。
 - `POST /api/chat/extract`：保留 CH01 的售后结构化抽取。
-- 聊天页在 assistant 气泡内显示工具轨迹徽章。
+- 聊天页在 assistant 气泡内显示工具轨迹徽章、引用角标、转人工/建工单按钮。
 - 应用侧统一使用 OpenAI 兼容协议，可切换 DeepSeek / OpenAI / Ollama / Claude 兼容代理。
+
+## CH05 新增能力
+
+- **LangGraph 骨架**：`coref`（透传）→ `classify_intent`（七类 JSON）→ `route_by_intent`（写死 7→4）→ `forced_rag` / `confidence_check` / `agent_llm ↔ agent_tools` / `complaint_reply` / `chitchat_reply` / `fallback_reply` / `budget_reply` → `log`。
+- **知识类强制检索**：商品咨询、退款退货先走 CH04 `search_knowledge_result`，证据强才把编号证据交给 Agent；证据弱生成前短路兜底并写 `low_confidence_questions(source='retrieval_low_conf')`。
+- **主力 ReAct Agent**：`agent_llm` 调模型、`agent_tools` 执行工具；`max_agent_steps` 步数封顶，token 只记账不设停止阈值；复杂问题可连续多步。
+- **工具数据依赖**：`query_order` 返回 `tracking_no`，`query_logistics` 入参改为 `tracking_no`；问“订单 1001 的物流”必须先生成、后物流，验收能看到真实多步。
+- **投诉/闲聊确定性出口**：投诉零模型调用，固定安抚话术 + 两个可选项；纯问候闲聊零模型调用，固定话术。
+- **持久化**：`AsyncSqliteSaver`（`CHECKPOINTER_DB_PATH`，默认 `data/ch05_checkpoints.sqlite`），`thread_id=conversation_id`；进程重启后图状态从 sqlite 续接。
+- **前端**：SSE 新增 `actions` 帧；转人工显示“已转接人工客服”+客服小猫问候；建工单弹表单（类别不预选、描述必填），成功显示工单号。
+- **祛魅热身**：`scripts/bare_agent_loop.py` 手写无框架 Agent 循环，先看清“模型 + 工具 + for 循环”，再由 LangGraph 接手。
 
 ## CH04 新增能力
 
@@ -32,20 +45,22 @@
 |------|------|----------|
 | `query_order` | 查订单状态、商品、金额 | 工具内 mock |
 | `query_product` | 查商品价格、库存、规格 | 工具内 mock |
-| `query_logistics` | 查物流承运商、运单号、最新节点 | 工具内 mock |
-| `query_faq` | BGE-M3 向量检索（Milvus） | `knowledge_chunks` + Milvus |
-| `create_ticket` | 创建人工工单并转人工 | `tickets` 表 |
+| `query_logistics` | 查物流承运商、最新节点；入参为 `tracking_no` | 工具内 mock |
+| `query_faq` | 混合检索 + 重排（Milvus） | `knowledge_chunks` + Milvus |
+| `create_ticket` | 创建人工工单（CH05 起不再自动改会话状态） | `tickets` 表 |
 
-单轮约束：第一轮模型绑定工具；若请求工具调用，后端在同一轮内执行并回灌；第二轮不绑定工具，强制收敛。CH02 不做多轮 Agent Loop 或真实订单/物流 API；CH03 只把 FAQ 检索升级为 dense 向量单路，不做混合检索或重排。
+CH02 的“两轮工具调用”编排已被 CH05 的 LangGraph 骨架取代；CH05 的 Agent 是 `agent_llm ↔ agent_tools` 的多步 ReAct 环。`query_order` 返回 `tracking_no`，用户只给订单号问物流时，Agent 必须先查订单再查物流。
 
 SSE 事件：
 
 | 事件 | 说明 |
 |------|------|
 | `session` | 返回 `session_id`（即 `conversations.id`，数字字符串） |
-| `tool` | 工具状态：`{name, arguments, status: running}`，执行后 `{name, status: done/error, duration_ms}` |
-| `token` | 最终回答的文本增量 |
-| `done` | `{session_id, finish_reason, usage, tool_calls}` |
+| `tool` | 工具状态：`{name, arguments, status: done/error, duration_ms, tool_call_id}`；`create_ticket` 拦截为提议，不出现 |
+| `citations` | 知识类强制检索的引用列表，`{items: [{n, chunk_id, section_path, ...}]}` |
+| `actions` | 转人工/建工单可选项：`{event: "actions", items: [{type: "transfer_human"} | {type: "create_ticket", draft: {...}}]}` |
+| `token` | 回答文本增量；闲聊/投诉/兜底的固定话术整块输出 |
+| `done` | `{session_id, intent, route, tool_calls, citations, suggested_actions, steps, tokens_used, trace, refused, answer}` |
 | `error` | `{code, message}` |
 
 > 本文所有命令都必须在仓库根目录执行：Prompt 路径是相对当前工作目录解析的，换目录启动会找不到 `app/prompts/*.txt`。
@@ -59,7 +74,7 @@ uv lock
 uv sync
 ```
 
-> 本分支新增的 `jieba`、`cryptography` 尚未写入当前 `uv.lock`（实现环境无法访问 PyPI）；首次请先 `uv lock`，再 `uv sync`，并提交更新后的 lock。
+> 本分支新增的 `langgraph`、`langgraph-checkpoint-sqlite`、`aiosqlite`（以及 CH04 的 `jieba`、`cryptography`）尚未写入当前 `uv.lock`（实现环境无法访问 PyPI）；首次请先 `uv lock`，再 `uv sync`，并提交更新后的 lock。没有安装 SQLite checkpointer 时应用启动会明确报错，不会静默降级。
 
 ### 2. 准备数据库
 
@@ -130,6 +145,20 @@ QUERY_REWRITE_ENABLED=true
 完整的可复制配置见 `.env.example`。依赖新增 `jieba`、`httpx`、`cryptography`；`uv sync` 会安装。
 
 > `.env` 已被 `.gitignore` 忽略。不要提交真实密钥，也不要把密钥写进 README、日志或代码。
+
+CH05 还需要：
+
+```ini
+# CH05 图编排 / checkpointer
+MAX_AGENT_STEPS=6
+CHECKPOINTER_DB_PATH=data/ch05_checkpoints.sqlite
+INTENT_PROMPT_PATH=app/prompts/intent_prompt.txt
+AGENT_PROMPT_PATH=app/prompts/agent_prompt.txt
+INTENT_TEMPERATURE=0.0
+INTENT_MAX_TOKENS=128
+```
+
+`data/` 已在 `.gitignore`；checkpointer 的 sqlite 文件在应用启动时自动创建，单进程使用，不要多 worker 共享。
 
 ### 4. 建库与挖矿
 
@@ -229,9 +258,29 @@ curl -N -X POST http://127.0.0.1:8000/api/chat/stream \
   -d '{"session_id":"demo-1","message":"你好，我叫小王，订单号 A12345，想退货"}'
 ```
 
-响应是 SSE：先出现 `event: session`，如果模型选择工具会出现 `event: tool`（running/done），随后是多个 `event: token`（`data` 中的 `delta` 为文本增量），最后是 `event: done`。复用 `done` 或 `session` 返回的数字 `session_id` 再发一条消息即可验证多轮上下文。
+响应是 SSE：先出现 `event: session`，知识类会先出现 `event: citations`；Agent 调工具时出现 `event: tool`；投诉/建议建单时出现 `event: actions`；随后是多个 `event: token`（`data` 中的 `delta` 为文本增量），最后是 `event: done`。复用 `done` 或 `session` 返回的数字 `session_id` 再发一条消息即可验证多轮上下文。
 
-示例：问「订单 1001 的物流到哪了」，应看到 `query_logistics` 的 `tool` 事件；问「退货政策是什么」，应看到 `query_faq`。`done.tool_calls` 列出本轮实际执行的工具名。
+示例：问「订单 1001 的物流到哪了」，应先后看到 `query_order` 与 `query_logistics` 两个 `tool` 事件（前者拿到 `tracking_no`）；问「退货政策是什么」，应看到 `citations` 且 `done.trace.forced_rag=true`；问「我要投诉」，应看到 `actions` 里两项，`done.tool_calls=[]`。
+
+### 非流式图入口
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/agent \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"eval","message":"订单1001的物流到哪了"}'
+```
+
+返回 `conversation_id`、`answer`、`tool_calls`、`tool_results`、`suggested_actions`；适合评估脚本读取工具轨迹。
+
+### 建工单按钮
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/actions/create-ticket \
+  -H "Content-Type: application/json" \
+  -d '{"conversation_id":1,"description":"商品破损","ticket_type":"售后"}'
+```
+
+`ticket_type` 只能是 `售后/投诉/咨询`；只有这个端点会写 `tickets`，且不会把会话状态改成“已转人工”。
 
 ### 结构化抽取
 
@@ -330,22 +379,43 @@ uv run python scripts/ch04_acceptance.py --phase admin
 - `run_ch04_eval.py`：48 条评估集，四策略 Recall@K / MRR + 最终策略 Faithfulness，输出 `evals/reports/ch04-report.md` 和 `.json`；不写会话/低置信度池，不忠实的答案写 `faith_cases`。
 - `ch04_acceptance.py`：`build` 重建并验证 BM25 型号命中；`retrieve` 验证混合/BM25/元数据过滤/改写；`refuse` 验证拒答 + 低置信度入池；`citation` 验证引用可回溯；`admin` 验证台账状态流转；全部通过打印 `CH04 ACCEPTANCE PASS`。
 
+CH05 的祛魅、意图评估与五验收：
+
+```bash
+# 祛魅：无框架裸 Agent 循环（需上游）
+uv run python -m scripts.bare_agent_loop "订单1001的物流到哪了"
+
+# 七类意图标注评估（需上游）
+uv run python -m scripts.eval_intent
+
+# 五条验收端到端（需 MySQL + Milvus + 服务运行）
+make eval-ch05
+```
+
+- `bare_agent_loop.py`：不引入 LangGraph，手写 `模型 → 工具 → 回喂` 循环；复杂问题应看到 `query_order` 后 `query_logistics` 再收敛。
+- `eval_intent.py`：14 条七类标注样例，打印总准确率与每类准确率；模型非确定性，抖动重跑记录。
+- `eval_ch05.py`：政策问题看 `trace.forced_rag`；物流问题看 `query_order`+`query_logistics`；投诉看两个 actions 并真实写 `tickets`；闲聊看固定话术且 `tokens_used=0`；复杂问看 `steps>1`；全部通过打印 `CH05 ACCEPTANCE PASS`。
+
 脚本默认访问 `http://127.0.0.1:8000`，可用 `ECOM_BASE_URL` 环境变量覆盖。
 
 ## 已知限制
 
-- 消息历史在 MySQL，但同一会话的串行锁在进程内，本章仅支持 `--workers 1`。
+- 同一会话的串行锁在进程内；`AsyncSqliteSaver` 也是单文件、单进程，本章仅支持 `--workers 1`。测试用 `InMemorySaver` 注入，不验证真实 sqlite 持久化；真实 checkpointer 冒烟需先 `uv lock && uv sync` 后跑 `python -m scripts.smoke_langgraph`。
+- 图历史由 checkpointer 持有（含工具消息），MySQL `messages` 只审计 user/assistant 正文；如果删除 `CHECKPOINTER_DB_PATH` 对应 sqlite 文件，图上下文会丢失，但审计消息仍在。
 - 订单、商品、物流工具返回随机 mock 数据，不接真实系统；FAQ 已改为 BM25 + dense 混合召回 + `bge-reranker-v2-m3` 重排；重排失败会回退 hybrid 顺序。
 - Milvus 集合 schema 新增了 `text/sparse/category` 等字段，旧库必须 `build_knowledge.py --reset --recreate` 重建；启动时检测到旧 schema 会直接报错。
 - 重排依赖 SiliconFlow rerank 权限；`scripts/smoke_rerank.py` 失败时先确认 key/地址，不要换模型。
 - 引用映射与 👍/👎 反馈只存在浏览器 localStorage；换浏览器或清缓存后旧消息的角标不可点，反馈也不可见。反馈不落库。
-- 本章 `low_confidence_questions` 只写 `source='self_check'`；`retrieval_low_conf` / `user_feedback` 留给后续章节。
+- CH05 的弱证据闸写 `low_confidence_questions(source='retrieval_low_conf')`；CH04 的自评拒答仍写 `source='self_check'`；`user_feedback` 留给后续章节。
 - `faith_cases` 管理页没有认证，只适合本地演示。
 - 评估集 48 条覆盖有限，数字用于策略对比与回归，不宣称绝对质量；Faithfulness 裁判是 LLM，不是金标准。
 - Milvus 默认用 Lite 本地文件，单进程；离线建库/挖矿与在线服务不能同时打开同一个文件。生产可切 standalone。
 - 嵌入依赖外部 OpenAI 兼容服务；没有 `EMBED_API_KEY` 时建库、挖矿向量化和在线检索都不可用。
 - 挖矿去重是规范化问题文本的精确去重，换说法的近重复可能同时入库；挖矿质量受 LLM 波动影响，评估集只是底线。
-- `create_ticket` 成功后会话状态置 `已转人工`，但本章不做人工接管，后续消息仍由机器人处理。
+- CH05 起 `create_ticket` 只写 `tickets`，不再把会话状态改成“已转人工”；转人工是前端模拟，不接真人系统。Agent 调 `create_ticket` 只生成前端可选项，不会自动建单；只有 `POST /api/actions/create-ticket` 会写库。
+- 业务数据类（物流/订单/售后）Agent 自调 `query_faq` 时，本章不把 FAQ 结果回收成 `citations`；引用只在知识类强制检索路径产出。
+- SSE 按 `agent_llm` 节点过滤 token；工具调用轮的过渡文本可能先显示再被最终答案覆盖，Prompt 已要求模型不要在工具轮输出长篇过渡语。
+- 建工单表单不预填后端 `draft`，类别与描述由用户当场填写；这是 spec §6.3 的有意设计。
 - 没有用户认证、限流、计费或多租户隔离，不要直接暴露到公网。
 - 默认只监听 `127.0.0.1`，仅适合本地开发与验收。
 - 经反向代理或网关访问时，代理可能缓冲 SSE 导致 token 不能实时到达；请为流式响应设置 `X-Accel-Buffering: no`（Nginx）或关闭代理缓冲。

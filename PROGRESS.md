@@ -1,126 +1,102 @@
-# 电商智能客服 CH04 — 当前进度与打包说明
+# 电商智能客服 CH05 — 当前进度与打包说明
 
-- 日期：2026-10-22
-- 功能分支：`worktree-ch04-retrieval-quality`（已 fast-forward 合并到 `ch01-pure-chat`）
-- 状态：功能代码、单元测试、评估集定位校验、前端静态验证、整分支 review 与修复、本地合并完成；真实检索评估、Faithfulness 报告与端到端验收待用户在终端执行（需要 `.env`、`uv lock`/`uv sync`、重建 Milvus、rerank key）
+- 日期：2026-10-23
+- 功能分支：`ch05-workflow-agent`
+- 基线：CH01–CH04 已合并到 `ch01-pure-chat`
+- 状态：功能代码、单元测试、前端静态 mock 验收、文档完成；真实 AsyncSqliteSaver 冒烟、意图评估、五条端到端验收、集成测试待用户在终端执行（需要 `uv lock`/`uv sync`、MySQL/Milvus、`.env`）
 
-## 一、项目简介
+## 一、CH05 做了什么
 
-基于 **FastAPI + LangChain + SQLAlchemy + MySQL + Milvus** 的电商售后客服后端。CH04 在 CH03 的 dense 检索上加入：
+CH05 把 CH02–CH04 的「模型选一次工具 → 执行 → 二次生成」升级为「LangGraph 确定性骨架 + 主力 ReAct Agent」：
 
-- **混合召回**：Milvus `text` 字段挂 BM25 function（`jieba` analyzer），dense / sparse 各 Top-50，`hybrid_search` + RRF。
-- **精排**：`bge-reranker-v2-m3` 精排 Top-10，失败回退 hybrid 顺序。
-- **Query 理解**：LLM 口语改写；同义词只加在检索侧。
-- **引用与拒答**：`query_faq` 返回 `n/chunk_id/section_path`；回答带 `[n]`；生成前证据自评，不足则拒答并写 `low_confidence_questions`。
-- **评估**：48 条标注集，四策略 Recall@K / MRR + 最终策略 Faithfulness；编造个案进 `faith_cases`。
-- **前端**：引用角标可点、来源弹层、👍/👎 纯前端反馈、`/faith-cases` 管理页。
+- **图骨架**：`coref`（透传）→ `classify_intent`（七类 JSON）→ `route_by_intent`（写死 7→4）→ 知识类 `forced_rag`/`confidence_check` 或业务类直达 `agent_llm` → `agent_llm ↔ agent_tools` ReAct 环 → `log`。
+- **确定性出口**：投诉零模型调用，安抚话术 + 转人工/建工单两个可选项；纯问候闲聊零模型调用固定话术；知识类弱证据生成前短路兜底并写低置信池。
+- **主力 Agent**：复用 CH02 五工具；`max_agent_steps` 步数封顶；token 只记账；复杂问题多步收敛。
+- **工具数据依赖**：`query_order` 返回 `tracking_no`，`query_logistics` 改吃 `tracking_no`，让「订单 1001 的物流」真实走「先订单、后物流」。
+- **持久化**：`AsyncSqliteSaver`，`thread_id = conversation_id`；MySQL 存 user/assistant 审计、工单、低置信池。
+- **人机协同**：Agent 调 `create_ticket` 只生成选项不写库；前端「转人工」纯模拟，「建工单」弹表单填类别/描述后才调 `POST /api/actions/create-ticket` 写 `tickets`，不改变会话状态。
 
 ## 二、已完成模块
 
 | # | 模块 | 关键文件 | 状态 |
 |---|------|----------|------|
-| 1 | 配置、DDL、ORM | `app/config.py`、`app/db/models.py`、`sql/ch04-ddl.sql`、`db/schema.sql` | ✅ |
-| 2 | Milvus 新 schema / VectorRecord | `app/knowledge/milvus_client.py`、`app/knowledge/build.py`、`scripts/build_knowledge.py` | ✅ |
-| 3 | Query 理解 | `app/knowledge/synonyms.py`、`query_understanding.py`、`app/prompts/query_rewrite_prompt.txt` | ✅ |
-| 4 | 重排客户端 | `app/knowledge/rerank.py`、`scripts/smoke_rerank.py` | ✅ |
-| 5 | dense / BM25 / hybrid 封装 | `app/knowledge/milvus_client.py` | ✅ |
-| 6 | 四策略检索 | `app/knowledge/retrieval.py`、`app/knowledge/search.py` | ✅ |
-| 7 | 首尾排序、引用、自评 | `app/knowledge/evidence.py`、`self_check.py`、`app/prompts/evidence_check_prompt.txt` | ✅ |
-| 8 | query_faq 契约、拒答、citations | `app/tools/faq.py`、`app/services/chat.py`、`app/services/rag.py`、`app/prompts/system_prompt.txt` | ✅ |
-| 9 | faith_cases 仓储与 API | `app/db/repositories.py`、`app/api/routes.py`、`app/schemas.py` | ✅ |
-| 10 | 评估指标、裁判、评估集、报告 | `app/evaluation/`、`evals/ch04_eval_cases.jsonl`、`evals/run_ch04_eval.py` | ✅ |
-| 11 | 聊天页引用与反馈 | `app/static/chat.html/js/css` | ✅ |
-| 12 | faith_cases 管理页 | `app/static/faith-cases.html/js/css`、`app/main.py` | ✅ |
-| 13 | 验收脚本与文档 | `scripts/ch04_acceptance.py`、`README.md`、`.env.example`、`Makefile` | ✅ |
+| 1 | LangGraph 骨架、State、路由 | `app/graph/state.py`、`routing.py`、`build.py` | ✅ |
+| 2 | 意图分类器 + 标注评估 | `app/graph/intent.py`、`app/prompts/intent_prompt.txt`、`scripts/eval_intent.py` | ✅ |
+| 3 | 强制检索 + 证据闸 | `app/graph/nodes.py::forced_rag`、`confidence_check` | ✅ |
+| 4 | 主力 Agent ReAct | `app/graph/nodes.py::agent_llm`、`agent_tools` | ✅ |
+| 5 | 确定性出口 | `chitchat_reply`、`complaint_reply`、`fallback_reply`、`budget_reply` | ✅ |
+| 6 | 图运行时 + checkpointer | `app/graph/runtime.py`、`app/main.py` lifespan | ✅ |
+| 7 | 两个 API 入口 | `app/api/routes.py`（`/api/chat/stream`、`/api/chat`、`/api/agent`） | ✅ |
+| 8 | 建工单端点与解耦 | `app/api/actions.py`、`app/services/tickets.py`、`app/tools/ticket.py` | ✅ |
+| 9 | 前端 actions / 表单 | `app/static/chat.html/js/css` | ✅ |
+| 10 | 祛魅裸循环 | `scripts/bare_agent_loop.py` | ✅ |
+| 11 | 五验收脚本 | `scripts/eval_ch05.py`、`Makefile` | ✅ |
+| 12 | 测试与文档 | `tests/graph/*`、`README.md`、`dev-notes/ch05.md` | ✅ |
 
-## 三、接口与工具
+## 三、接口
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/health` | 健康检查 |
-| POST | `/api/chat/stream` | SSE 流式对话；`done` 事件新增 `citations/refused/reranked` |
-| POST | `/api/chat/extract` | 售后结构化抽取 |
-| GET | `/api/knowledge/chunks/{id}` | 引用来源 chunk 详情 |
-| GET | `/api/faith-cases` | 编造个案台账列表（status/bucket/limit/offset） |
-| PATCH | `/api/faith-cases/{id}` | 改处置状态与说明 |
-| GET | `/chat` | 聊天页 |
-| GET | `/faith-cases` | 台账管理页 |
-
-`query_faq` 出参：
-
-```json
-{
-  "keyword": "...",
-  "count": 2,
-  "items": [{"n": 1, "chunk_id": 7, "section_path": "...", "source_doc": "...",
-             "question": "...", "answer": "...", "category": "...", "score": 0.9}],
-  "retrieval": {"strategy": "hybrid_rerank", "reranked": true, "rewritten_query": "..."}
-}
-```
+| POST | `/api/chat/stream` | SSE 图对话；新增 `actions`/`citations` 帧，`done` 带 intent/route/steps/trace |
+| POST | `/api/chat` | 同上，CH05 别名 |
+| POST | `/api/agent` | 非流式图入口，返回 answer/tool_calls/tool_results/suggested_actions |
+| POST | `/api/actions/create-ticket` | 用户点按钮后写 `tickets`；不改会话状态 |
+| POST | `/api/chat/extract` | 保留 CH01 结构化抽取 |
+| GET | `/api/knowledge/chunks/{id}` | 引用原文 |
+| GET/PATCH | `/api/faith-cases` | CH04 台账 |
+| GET | `/chat`、`/faith-cases` | 页面 |
 
 ## 四、验证状态
 
 | 检查项 | 结果 | 备注 |
 |--------|------|------|
-| 单元测试 `pytest -m "not integration"` | **202 passed, 2 skipped, 22 deselected** | 2026-10-22，主 checkout 的 `.venv` |
-| 整分支 code review | **1 Critical + 6 Important 已修复；1 Important 待用户终端** | Sonnet 5（Opus 402 余额不足）；`uv.lock` 需用户 `uv lock` |
-| 评估集定位校验 | **48 条 / 22 chunks / 0 missing gold** | 用 chunker + FAQ seed 在内存中核对 |
-| `node --check` | 通过 | `chat.js`、`faith-cases.js` |
-| 前端静态预览 | 通过 | 引用角标、来源弹层 404 错误态、👍 点亮/锁定/「已反馈」/刷新恢复；台账卡片渲染 + PATCH body |
-| 真实重排冒烟 `smoke_rerank.py` | **待用户终端** | 需要 SiliconFlow rerank key |
-| 真实改写评估 `run_query_rewrite_eval.py` | **待用户终端** | 需要 LLM key |
-| 真实四策略报告 `run_ch04_eval.py` | **待用户终端** | 需要 `.env`、重建 Milvus、嵌入 + rerank + LLM key |
-| 集成测试 `pytest -m integration` | **待用户终端** | 当前 venv 缺 `cryptography`；需 `uv sync` + `sql/ch04-ddl.sql` |
-| CH04 验收 `ch04_acceptance.py` | **待用户终端** | `build/retrieve` 离线；`refuse/citation/admin` 在线 |
+| 单元测试 `pytest -m "not integration"` | **253 passed, 26 deselected** | 2026-10-23，主 checkout `.venv` |
+| `node --check app/static/chat.js` | 通过 | 前端语法 |
+| 前端静态 mock 浏览器验收 | 通过 | 两按钮独立、转人工双消息、建工单空提交拦截/成功/取消、刷新保留；截图 `dev-notes/ch05-acceptance3-mock.jpg` |
+| 真实 AsyncSqliteSaver 冒烟 | **待用户终端** | 依赖未装；`uv lock && uv sync` 后跑 `python -m scripts.smoke_langgraph` |
+| 意图标注评估 | **待用户终端** | `python -m scripts.eval_intent`，需上游 key |
+| 五验收 `make eval-ch05` | **待用户终端** | 需 MySQL/Milvus/app；脚本会真实写 `tickets` 并查库 |
+| 真实裸循环 | **待用户终端** | `python -m scripts.bare_agent_loop "订单1001的物流到哪了"` |
+| 集成测试 `pytest -m integration` | **待用户终端** | 需要 `.env`、MySQL、`sql/ch04-ddl.sql` |
 
-## 五、继续开发
-
-前提：在 worktree 根目录执行；把主 checkout 的 `.env` 复制过来（或注入环境变量），然后：
+## 五、继续开发 / 验收
 
 ```bash
-uv lock   # 把新增的 jieba/cryptography 写入 lock；实现沙箱无法访问 PyPI
+uv lock
 uv sync
-mysql -h 127.0.0.1 -u root -p ecom_customer_service < sql/ch04-ddl.sql
-uv run python scripts/smoke_rerank.py
-uv run python scripts/build_knowledge.py --reset --recreate
-```
 
-真实评估（服务停止）：
+# 真实 checkpointer 冒烟
+uv run python -m scripts.smoke_langgraph
 
-```bash
-uv run python evals/run_query_rewrite_eval.py
-uv run python evals/run_ch04_eval.py
-```
+# 意图评估
+uv run python -m scripts.eval_intent
 
-验收（分阶段；`build/retrieve` 服务停止，其余服务运行）：
+# 祛魅裸循环
+uv run python -m scripts.bare_agent_loop "订单1001的物流到哪了"
 
-```bash
-uv run python scripts/ch04_acceptance.py --phase build
-uv run python scripts/ch04_acceptance.py --phase retrieve
+# 起服务后
 uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
-uv run python scripts/ch04_acceptance.py --phase refuse
-uv run python scripts/ch04_acceptance.py --phase citation
-uv run python scripts/ch04_acceptance.py --phase admin
+make eval-ch05
 ```
 
 ## 六、已知限制
 
-- 引用映射与 👍/👎 反馈只存在浏览器 localStorage；换浏览器/清缓存后旧消息角标不可点、反馈不可见；反馈不落库。
-- Milvus 默认 Lite 本地文件，单进程；离线建库/评估与在线服务不能同时打开同一个库文件。
-- Milvus 集合 schema 已升级，旧库必须 `--recreate` 重建；检测到旧 schema 会直接报错。
-- 重排依赖 SiliconFlow rerank 权限；失败回退 hybrid 顺序。
-- 本章 `low_confidence_questions` 只写 `source='self_check'`；`retrieval_low_conf` / `user_feedback` 留给后续章节。
-- `faith_cases` 管理页没有认证，只适合本地演示。
-- 评估集 48 条覆盖有限，数字用于策略对比与回归，不宣称绝对质量；Faithfulness 裁判是 LLM，不是金标准。
-- 单 worker；订单/商品/物流仍是 mock；没有认证、限流、多租户。
+- AsyncSqliteSaver 单文件、单进程；仅支持 `--workers 1`。测试用 InMemorySaver，真实 sqlite 持久化待终端验证。
+- 意图分类是单标签简单 Prompt；边界问法会抖，评估集只是底线。纯问候走快路径，混合内容仍花一次意图调用。
+- 置信度闸是「机械阈值 + CH04 EvidenceChecker 自评」的最简版；正式置信度检查留可观测章。
+- 业务路 Agent 调 `query_faq` 的 citations 本章不回收；引用只在知识类强制检索产出。
+- SSE 按 `agent_llm` 过滤 token；工具调用轮过渡文本可能先显示再被最终答案覆盖。
+- Agent 调 `create_ticket` 只生成前端选项，不写库；只有按钮端点写 `tickets`，且不改会话状态。
+- 转人工是纯前端模拟，不接真人系统；工单无幂等键，重复提交靠前端按钮禁用。
+- 无认证、限流、多租户；不要暴露公网。
+- 订单/商品/物流仍是 mock；真实系统接入留后续章节。
 
 ## 七、文档索引
 
 | 文档 | 路径 |
 |------|------|
+| CH05 设计规格 | `docs/superpowers/specs/2026-07-15-ch05-workflow-agent-design.md` |
+| CH05 实施计划 | `docs/superpowers/plans/2026-07-15-ch05-workflow-agent.md` |
+| CH05 开发过程记录 | `dev-notes/ch05.md` |
 | 快速开始 / API / 测试 | `README.md` |
-| CH04 设计规格 | `docs/superpowers/specs/2026-10-22-ch04-retrieval-quality-design.md` |
-| CH04 实施计划 | `docs/superpowers/plans/2026-10-22-ch04-retrieval-quality.md` |
-| CH04 开发过程记录 | `dev-notes/ch04.md` |
-| CH04 评估报告（待生成） | `evals/reports/ch04-report.md` |
-| CH03 / CH02 / CH01 过程记录 | `dev-notes/ch03.md`、`ch02.md`、`ch01.md` |
+| CH04 / CH03 / CH02 / CH01 过程记录 | `dev-notes/ch04.md`、`ch03.md`、`ch02.md`、`ch01.md` |

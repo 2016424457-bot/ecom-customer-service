@@ -8,10 +8,12 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
 from app.db.repositories import ChatRepository
+from app.graph import runtime as graph_runtime
 from app.runtime import Runtime, build_runtime
 from app.schemas import RequestType
 from app.services.chat import stream_chat
@@ -44,7 +46,9 @@ async def runtime() -> Runtime:
         pytest.skip("OPENAI_API_KEY is missing or still a placeholder")
 
     built = build_runtime(settings)
+    graph_runtime.set_checkpointer(InMemorySaver())
     yield built
+    graph_runtime.set_checkpointer(None)
     await built.aclose()
 
 
