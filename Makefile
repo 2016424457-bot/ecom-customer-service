@@ -1,4 +1,4 @@
-.PHONY: kb-build kb-reset kb-recreate kb-mine smoke-rerank ch04-eval ch04-accept
+.PHONY: kb-build kb-reset kb-recreate kb-mine smoke-rerank ch04-eval ch04-accept eval-ch05
 
 kb-build:
 	uv run python scripts/build_knowledge.py
@@ -22,3 +22,6 @@ ch04-eval:
 PHASE ?= build
 ch04-accept:
 	uv run python scripts/ch04_acceptance.py --phase $(PHASE)
+
+eval-ch05:
+	uv run python -m scripts.eval_ch05
