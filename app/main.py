@@ -10,6 +10,7 @@ from app.api.actions import router as actions_router
 from app.api.routes import router
 from app.config import Settings
 from app.errors import AppError
+from app.graph import runtime as graph_runtime
 from app.runtime import Runtime, build_runtime
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -30,7 +31,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
+        await graph_runtime.init_graph(runtime.settings)
         yield
+        await graph_runtime.close_graph()
         await runtime.aclose()
 
     application = FastAPI(lifespan=lifespan)

@@ -36,6 +36,24 @@ _SETTINGS_ENV_NAMES = frozenset(
 )
 
 
+@pytest.fixture(autouse=True)
+def graph_checkpointer(monkeypatch: pytest.MonkeyPatch):
+    """Keep tests off the real AsyncSqliteSaver (not installed everywhere)."""
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from app.graph import runtime as graph_runtime
+
+    async def fake_init(_settings):
+        graph_runtime.set_checkpointer(InMemorySaver())
+
+    async def fake_close():
+        graph_runtime.set_checkpointer(None)
+
+    monkeypatch.setattr(graph_runtime, "init_graph", fake_init)
+    monkeypatch.setattr(graph_runtime, "close_graph", fake_close)
+    return graph_runtime
+
+
 @pytest.fixture
 def clean_unit_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """Remove ambient settings env vars for hermetic unit tests.
