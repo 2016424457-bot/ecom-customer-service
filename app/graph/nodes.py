@@ -4,6 +4,13 @@ from typing import Any
 from langchain_core.messages import HumanMessage
 
 from app.graph.state import merge_trace
+from app.knowledge.evidence import (
+    citation_items_full,
+    citation_items_light,
+    prompt_order,
+    render_evidence_block,
+)
+from app.knowledge.search import search_knowledge_result
 
 logger = logging.getLogger(__name__)
 
@@ -116,3 +123,100 @@ async def budget_reply(state: dict, *, deps: Any) -> dict:
         "suggested_actions": actions,
         "trace": merge_trace(state, route="budget", cap=True),
     }
+
+
+async def coref(state: dict, *, deps: Any) -> dict:
+    """Coreference: passthrough in this chapter."""
+    return {"trace": merge_trace(state, coref="passthrough")}
+
+
+async def classify_intent(state: dict, *, deps: Any) -> dict:
+    """Classify the user message into one of the seven intents."""
+    intent = await deps.intent_classifier.classify(_user_text(state))
+    return {"intent": intent, "trace": merge_trace(state, intent=intent)}
+
+
+def _weak_evidence(state: dict, **trace: Any) -> dict:
+    return {
+        "evidence_strong": False,
+        "evidence": "",
+        "citations": [],
+        "trace": merge_trace(state, forced_rag=True, **trace),
+    }
+
+
+async def forced_rag(state: dict, *, deps: Any) -> dict:
+    """Knowledge route: mandatory retrieval plus generation-time evidence gate."""
+    query = _user_text(state)
+    try:
+        result = await search_knowledge_result(
+            query,
+            repository=deps.knowledge_repository,
+            settings=deps.settings,
+            strategy="hybrid_rerank",
+        )
+    except Exception as exc:
+        logger.warning("forced_rag_failed error=%r", exc)
+        return _weak_evidence(
+            state, retrieval_error=str(exc), evidence_top=0.0
+        )
+
+    ordered = prompt_order(result.hits)
+    if not ordered:
+        return _weak_evidence(
+            state,
+            evidence_top=0.0,
+            retrieval_strategy=result.strategy,
+            reranked=result.reranked,
+        )
+
+    top = ordered[0][1].score
+    base_trace = {
+        "evidence_top": top,
+        "retrieval_strategy": result.strategy,
+        "reranked": result.reranked,
+    }
+    if top < deps.settings.rerank_min_score:
+        return _weak_evidence(
+            state,
+            **base_trace,
+            gate_reason=(
+                f"top={top:.3f} < rerank_min_score="
+                f"{deps.settings.rerank_min_score}"
+            ),
+        )
+
+    full_items = citation_items_full(ordered)
+    light_items = citation_items_light(ordered)
+
+    assessment = None
+    if deps.evidence_checker is not None:
+        try:
+            assessment = await deps.evidence_checker.assess(
+                query, full_items
+            )
+        except Exception as exc:
+            logger.warning("evidence_check_failed error=%r", exc)
+
+    if assessment is not None and not assessment.useful:
+        return _weak_evidence(
+            state, **base_trace, self_check=assessment.reason
+        )
+
+    return {
+        "evidence_strong": True,
+        "evidence": render_evidence_block(full_items),
+        "citations": light_items,
+        "trace": merge_trace(
+            state,
+            forced_rag=True,
+            **base_trace,
+            self_check=getattr(assessment, "reason", ""),
+        ),
+    }
+
+
+async def confidence_check(state: dict, *, deps: Any) -> dict:
+    """Record the generation-time gate decision for observability."""
+    decision = "strong" if state.get("evidence_strong") else "weak"
+    return {"trace": merge_trace(state, confidence=decision)}
