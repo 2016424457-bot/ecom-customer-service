@@ -1,15 +1,28 @@
-# 电商智能客服（CH05：Workflow + Agent 混合架构）
+# 电商智能客服（CH06：分流器正式版）
 
-基于 FastAPI + LangChain + LangGraph + SQLAlchemy + MySQL + Milvus 的电商售后客服后端。CH05 用 LangGraph 编排一条确定性骨架，把主力 Agent 放进骨架中心：
+基于 FastAPI + LangChain + LangGraph + SQLAlchemy + MySQL + Milvus 的电商售后客服后端。CH06 把 CH05 里占位的分流环节做成正式版：一条确定性骨架里嵌入「指代消解 + 八类意图 + 退款/售后子流程 + 主力 Agent」：
 
-- `POST /api/chat/stream` / `POST /api/chat`：SSE 流式对话；骨架依次走指代消解 → 意图识别 → 7→4 分流 → 知识类强制检索/证据闸 → 主力 ReAct Agent → 日志。
+- `POST /api/chat/stream` / `POST /api/chat`：SSE 流式对话；骨架依次走 coref（指代消解 + Query 改写）→ 八类意图识别（含置信度）→ 8→6 分流 → 知识类强制检索/证据闸、退款/售后确定性子流程或主力 ReAct Agent → 日志。
 - `POST /api/agent`：非流式图入口，返回 answer、tool_calls、tool_results、suggested_actions，供评估。
 - 五个业务工具：`query_order`、`query_product`、`query_logistics`、`query_faq`、`create_ticket`；Agent 的 `create_ticket` 只表达“建议建单”，不自动写库。
+- 退款/退货/售后走确定性子流程：先判定问题对象（政策还是某一单），缺订单号发订单选择器，判定可处理后退货/退款发退款表单、换货/换新建议售后工单，用户提交后 `POST /api/actions/submit-refund` 写 `refund_requests`。
 - 转人工 / 建工单是两件事：后端只产出可选项，前端各渲染按钮；转人工纯前端模拟，建工单由用户填表后调 `POST /api/actions/create-ticket` 才写 `tickets`。
 - 图状态用 `ConversationState` 贯穿，checkpointer 按 `thread_id=conversation_id` 持久化；MySQL 存 user/assistant 审计与低置信池，checkpointer 持有含工具消息的图历史。
 - `POST /api/chat/extract`：保留 CH01 的售后结构化抽取。
-- 聊天页在 assistant 气泡内显示工具轨迹徽章、引用角标、转人工/建工单按钮。
+- 聊天页在 assistant 气泡内显示工具轨迹徽章、引用角标、订单卡片、退款表单、转人工/建工单按钮。
 - 应用侧统一使用 OpenAI 兼容协议，可切换 DeepSeek / OpenAI / Ollama / Claude 兼容代理。
+
+## CH06 新增能力
+
+- **八类意图 + 置信度**：物流、订单、商品咨询、退款退货、售后、投诉、闲聊、其他；JSON 输出 `intent` / `confidence`。`INTENT_FAST_MODEL` 可选：配置后小模型先判，置信度低于 `INTENT_CONFIDENCE_THRESHOLD` 才升级 `INTENT_MODEL` 重判；为空不降级。大模型仍判不准时归「其他」，走确定性澄清，零工具、不幻觉。
+- **Coref 正式版**：一次模型调用同时产出 `standalone_query` 与 `order_id`，把「那这个能退吗」「那它什么时候到」补成带订单号的完整问题；喂历史有消息数与字符双上限。
+- **8→6 路由**：商品咨询 → knowledge；退款退货 / 售后 → refund 子流程；物流 / 订单 → business Agent；投诉 → complaint；闲聊 → chitchat；其他 → other（固定澄清话术 + 转人工/建工单）。
+- **退款/售后确定性子流程**：先区分纯政策问题（走知识检索）与「这一单」（进子流程）；缺订单号发 `select_order` 动作列出用户订单；`pending` 槽位跨轮续跑；判定用结构化 `eligible`，可处理时退货/退款发 `refund_form`，换货/换新转售后工单。
+- **多路检索**：退款/售后把标准问题扩写成多个查询，按 `content_type=policy` / `manual` 多路召回后合并；因 Milvus Lite 不允许并发 provisioning，多查询走串行。
+- **证据自检用政策级问题**：EvidenceChecker 审的是政策问题而非订单级问题，避免「这单能不能退」把政策证据误判为不相关。
+- **退款单落库**：`POST /api/actions/submit-refund` 写 `refund_requests`，返回 `RYYYYMMDDNNN` 退款单号；退款原因固定六类（商品质量问题 / 发错货少件 / 物流破损 / 不喜欢不想要 / 尺寸规格颜色不符 / 其他），`request_type` 只有 退款 / 退货。
+- **前端**：`actions` 帧新增 `select_order`（订单卡片）与 `refund_form`（退款表单弹窗）；点选订单自动发送「订单号：1001」续跑；刷新后从 history 恢复选中/已提交状态。
+- **评估**：`make eval-ch06-prompts` 跑 22 个多轮标注用例（26 轮），打印 coref / 意图 / 路由 / order_id 准确率；`make eval-ch06` 跑四条端到端验收（含真实写退款单并查库）。
 
 ## CH05 新增能力
 
@@ -58,10 +71,10 @@ SSE 事件：
 | `session` | 返回 `session_id`（即 `conversations.id`，数字字符串） |
 | `tool` | 工具状态：`{name, arguments, status: done/error, duration_ms, tool_call_id}`；`create_ticket` 拦截为提议，不出现 |
 | `citations` | 知识类强制检索的引用列表，`{items: [{n, chunk_id, section_path, ...}]}` |
-| `actions` | 转人工/建工单可选项：`{event: "actions", items: [{type: "transfer_human"} | {type: "create_ticket", draft: {...}}]}` |
+| `actions` | 可选项：`{event: "actions", items: [...]}`。`transfer_human` / `create_ticket`（带 draft）；CH06 另有 `select_order`（`{type, orders: [...]}` 订单卡片）与 `refund_form`（`{type, order_id, order_summary, request_type, categories}` 退款表单） |
 | `reset` | Agent 工具轮结束时清空当前流式文本；前端清空气泡文本但保留工具徽标 |
 | `token` | 回答文本增量；闲聊/投诉/兜底的固定话术整块输出 |
-| `done` | `{session_id, intent, route, tool_calls, citations, suggested_actions, steps, tokens_used, trace, refused, answer}` |
+| `done` | `{session_id, intent, route, tool_calls, citations, suggested_actions, steps, tokens_used, trace, refused, answer}`；CH06 另有 `standalone_query`、`intent_confidence`、`intent_tier`、`queries`、`refund` |
 | `error` | `{code, message}` |
 
 > 本文所有命令都必须在仓库根目录执行：Prompt 路径是相对当前工作目录解析的，换目录启动会找不到 `app/prompts/*.txt`。
@@ -75,7 +88,7 @@ uv lock
 uv sync
 ```
 
-> 本分支新增的 `langgraph`、`langgraph-checkpoint-sqlite`、`aiosqlite`（以及 CH04 的 `jieba`、`cryptography`）尚未写入当前 `uv.lock`（实现环境无法访问 PyPI）；首次请先 `uv lock`，再 `uv sync`，并提交更新后的 lock。没有安装 SQLite checkpointer 时应用启动会明确报错，不会静默降级。
+> `langgraph`、`langgraph-checkpoint-sqlite`、`aiosqlite`（以及 CH04 的 `jieba`、`cryptography`）已写入 `uv.lock`；`uv sync` 会一并安装 checkpointer 依赖。如果 lock 与 `pyproject.toml` 不一致，先 `uv lock` 再 `uv sync`。没有安装 SQLite checkpointer 时应用启动会明确报错，不会静默降级。
 
 ### 2. 准备数据库
 
@@ -160,6 +173,36 @@ INTENT_MAX_TOKENS=128
 ```
 
 `data/` 已在 `.gitignore`；checkpointer 的 sqlite 文件在应用启动时自动创建，单进程使用，不要多 worker 共享。
+
+CH06 还需要（`INTENT_MODEL` 留空复用 `OPENAI_MODEL`；`INTENT_FAST_MODEL` 留空则不降级）：
+
+```ini
+# CH06 分流器正式版
+INTENT_MODEL=
+INTENT_FAST_MODEL=
+INTENT_CONFIDENCE_THRESHOLD=0.6
+COREF_PROMPT_PATH=app/prompts/coref_prompt.txt
+COREF_TEMPERATURE=0.0
+COREF_MAX_TOKENS=256
+COREF_TIMEOUT_SECONDS=8
+COREF_MAX_RETRIES=0
+COREF_HISTORY_MESSAGES=10
+COREF_MAX_HISTORY_CHARS=2000
+EXPANSION_PROMPT_PATH=app/prompts/query_expansion_prompt.txt
+EXPANSION_TEMPERATURE=0.0
+EXPANSION_MAX_TOKENS=256
+EXPANSION_TIMEOUT_SECONDS=8
+EXPANSION_MAX_RETRIES=0
+REFUND_JUDGE_PROMPT_PATH=app/prompts/refund_judge_prompt.txt
+REFUND_JUDGE_TEMPERATURE=0.0
+REFUND_JUDGE_MAX_TOKENS=512
+```
+
+新增 `refund_requests` 表，已有数据库需再执行一次 CH06 迁移（可重复执行）：
+
+```bash
+mysql -h 127.0.0.1 -u root -p ecom_customer_service < sql/ch06-ddl.sql
+```
 
 ### 4. 建库与挖矿
 
@@ -259,9 +302,11 @@ curl -N -X POST http://127.0.0.1:8000/api/chat/stream \
   -d '{"session_id":"demo-1","message":"你好，我叫小王，订单号 A12345，想退货"}'
 ```
 
-响应是 SSE：先出现 `event: session`，知识类会先出现 `event: citations`；Agent 调工具时出现 `event: tool`；投诉/建议建单时出现 `event: actions`；随后是多个 `event: token`（`data` 中的 `delta` 为文本增量），最后是 `event: done`。复用 `done` 或 `session` 返回的数字 `session_id` 再发一条消息即可验证多轮上下文。
+响应是 SSE：先出现 `event: session`，知识类会先出现 `event: citations`；Agent 调工具时出现 `event: tool`；投诉/建议建单时出现 `event: actions`；退款子流程缺订单号时 `actions` 里是 `select_order`（订单卡片），判定可处理时是 `refund_form`（退款表单）；随后是多个 `event: token`（`data` 中的 `delta` 为文本增量），最后是 `event: done`。复用 `done` 或 `session` 返回的数字 `session_id` 再发一条消息即可验证多轮上下文。
 
-示例：问「订单 1001 的物流到哪了」，应先后看到 `query_order` 与 `query_logistics` 两个 `tool` 事件（前者拿到 `tracking_no`）；问「退货政策是什么」，应看到 `citations` 且 `done.trace.forced_rag=true`；问「我要投诉」，应看到 `actions` 里两项，`done.tool_calls=[]`。
+示例：问「订单 1001 的物流到哪了」，应先后看到 `query_order` 与 `query_logistics` 两个 `tool` 事件（前者拿到 `tracking_no`）；问「退货政策是什么」，应看到 `citations` 且 `done.trace.forced_rag=true`；问「我要投诉」，应看到 `actions` 里两项，`done.tool_calls=[]`；问「我要退款」，应先收到 `select_order` 动作，点选订单或回「订单号：1001」后收到 `refund_form`。
+
+CH06 的 `done` 帧在原有字段上新增 `standalone_query`、`intent_confidence`、`intent_tier`、`queries`，退款/售后轮还有 `trace.refund`（判定阶段、多路查询与证据）。前端忽略未知字段，评估脚本消费这些字段。
 
 ### 非流式图入口
 
@@ -282,6 +327,19 @@ curl -s -X POST http://127.0.0.1:8000/api/actions/create-ticket \
 ```
 
 `ticket_type` 只能是 `售后/投诉/咨询`；只有这个端点会写 `tickets`，且不会把会话状态改成“已转人工”。
+
+### 退款表单提交
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/actions/submit-refund \
+  -H "Content-Type: application/json" \
+  -d '{"conversation_id":12,"order_id":"1001","request_type":"退款","reason_code":"quality","note":"耳机有杂音"}'
+# {"refund_no":"R20261026004","status":"待处理"}
+```
+
+- `request_type` 只能是 `退款` / `退货`；换货、换新不走退款单，由子流程改发售后工单选项。
+- `reason_code` 必须来自固定六类：`quality`（商品质量问题）、`wrong_item`（发错货/少件）、`damaged`（物流破损）、`not_wanted`（不喜欢/不想要）、`spec_mismatch`（尺寸/规格/颜色不符）、`other`（其他）；非法值返回 422。
+- `note` 可选，最长 1000 字；会话不存在返回 404；数据库异常返回 503。只有这个端点会写 `refund_requests`。
 
 ### 结构化抽取
 
@@ -397,13 +455,26 @@ make eval-ch05
 - `eval_intent.py`：14 条七类标注样例，打印总准确率与每类准确率；模型非确定性，抖动重跑记录。
 - `eval_ch05.py`：政策问题看 `trace.forced_rag`；物流问题看 `query_order`+`query_logistics`；投诉看两个 actions 并真实写 `tickets`；闲聊看固定话术且 `tokens_used=0`；复杂问看 `steps>1`；全部通过打印 `CH05 ACCEPTANCE PASS`。
 
+CH06 的分流评估与四条端到端验收：
+
+```bash
+# 真实 coref + 意图 + 路由评估（需上游 key）
+make eval-ch06-prompts
+
+# 四条端到端验收（需 MySQL + Milvus + 服务运行）
+make eval-ch06
+```
+
+- `eval-ch06-prompts`（`python -m scripts.eval_ch06 --prompts`）：回放 `evals/ch06_router_cases.jsonl` 的 22 个多轮用例（26 轮），逐轮打印 `PASS/FAIL`、`standalone`、`intent(confidence)`、`route`、`order_id`，汇总 coref 补全、意图、路由、订单号准确率。模型非确定性，脚本只测量不硬断言。
+- `eval-ch06`（`python -m scripts.eval_ch06 --e2e`）：验收 1 物流→退款→物流的指代补全与退款路由；验收 2 怪问题归「其他」且零工具；验收 3 退款轮的 standalone / 订单摘要 / 多路查询 / 证据诊断；验收 4 订单选择器→退款表单→真实提交并查 `refund_requests` 行；全部通过打印 `CH06 E2E ACCEPTANCE PASS`。验收 4 会真实写库。
+
 脚本默认访问 `http://127.0.0.1:8000`，可用 `ECOM_BASE_URL` 环境变量覆盖。
 
 ## 已知限制
 
-- 同一会话的串行锁在进程内；`AsyncSqliteSaver` 也是单文件、单进程，本章仅支持 `--workers 1`。测试用 `InMemorySaver` 注入，不验证真实 sqlite 持久化；真实 checkpointer 冒烟需先 `uv lock && uv sync` 后跑 `python -m scripts.smoke_langgraph`。
+- 同一会话的串行锁在进程内；`AsyncSqliteSaver` 也是单文件、单进程，本章仅支持 `--workers 1`。测试用 `InMemorySaver` 注入；真实 checkpointer 冒烟可跑 `python -m scripts.smoke_langgraph`（checkpointer 依赖已随 `uv.lock` 安装）。
 - 图历史由 checkpointer 持有（含工具消息），MySQL `messages` 只审计 user/assistant 正文；如果删除 `CHECKPOINTER_DB_PATH` 对应 sqlite 文件，图上下文会丢失，但审计消息仍在。
-- 订单、商品、物流工具返回随机 mock 数据，不接真实系统；FAQ 已改为 BM25 + dense 混合召回 + `bge-reranker-v2-m3` 重排；重排失败会回退 hybrid 顺序。
+- 订单、商品、物流工具返回 mock 数据，不接真实系统：固定演示订单只有 1001–1003（蓝牙耳机 / 机械键盘 / 保温杯），其它合法格式订单号按号码确定性生成；FAQ 已改为 BM25 + dense 混合召回 + `bge-reranker-v2-m3` 重排；重排失败会回退 hybrid 顺序。
 - Milvus 集合 schema 新增了 `text/sparse/category` 等字段，旧库必须 `build_knowledge.py --reset --recreate` 重建；启动时检测到旧 schema 会直接报错。
 - 重排依赖 SiliconFlow rerank 权限；`scripts/smoke_rerank.py` 失败时先确认 key/地址，不要换模型。
 - 引用映射与 👍/👎 反馈只存在浏览器 localStorage；换浏览器或清缓存后旧消息的角标不可点，反馈也不可见。反馈不落库。
@@ -417,6 +488,12 @@ make eval-ch05
 - 业务数据类（物流/订单/售后）Agent 自调 `query_faq` 时，本章不把 FAQ 结果回收成 `citations`；引用只在知识类强制检索路径产出。
 - SSE 按 `agent_llm` 节点过滤 token；工具调用轮的过渡文本可能先短暂显示，随后 `reset` 清空气泡文本；最终气泡只保留最终答案。Prompt 仍要求模型不要在工具轮输出长篇过渡语。
 - 建工单表单不预填后端 `draft`，类别与描述由用户当场填写；这是 spec §6.3 的有意设计。
+- CH06 的意图、coref、扩写、退款判定都是 Prompt 模型输出，存在非确定性；标注评估集（22 用例 / 26 轮）是回归底线，数字不代表线上绝对准确率。
+- `INTENT_FAST_MODEL` 只做一次「小模型判 → 低置信升级大模型」；没有更复杂的级联或人工标注回流。大模型仍低置信归「其他」，宁可不猜。
+- Milvus Lite 是单文件后端，多路 Query 必须串行检索（并发 provisioning 会抢锁）；换 standalone Milvus 后可再考虑并行。
+- 退款单号 `RYYYYMMDDNNN` 按当日计数生成（沿用 `tickets` 的模式），不是幂等键；重复提交会产生多张退款单，前端只靠按钮置灰防重复。
+- 退款判定依赖 LLM 结构化输出；`eligible=null`（证据不足）时不发退款表单，只给解释与转人工/建工单选项。
+- 订单卡片与退款表单经过真实浏览器验收（截图 `dev-notes/ch06-acceptance4.jpg`），没有自动化前端测试。
 - 没有用户认证、限流、计费或多租户隔离，不要直接暴露到公网。
 - 默认只监听 `127.0.0.1`，仅适合本地开发与验收。
 - 经反向代理或网关访问时，代理可能缓冲 SSE 导致 token 不能实时到达；请为流式响应设置 `X-Accel-Buffering: no`（Nginx）或关闭代理缓冲。
