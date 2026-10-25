@@ -195,18 +195,15 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
 
 
 def refund_queries(done: dict[str, Any]) -> list[str]:
-    """Return the expanded refund queries reported by a done frame.
+    """Return the expanded refund queries recorded on the turn trace.
 
-    The policy stage writes ``trace.refund.queries``; the judge stage later
-    replaces ``trace.refund`` with its verdict, so the same list is also
-    exposed as the top-level ``done["queries"]``. Prefer the trace copy.
+    ``refund_policy_rag`` writes ``trace.refund.queries`` and ``refund_judge``
+    merges its verdict into the same block, so the trace is the single
+    source of truth; the top-level ``done["queries"]`` is not consulted.
     """
     trace = done.get("trace") or {}
     refund = trace.get("refund") or {}
-    queries = refund.get("queries")
-    if not queries:
-        queries = done.get("queries") or []
-    return list(queries or [])
+    return list(refund.get("queries") or [])
 
 
 # --- --prompts --------------------------------------------------------
@@ -469,12 +466,6 @@ async def _acceptance_switch(
     turn3 = await stream_turn(client, "那它什么时候到", session_id)
 
     queries = refund_queries(turn2)
-    trace_refund = (turn2.get("trace") or {}).get("refund") or {}
-    queries_source = (
-        "trace.refund.queries"
-        if trace_refund.get("queries")
-        else "done.queries"
-    )
     checks = {
         "turn1_intent": turn1.get("intent") == "物流",
         "turn1_coref_1001": "1001" in coref_standalone(turn1),
@@ -497,7 +488,6 @@ async def _acceptance_switch(
             "intent": turn2.get("intent"),
             "route": turn2.get("route"),
             "queries": queries,
-            "queries_source": queries_source,
             "tool_calls": turn2.get("tool_calls"),
             "citations": len(turn2.get("citations") or []),
         },
@@ -637,13 +627,6 @@ async def run_e2e() -> int:
             results.append(
                 report("1 物流→退款→物流", ok, detail)
             )
-            if ok and (detail["turn2"]["queries_source"]) == (
-                "done.queries"
-            ):
-                print(
-                    "NOTE: trace.refund.queries is absent after the judge "
-                    "stage; expanded queries were read from done.queries."
-                )
 
             try:
                 ok, detail = await _acceptance_other(client)

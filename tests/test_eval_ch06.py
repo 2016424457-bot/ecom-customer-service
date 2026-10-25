@@ -291,7 +291,7 @@ def test_summarize_of_nothing_is_all_zero():
 # --- refund_queries ---------------------------------------------------
 
 
-def test_refund_queries_prefers_the_policy_stage_trace():
+def test_refund_queries_reads_the_trace_refund_block():
     done = {
         "trace": {"refund": {"queries": ["q1", "q2"]}},
         "queries": ["top-level"],
@@ -300,10 +300,11 @@ def test_refund_queries_prefers_the_policy_stage_trace():
     assert refund_queries(done) == ["q1", "q2"]
 
 
-def test_refund_queries_falls_back_to_the_top_level_field():
+def test_refund_queries_ignores_the_top_level_field():
+    # The acceptance check must fail when the judged trace loses queries.
     done = {"trace": {"refund": {"stage": "judged"}}, "queries": ["q1"]}
 
-    assert refund_queries(done) == ["q1"]
+    assert refund_queries(done) == []
 
 
 def test_refund_queries_without_data_is_empty():

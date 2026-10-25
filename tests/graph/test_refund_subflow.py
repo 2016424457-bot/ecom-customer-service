@@ -484,6 +484,16 @@ def _judged_state(**overrides):
         order_id="1001",
         order=ORDER,
         evidence="[1] 七天无理由退货。",
+        trace={
+            "refund": {
+                "stage": "policy",
+                "queries": ["q1", "q2"],
+                "content_type": "policy",
+                "evidence_top": 0.9,
+                "retrieval_strategy": "multi_hybrid_rerank",
+                "reranked": True,
+            }
+        },
         **overrides,
     )
     return state
@@ -514,6 +524,16 @@ async def test_eligible_refund_returns_form():
     assert out["answer"] == "这一单在7天内可以退[1]。"
     assert out["trace"]["refund"]["stage"] == "judged"
     assert out["trace"]["refund"]["request_type"] == "退款"
+    # The judge merges into the policy trace instead of replacing it, so the
+    # e2e can read trace.refund.queries after the verdict.
+    assert out["trace"]["refund"]["queries"] == ["q1", "q2"]
+    assert out["trace"]["refund"]["content_type"] == "policy"
+    assert out["trace"]["refund"]["evidence_top"] == pytest.approx(0.9)
+    assert out["trace"]["refund"]["retrieval_strategy"] == (
+        "multi_hybrid_rerank"
+    )
+    assert out["trace"]["refund"]["reranked"] is True
+    assert out["trace"]["refund"]["eligible"] is True
 
     system, human = judge.calls[0]
     assert isinstance(system, SystemMessage)

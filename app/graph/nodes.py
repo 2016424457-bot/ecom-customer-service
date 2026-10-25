@@ -580,7 +580,11 @@ async def refund_judge(state: dict, *, deps: Any) -> dict:
             _refund_ticket_action(query),
         ]
 
+    # Preserve the policy stage's trace (queries, content_type, evidence_top,
+    # reranked) instead of replacing it with the verdict-only trace.
+    policy_trace = (state.get("trace") or {}).get("refund") or {}
     refund_trace: dict[str, Any] = {
+        **policy_trace,
         "stage": "judged",
         "eligible": eligible,
         "request_type": request_type,
