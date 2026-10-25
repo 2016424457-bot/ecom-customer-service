@@ -1,0 +1,22 @@
+{"case_id": "switch-01", "turns": [{"user": "订单1001的物流到哪了", "assistant": "订单1001已签收，正在派送。", "expect_intent": "物流", "expect_standalone_contains": ["1001"], "expect_order_id": "1001", "expect_route": "business"}, {"user": "那这个能退吗", "assistant": "我帮您判断一下。", "expect_intent": "退款退货", "expect_standalone_contains": ["1001"], "expect_order_id": "1001", "expect_route": "refund"}, {"user": "那它什么时候到", "assistant": "正在派送，预计明天送达。", "expect_intent": "物流", "expect_standalone_contains": ["1001"], "expect_order_id": "1001", "expect_route": "business"}]}
+{"case_id": "coref-01", "turns": [{"user": "订单1001的物流到哪了", "assistant": "已签收，正在派送。", "expect_intent": "物流", "expect_standalone_contains": ["1001"], "expect_route": "business"}, {"user": "这个能退吗", "assistant": "我帮您判断一下。", "expect_intent": "退款退货", "expect_standalone_contains": ["1001"], "expect_order_id": "1001", "expect_route": "refund"}]}
+{"case_id": "coref-02", "turns": [{"user": "订单1001的物流到哪了", "assistant": "已签收。", "expect_intent": "物流", "expect_standalone_equals": "订单1001的物流到哪了", "expect_order_id": "1001", "expect_route": "business"}]}
+{"case_id": "coref-03", "turns": [{"user": "订单1001的物流到哪了", "assistant": "已签收。", "expect_intent": "物流", "expect_standalone_contains": ["1001"], "expect_route": "business"}, {"user": "那它什么时候到", "assistant": "正在派送。", "expect_intent": "物流", "expect_standalone_contains": ["1001"], "expect_order_id": "1001", "expect_route": "business"}]}
+{"case_id": "policy-01", "turns": [{"user": "退货政策是什么", "assistant": "", "expect_intent": "退款退货", "expect_route": "knowledge"}]}
+{"case_id": "policy-02", "turns": [{"user": "退款一般几天到账", "assistant": "", "expect_intent": "退款退货", "expect_route": "knowledge"}]}
+{"case_id": "policy-03", "turns": [{"user": "保修期多久", "assistant": "", "expect_intent": "售后", "expect_route": "knowledge"}]}
+{"case_id": "policy-04", "turns": [{"user": "退款需要什么条件", "assistant": "", "expect_intent": "退款退货", "expect_route": "knowledge"}]}
+{"case_id": "order-01", "turns": [{"user": "我的猫爬架坏了能保修吗", "assistant": "", "expect_intent": "售后", "expect_route": "refund"}]}
+{"case_id": "order-02", "turns": [{"user": "订单1001买了什么", "assistant": "", "expect_intent": "订单", "expect_order_id": "1001", "expect_route": "business"}]}
+{"case_id": "order-03", "turns": [{"user": "订单2002现在什么状态", "assistant": "", "expect_intent": "订单", "expect_order_id": "2002", "expect_route": "business"}]}
+{"case_id": "other-01", "turns": [{"user": "帮我算一下 3 的平方", "assistant": "", "expect_intent": "其他", "expect_route": "other"}]}
+{"case_id": "other-02", "turns": [{"user": "今天股市怎么样", "assistant": "", "expect_intent": "其他", "expect_route": "other"}]}
+{"case_id": "other-03", "turns": [{"user": "那个东西怎么样了", "assistant": "", "expect_intent": "其他", "expect_route": "other"}]}
+{"case_id": "chitchat-01", "turns": [{"user": "你好", "assistant": "", "expect_intent": "闲聊", "expect_standalone_equals": "你好", "expect_route": "chitchat"}]}
+{"case_id": "chitchat-02", "turns": [{"user": "谢谢", "assistant": "", "expect_intent": "闲聊", "expect_standalone_equals": "谢谢", "expect_route": "chitchat"}]}
+{"case_id": "boundary-01", "turns": [{"user": "退款到哪了", "assistant": "", "expect_intent": "退款退货", "expect_route": "refund"}]}
+{"case_id": "boundary-02", "turns": [{"user": "快递怎么还没到", "assistant": "", "expect_intent": "物流", "expect_route": "business"}]}
+{"case_id": "boundary-03", "turns": [{"user": "订单1001的物流到哪了", "assistant": "", "expect_intent": "物流", "expect_standalone_contains": ["1001"], "expect_order_id": "1001", "expect_route": "business"}]}
+{"case_id": "returns-01", "turns": [{"user": "超过七天还能退吗", "assistant": "", "expect_intent": "退款退货", "expect_route": "knowledge"}]}
+{"case_id": "exchange-01", "turns": [{"user": "耳机能换货吗", "assistant": "", "expect_intent": "退款退货", "expect_route": "refund"}]}
+{"case_id": "after-sales-01", "turns": [{"user": "我的蓝牙耳机坏了，怎么申请维修", "assistant": "", "expect_intent": "售后", "expect_route": "refund"}]}
