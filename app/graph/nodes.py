@@ -172,15 +172,26 @@ async def coref(state: dict, *, deps: Any) -> dict:
 
 
 async def coref_rewrite(state: dict, *, deps: Any) -> dict:
-    """Resolve references and normalize the user message before routing."""
+    """Resolve references and normalize the user message before routing.
+
+    The current human message is the last entry in ``messages``; it is
+    excluded from the history handed to the rewriter (which appends it as
+    the current question) so the prompt never shows it twice.
+    """
     query = _user_text(state)
-    result = await deps.coref_rewriter.resolve(
-        query, state.get("messages", [])
-    )
+    history = state.get("messages", [])[:-1]
+    result = await deps.coref_rewriter.resolve(query, history)
     return {
         "standalone_query": result.standalone_query,
         "order_id": result.order_id,
-        "trace": merge_trace(state, coref="rewritten"),
+        "trace": merge_trace(
+            state,
+            coref={
+                "standalone_query": result.standalone_query,
+                "order_id": result.order_id,
+                "changed": result.standalone_query != query,
+            },
+        ),
     }
 
 
@@ -313,14 +324,19 @@ async def _evidence_update(
 
 
 async def forced_rag(state: dict, *, deps: Any) -> dict:
-    """Knowledge route: mandatory retrieval plus generation-time evidence gate."""
-    query = _user_text(state)
+    """Knowledge route: mandatory retrieval plus generation-time evidence gate.
+
+    Retrieves with the coref-rewritten ``standalone_query`` and a no-op
+    rewriter, so the query is not rewritten a second time.
+    """
+    query = state.get("standalone_query") or _user_text(state)
     try:
         result = await search_knowledge_result(
             query,
             repository=deps.knowledge_repository,
             settings=deps.settings,
             strategy="hybrid_rerank",
+            rewriter=NoOpQueryRewriter(),
         )
     except Exception as exc:
         logger.warning("forced_rag_failed error=%r", exc)

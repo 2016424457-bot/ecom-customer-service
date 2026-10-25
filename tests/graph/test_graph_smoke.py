@@ -2,14 +2,15 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.graph import nodes, runtime
-from app.graph.coref import CorefResult
+from app.graph.coref import CorefResult, CorefRewriter
 from app.graph.deps import GraphDeps
 from app.graph.intent import IntentDecision
 from app.graph.refund import RefundVerdict
+from app.knowledge.query_understanding import NoOpQueryRewriter
 from app.knowledge.types import KnowledgeHit, RetrievalResult
 from app.services.tool_exec import ToolResult
 
@@ -64,6 +65,16 @@ class FakeModel:
     async def ainvoke(self, messages):
         self.calls.append(list(messages))
         return self.responses.pop(0)
+
+
+class RecordingCorefModel:
+    def __init__(self, result: CorefResult) -> None:
+        self.result = result
+        self.calls: list[list] = []
+
+    async def ainvoke(self, messages):
+        self.calls.append(list(messages))
+        return self.result
 
 
 class FakeRegistry:
@@ -552,3 +563,87 @@ async def test_pending_survives_and_resumes_refund_subflow(monkeypatch):
     assert done["refund"]["stage"] == "judged"
     assert done["refund"]["eligible"] is True
     assert model.calls == []
+
+
+@pytest.mark.asyncio
+async def test_knowledge_route_retrieves_standalone_query(monkeypatch):
+    captured: dict = {}
+
+    async def fake_search(question, **kwargs):
+        captured["question"] = question
+        captured.update(kwargs)
+        return RetrievalResult(
+            strategy="hybrid_rerank",
+            rewritten_query=question,
+            reranked=True,
+            hits=[
+                KnowledgeHit(
+                    id=11,
+                    category="保修",
+                    questions="商品保修",
+                    answer="保修一年。",
+                    score=0.9,
+                    section_path="政策/保修",
+                    content_type="policy",
+                    source_doc="warranty.md",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(nodes, "search_knowledge_result", fake_search)
+    model = FakeModel([AIMessage("保修一年[1]。")])
+    coref = FakeCoref(
+        standalone_query="订单1001的商品怎么保修", order_id="1001"
+    )
+    deps = _deps(intent="商品咨询", model=model, coref=coref)
+
+    events = [
+        event
+        async for event in runtime.stream_turn(
+            deps, conversation_id=18, user_id="u1", message="那它怎么保修"
+        )
+    ]
+
+    done = events[-1][1]
+    assert captured["question"] == "订单1001的商品怎么保修"
+    assert isinstance(captured["rewriter"], NoOpQueryRewriter)
+    assert done["route"] == "knowledge"
+    assert done["standalone_query"] == "订单1001的商品怎么保修"
+    assert done["trace"]["coref"] == {
+        "standalone_query": "订单1001的商品怎么保修",
+        "order_id": "1001",
+        "changed": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_coref_prompt_contains_current_question_once(tmp_path):
+    prompt_path = tmp_path / "coref.txt"
+    prompt_path.write_text("COREF PROMPT", encoding="utf-8")
+    model = RecordingCorefModel(
+        CorefResult(standalone_query="订单1001多少钱", order_id="1001")
+    )
+    deps = SimpleNamespace(
+        coref_rewriter=CorefRewriter(model, prompt_path)
+    )
+    state = {
+        "messages": [
+            HumanMessage("订单1001是啥"),
+            AIMessage("是蓝牙耳机。"),
+            HumanMessage("那它多少钱"),
+        ],
+        "trace": {},
+    }
+
+    out = await nodes.coref_rewrite(state, deps=deps)
+
+    human = model.calls[0][-1].content
+    assert human.count("那它多少钱") == 1
+    assert "订单1001是啥" in human
+    assert out["standalone_query"] == "订单1001多少钱"
+    assert out["order_id"] == "1001"
+    assert out["trace"]["coref"] == {
+        "standalone_query": "订单1001多少钱",
+        "order_id": "1001",
+        "changed": True,
+    }
