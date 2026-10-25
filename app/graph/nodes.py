@@ -260,12 +260,15 @@ async def _evidence_update(
     deps: Any,
     *,
     trace: dict[str, Any],
+    assess_query: str | None = None,
 ) -> dict:
     """Shared evidence gate: order hits, score them, and render evidence.
 
     ``trace`` carries caller-specific keys (``forced_rag`` for the knowledge
     route, ``refund`` for the refund subflow); every outcome merges them so
-    weak and strong branches record the same context.
+    weak and strong branches record the same context. ``assess_query`` lets
+    a caller assess against a policy-focused question instead of the raw
+    user query (order-specific asks are judged later with the order data).
     """
     ordered = prompt_order(result.hits)
     if not ordered:
@@ -301,7 +304,7 @@ async def _evidence_update(
     if deps.evidence_checker is not None:
         try:
             assessment = await deps.evidence_checker.assess(
-                query, full_items
+                assess_query or query, full_items
             )
         except Exception as exc:
             logger.warning("evidence_check_failed error=%r", exc)
@@ -489,7 +492,16 @@ async def refund_policy_rag(state: dict, *, deps: Any) -> dict:
         update["queries"] = queries
         return update
 
-    update = await _evidence_update(state, query, result, deps, trace={})
+    update = await _evidence_update(
+        state,
+        query,
+        result,
+        deps,
+        trace={},
+        assess_query=(
+            f"{state.get('intent')}政策条款：{'；'.join(queries)}"
+        ),
+    )
     if update["evidence_strong"]:
         update["trace"]["refund"] = {
             "stage": "policy",

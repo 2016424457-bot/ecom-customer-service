@@ -11,6 +11,7 @@ def test_fixed_orders_are_stable():
     assert a["items"][0]["name"] == "蓝牙耳机"
     assert a["amount"] == 399.0
     assert a["signed_at"] is not None
+    assert "未拆封" in a["condition"]
 
 
 def test_fixed_pool_matches_spec():
@@ -25,6 +26,7 @@ def test_fixed_pool_matches_spec():
     assert cup["amount"] == 89.0
     assert cup["status"] == "已签收"
     assert cup["signed_at"] is not None
+    assert cup["condition"] == "已拆封"
 
 
 def test_fixed_signed_dates_are_relative_to_today():

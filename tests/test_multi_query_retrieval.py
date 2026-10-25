@@ -3,7 +3,7 @@ import pytest
 from app.config import Settings
 from app.knowledge import search
 from app.knowledge.query_understanding import NoOpQueryRewriter
-from app.knowledge.retrieval import RetrievalResult
+from app.knowledge.retrieval import MilvusSearchBackend, RetrievalResult
 from app.knowledge.types import KnowledgeHit
 
 
@@ -92,6 +92,26 @@ async def test_search_many_passes_noop_rewriter(monkeypatch, settings):
     )
     assert len(seen) == 2
     assert all(isinstance(item, NoOpQueryRewriter) for item in seen)
+
+
+@pytest.mark.asyncio
+async def test_search_many_shares_one_backend_across_queries(
+    monkeypatch, settings
+):
+    seen = []
+
+    async def fake_retrieve(q, **kwargs):
+        seen.append(kwargs["backend"])
+        return RetrievalResult("hybrid_rerank", q, True, [])
+
+    monkeypatch.setattr(search, "retrieve", fake_retrieve)
+    await search.search_many_result(
+        ["a", "b", "c"], repository=object(), settings=settings
+    )
+
+    assert len(seen) == 3
+    assert isinstance(seen[0], MilvusSearchBackend)
+    assert all(backend is seen[0] for backend in seen)
 
 
 @pytest.mark.asyncio

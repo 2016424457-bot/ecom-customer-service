@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
@@ -18,6 +19,9 @@ T = TypeVar("T")
 
 _CLIENTS: dict[str, MilvusClient] = {}
 _ENSURED: set[tuple] = set()
+# Milvus Lite allows one client per data file; concurrent creation races its
+# file lock, so cache fills and collection setup are serialized.
+_LOCK = threading.Lock()
 
 REQUIRED_FIELDS = frozenset(
     {
@@ -44,13 +48,14 @@ def reset_client_cache() -> None:
 
 def get_client(settings: Settings) -> MilvusClient:
     uri = settings.milvus_uri
-    client = _CLIENTS.get(uri)
-    if client is None:
-        if not uri.startswith("http"):
-            Path(uri).parent.mkdir(parents=True, exist_ok=True)
-        client = MilvusClient(uri=uri)
-        _CLIENTS[uri] = client
-    return client
+    with _LOCK:
+        client = _CLIENTS.get(uri)
+        if client is None:
+            if not uri.startswith("http"):
+                Path(uri).parent.mkdir(parents=True, exist_ok=True)
+            client = MilvusClient(uri=uri)
+            _CLIENTS[uri] = client
+        return client
 
 
 async def acall(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
@@ -65,65 +70,66 @@ def ensure_collection(
     max_length: int = 4096,
 ) -> None:
     cache_key = (id(client), collection, dim, analyzer_type)
-    if cache_key in _ENSURED:
-        return
-    if client.has_collection(collection):
-        description = client.describe_collection(collection)
-        fields = {
-            field["name"] for field in description.get("fields", [])
-        }
-        missing = REQUIRED_FIELDS - fields
-        if missing:
-            raise RuntimeError(
-                "Milvus collection schema is outdated; run "
-                "build_knowledge.py --recreate"
+    with _LOCK:
+        if cache_key in _ENSURED:
+            return
+        if client.has_collection(collection):
+            description = client.describe_collection(collection)
+            fields = {
+                field["name"] for field in description.get("fields", [])
+            }
+            missing = REQUIRED_FIELDS - fields
+            if missing:
+                raise RuntimeError(
+                    "Milvus collection schema is outdated; run "
+                    "build_knowledge.py --recreate"
+                )
+            client.load_collection(collection)
+            _ENSURED.add(cache_key)
+            return
+
+        schema = client.create_schema(auto_id=False)
+        schema.add_field("id", DataType.INT64, is_primary=True)
+        schema.add_field(
+            "text",
+            DataType.VARCHAR,
+            max_length=max_length,
+            enable_analyzer=True,
+            analyzer_params={"type": analyzer_type},
+        )
+        schema.add_field("sparse", DataType.SPARSE_FLOAT_VECTOR)
+        schema.add_field("dense", DataType.FLOAT_VECTOR, dim=dim)
+        schema.add_field("category", DataType.VARCHAR, max_length=255)
+        schema.add_field("content_type", DataType.VARCHAR, max_length=32)
+        schema.add_field("section_path", DataType.VARCHAR, max_length=512)
+        schema.add_field("source_doc", DataType.VARCHAR, max_length=255)
+        schema.add_function(
+            Function(
+                name="text_bm25",
+                input_field_names=["text"],
+                output_field_names=["sparse"],
+                function_type=FunctionType.BM25,
             )
+        )
+
+        index_params = client.prepare_index_params()
+        index_params.add_index(
+            field_name="dense",
+            index_type="AUTOINDEX",
+            metric_type="COSINE",
+        )
+        index_params.add_index(
+            field_name="sparse",
+            index_type="SPARSE_INVERTED_INDEX",
+            metric_type="BM25",
+        )
+        client.create_collection(
+            collection_name=collection,
+            schema=schema,
+            index_params=index_params,
+        )
         client.load_collection(collection)
         _ENSURED.add(cache_key)
-        return
-
-    schema = client.create_schema(auto_id=False)
-    schema.add_field("id", DataType.INT64, is_primary=True)
-    schema.add_field(
-        "text",
-        DataType.VARCHAR,
-        max_length=max_length,
-        enable_analyzer=True,
-        analyzer_params={"type": analyzer_type},
-    )
-    schema.add_field("sparse", DataType.SPARSE_FLOAT_VECTOR)
-    schema.add_field("dense", DataType.FLOAT_VECTOR, dim=dim)
-    schema.add_field("category", DataType.VARCHAR, max_length=255)
-    schema.add_field("content_type", DataType.VARCHAR, max_length=32)
-    schema.add_field("section_path", DataType.VARCHAR, max_length=512)
-    schema.add_field("source_doc", DataType.VARCHAR, max_length=255)
-    schema.add_function(
-        Function(
-            name="text_bm25",
-            input_field_names=["text"],
-            output_field_names=["sparse"],
-            function_type=FunctionType.BM25,
-        )
-    )
-
-    index_params = client.prepare_index_params()
-    index_params.add_index(
-        field_name="dense",
-        index_type="AUTOINDEX",
-        metric_type="COSINE",
-    )
-    index_params.add_index(
-        field_name="sparse",
-        index_type="SPARSE_INVERTED_INDEX",
-        metric_type="BM25",
-    )
-    client.create_collection(
-        collection_name=collection,
-        schema=schema,
-        index_params=index_params,
-    )
-    client.load_collection(collection)
-    _ENSURED.add(cache_key)
 
 
 def recreate_collection(

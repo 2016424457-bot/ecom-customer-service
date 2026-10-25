@@ -6,6 +6,7 @@ from app.config import Settings
 from app.knowledge.embeddings import embed_query
 from app.knowledge.query_understanding import NoOpQueryRewriter
 from app.knowledge.retrieval import (
+    MilvusSearchBackend,
     Reranker,
     RetrievalResult,
     RetrievalStrategy,
@@ -73,6 +74,9 @@ async def search_many_result(
     ``settings.rag_top_k``, matching ``retrieve``).
     """
     active_rewriter = rewriter or NoOpQueryRewriter()
+    # Share one backend (and therefore one cached Milvus client) across the
+    # concurrent retrievals; separate backends race the Milvus Lite lock.
+    active_backend = backend or MilvusSearchBackend(settings)
     results = await asyncio.gather(
         *(
             retrieve(
@@ -85,7 +89,7 @@ async def search_many_result(
                 category=category,
                 content_type=content_type,
                 min_score=min_score,
-                backend=backend,
+                backend=active_backend,
                 embedder=embedder,
                 rewriter=active_rewriter,
                 reranker=reranker,

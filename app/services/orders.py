@@ -16,6 +16,7 @@ _FIXED_ORDERS = {
         "status": "已签收",
         "created_days_ago": 10,
         "signed_days_ago": 3,
+        "condition": "未拆封，商品完好，配件齐全",
     },
     "1002": {
         "item": "机械键盘",
@@ -30,6 +31,7 @@ _FIXED_ORDERS = {
         "status": "已签收",
         "created_days_ago": 40,
         "signed_days_ago": 30,
+        "condition": "已拆封",
     },
 }
 _USER_ORDER_IDS = ("1001", "1002", "1003")
@@ -53,6 +55,7 @@ def _make_order(
     created: date,
     signed_at: str | None,
     tracking_no: str,
+    condition: str | None = None,
 ) -> dict:
     return {
         "order_id": order_id,
@@ -62,6 +65,7 @@ def _make_order(
         "tracking_no": tracking_no,
         "created_at": created.isoformat(),
         "signed_at": signed_at,
+        "condition": condition,
     }
 
 
@@ -84,6 +88,7 @@ def _fixed_order(order_id: str) -> dict:
         created=created,
         signed_at=signed_at,
         tracking_no=_tracking_no(_seeded_random(order_id)),
+        condition=spec.get("condition"),
     )
 
 
@@ -110,6 +115,7 @@ def _generated_order(order_id: str) -> dict:
         created=created,
         signed_at=signed_at,
         tracking_no=_tracking_no(rng),
+        condition=None,
     )
 
 

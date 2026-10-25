@@ -127,6 +127,7 @@ def _deps(
     judge_model=None,
     judge_prompt: str = "JUDGE PROMPT",
     repository=None,
+    evidence_checker=None,
     rerank_min_score: float = 0.0,
 ):
     return SimpleNamespace(
@@ -140,7 +141,7 @@ def _deps(
         or FakeJudgeModel(RefundVerdict(eligible=True, answer="ok")),
         refund_judge_prompt=judge_prompt,
         order_provider=_order_provider,
-        evidence_checker=None,
+        evidence_checker=evidence_checker,
         repository=repository or FakeRepository(),
     )
 
@@ -352,6 +353,45 @@ async def test_policy_uses_content_type_policy_for_refund(monkeypatch):
     assert out["trace"]["refund"]["queries"] == ["q1", "q2"]
     assert out["trace"]["refund"]["content_type"] == "policy"
     assert out["trace"]["evidence_top"] == pytest.approx(0.9)
+
+
+@pytest.mark.asyncio
+async def test_policy_assessment_question_is_policy_focused(monkeypatch):
+    async def fake_search(queries, **kwargs):
+        return _result([_hit(0.9)])
+
+    class FakeEvidenceChecker:
+        def __init__(self) -> None:
+            self.questions: list[str] = []
+
+        async def assess(self, question, items):
+            self.questions.append(question)
+            return SimpleNamespace(useful=True, reason="ok")
+
+    monkeypatch.setattr(nodes, "search_many_result", fake_search)
+    checker = FakeEvidenceChecker()
+    judge = FakeJudgeModel(RefundVerdict(eligible=True, answer="可以退。"))
+    deps = _deps(evidence_checker=checker, judge_model=judge)
+    state = _state(
+        order_id="1001",
+        order=ORDER,
+        standalone_query="订单号1001的商品我想退款",
+    )
+
+    rag = await nodes.refund_policy_rag(state, deps=deps)
+
+    assert rag["evidence_strong"] is True
+    assert len(checker.questions) == 1
+    question = checker.questions[0]
+    assert "q1" in question
+    assert "q2" in question
+    assert "1001" not in question
+
+    merged = {**state, **rag, "trace": rag["trace"]}
+    out = await nodes.refund_judge(merged, deps=deps)
+
+    assert out["refund_eligible"] is True
+    assert json.loads(judge.calls[0][1].content)["order"] == ORDER
 
 
 @pytest.mark.asyncio
