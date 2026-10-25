@@ -7,6 +7,7 @@
   const STREAM_URL = "/api/chat/stream";
   const HEALTH_URL = "/health";
   const TICKET_URL = "/api/actions/create-ticket";
+  const REFUND_URL = "/api/actions/submit-refund";
   const MAX_INPUT = 8000;
 
   const WELCOME =
@@ -50,12 +51,22 @@
   const closeTicket = document.getElementById("closeTicket");
   const cancelTicket = document.getElementById("cancelTicket");
   const submitTicket = document.getElementById("submitTicket");
+  const refundDialog = document.getElementById("refundDialog");
+  const refundForm = document.getElementById("refundForm");
+  const refundOrder = document.getElementById("refundOrder");
+  const refundReason = document.getElementById("refundReason");
+  const refundNote = document.getElementById("refundNote");
+  const refundError = document.getElementById("refundError");
+  const closeRefund = document.getElementById("closeRefund");
+  const cancelRefund = document.getElementById("cancelRefund");
+  const submitRefund = document.getElementById("submitRefund");
 
   let sessionId = loadSessionId();
   let userId = loadUserId();
   let history = loadHistory();
   let busy = false;
   let pendingTicket = null;
+  let pendingRefund = null;
 
   function uuid() {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -283,17 +294,112 @@
     scrollToBottom();
   }
 
+  function formatAmount(value) {
+    const amount = Number(value);
+    if (!Number.isFinite(amount)) return String(value);
+    return `¥${amount.toFixed(2)}`;
+  }
+
+  function renderOrderPicker(bubble, action) {
+    const orders = Array.isArray(action.orders) ? action.orders : [];
+    if (!orders.length) return;
+
+    const picker = document.createElement("div");
+    picker.className = "order-picker";
+
+    const statusEl = document.createElement("p");
+    statusEl.className = "order-picker-status";
+
+    const cards = [];
+    for (const order of orders) {
+      if (!order || order.order_id == null || order.order_id === "") {
+        continue;
+      }
+
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "order-card";
+
+      const idEl = document.createElement("span");
+      idEl.className = "order-id";
+      idEl.textContent = `订单 ${order.order_id}`;
+
+      const metaParts = [];
+      if (order.item) metaParts.push(String(order.item));
+      if (order.amount != null && order.amount !== "") {
+        metaParts.push(formatAmount(order.amount));
+      }
+      if (order.status) metaParts.push(String(order.status));
+      if (order.signed_at) metaParts.push(`签收 ${order.signed_at}`);
+
+      const metaEl = document.createElement("span");
+      metaEl.className = "order-meta";
+      metaEl.textContent = metaParts.join(" · ");
+
+      card.append(idEl, metaEl);
+      picker.append(card);
+      cards.push({ card, order });
+    }
+
+    if (!cards.length) return;
+
+    const selectedId = action.selected_order_id;
+    if (action.handled) {
+      for (const entry of cards) {
+        entry.card.disabled = true;
+        if (selectedId != null && entry.order.order_id === selectedId) {
+          entry.card.classList.add("is-selected");
+        }
+      }
+      statusEl.textContent =
+        selectedId != null ? `已选择订单 ${selectedId}` : "已选择订单";
+    }
+
+    for (const entry of cards) {
+      entry.card.addEventListener("click", () => {
+        if (action.handled || busy) return;
+        action.handled = true;
+        action.selected_order_id = entry.order.order_id;
+        saveHistory();
+        for (const other of cards) {
+          other.card.disabled = true;
+          other.card.classList.toggle(
+            "is-selected",
+            other.order.order_id === entry.order.order_id,
+          );
+        }
+        statusEl.textContent = `已选择订单 ${entry.order.order_id}`;
+        scrollToBottom();
+        void sendMessage(`订单号：${entry.order.order_id}`);
+      });
+    }
+
+    picker.append(statusEl);
+    bubble.append(picker);
+  }
+
   function renderActions(bubble, item) {
     const actions = Array.isArray(item && item.actions)
       ? item.actions
       : [];
-    if (!actions.length || bubble.querySelector(".action-bar")) return;
+    if (
+      !actions.length ||
+      bubble.querySelector(".action-bar, .order-picker")
+    ) {
+      return;
+    }
 
     const bar = document.createElement("div");
     bar.className = "action-bar";
 
     for (const action of actions) {
       if (!action || typeof action.type !== "string") continue;
+
+      if (action.type === "select_order") {
+        renderOrderPicker(bubble, action);
+        continue;
+      }
+
       const button = document.createElement("button");
       button.type = "button";
       button.className = "action-btn";
@@ -321,6 +427,15 @@
           if (action.handled) return;
           openTicketDialog(action, button);
         });
+      } else if (action.type === "refund_form") {
+        button.textContent = action.handled
+          ? `已提交${action.refund_no ? " " + action.refund_no : ""}`
+          : "提交退款申请";
+        button.disabled = Boolean(action.handled);
+        button.addEventListener("click", () => {
+          if (action.handled) return;
+          openRefundDialog(action, button);
+        });
       } else {
         continue;
       }
@@ -346,6 +461,78 @@
 
   function closeTicketDialog() {
     if (ticketDialog && ticketDialog.open) ticketDialog.close();
+  }
+
+  function showRefundError(text) {
+    if (refundError) refundError.textContent = text || "";
+  }
+
+  function renderRefundOrder(action) {
+    if (!refundOrder) return;
+    refundOrder.textContent = "";
+
+    const summary = (action && action.order_summary) || {};
+    const rows = [
+      ["订单号", action && action.order_id],
+      ["商品", summary.item],
+      ["金额", summary.amount != null ? formatAmount(summary.amount) : ""],
+      ["状态", summary.status],
+      ["申请类型", action && action.request_type],
+    ];
+
+    for (const [label, rawValue] of rows) {
+      if (rawValue == null || rawValue === "") continue;
+      const row = document.createElement("p");
+      row.className = "refund-order-row";
+
+      const labelEl = document.createElement("span");
+      labelEl.className = "refund-order-label";
+      labelEl.textContent = label;
+
+      const valueEl = document.createElement("span");
+      valueEl.className = "refund-order-value";
+      valueEl.textContent = String(rawValue);
+
+      row.append(labelEl, valueEl);
+      refundOrder.append(row);
+    }
+  }
+
+  function fillRefundReasons(categories) {
+    if (!refundReason) return;
+    refundReason.textContent = "";
+
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = "请选择退款原因";
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    refundReason.append(placeholder);
+
+    for (const category of Array.isArray(categories) ? categories : []) {
+      if (!category || typeof category.code !== "string") continue;
+      const option = document.createElement("option");
+      option.value = category.code;
+      option.textContent = category.label || category.code;
+      refundReason.append(option);
+    }
+  }
+
+  function openRefundDialog(action, button) {
+    if (!refundDialog || typeof refundDialog.showModal !== "function") {
+      return;
+    }
+    pendingRefund = { action, button };
+    if (refundForm) refundForm.reset();
+    renderRefundOrder(action);
+    fillRefundReasons(action.categories);
+    showRefundError("");
+    if (!refundDialog.open) refundDialog.showModal();
+    if (refundReason) refundReason.focus();
+  }
+
+  function closeRefundDialog() {
+    if (refundDialog && refundDialog.open) refundDialog.close();
   }
 
   function createToolBadge(name) {
@@ -486,14 +673,19 @@
     }
   }
 
-  async function sendMessage() {
-    const text = input.value.trim();
+  async function sendMessage(textOverride) {
+    const override =
+      typeof textOverride === "string" ? textOverride.trim() : "";
+    const hasOverride = override.length > 0;
+    const text = hasOverride ? override : input.value.trim();
     if (!text || busy) return;
     if (text.length > MAX_INPUT) return;
 
     setBusy(true);
     showSuggestions(false);
-    input.value = "";
+    if (!hasOverride) {
+      input.value = "";
+    }
     autoResize();
 
     appendHistory("user", text);
@@ -677,6 +869,8 @@
     }
     closeTicketDialog();
     pendingTicket = null;
+    closeRefundDialog();
+    pendingRefund = null;
     history = [];
     saveHistory();
     sessionId = uuid();
@@ -830,6 +1024,91 @@
       pendingTicket = null;
       if (ticketForm) ticketForm.reset();
       showTicketError("");
+    });
+  }
+
+  if (refundForm) {
+    refundForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!pendingRefund) return;
+
+      const current = pendingRefund;
+      const reasonCode = refundReason ? refundReason.value : "";
+      const noteValue = refundNote ? refundNote.value.trim() : "";
+      if (!reasonCode) {
+        showRefundError("请选择退款原因");
+        return;
+      }
+      if (noteValue.length > 1000) {
+        showRefundError("补充说明不能超过 1000 字");
+        return;
+      }
+
+      const conversationId = Number(sessionId);
+      if (!Number.isInteger(conversationId) || conversationId <= 0) {
+        showRefundError("会话尚未建立，请先发送一条消息");
+        return;
+      }
+
+      const requestType =
+        current.action.request_type === "退货" ? "退货" : "退款";
+
+      if (submitRefund) submitRefund.disabled = true;
+      try {
+        const response = await fetch(REFUND_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversation_id: conversationId,
+            order_id:
+              current.action.order_id != null
+                ? String(current.action.order_id)
+                : "",
+            request_type: requestType,
+            reason_code: reasonCode,
+            note: noteValue || null,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(
+            typeof data.detail === "string"
+              ? data.detail
+              : "退款申请提交失败，请稍后重试",
+          );
+        }
+
+        current.action.handled = true;
+        current.action.refund_no = data.refund_no;
+        saveHistory();
+        current.button.disabled = true;
+        current.button.textContent = `已提交 ${data.refund_no}`;
+        appendAssistantMessage(
+          `退款单已提交：${data.refund_no}，我们会尽快审核。`,
+        );
+        closeRefundDialog();
+      } catch (error) {
+        showRefundError(
+          error instanceof Error
+            ? error.message
+            : "退款申请提交失败，请稍后重试",
+        );
+      } finally {
+        if (submitRefund) submitRefund.disabled = false;
+      }
+    });
+  }
+
+  if (closeRefund) closeRefund.addEventListener("click", closeRefundDialog);
+  if (cancelRefund) cancelRefund.addEventListener("click", closeRefundDialog);
+  if (refundDialog) {
+    refundDialog.addEventListener("click", (event) => {
+      if (event.target === refundDialog) closeRefundDialog();
+    });
+    refundDialog.addEventListener("close", () => {
+      pendingRefund = null;
+      if (refundForm) refundForm.reset();
+      showRefundError("");
     });
   }
 
