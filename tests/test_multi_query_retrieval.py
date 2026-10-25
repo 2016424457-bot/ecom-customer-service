@@ -109,5 +109,28 @@ async def test_search_many_truncates_to_top_k(monkeypatch, settings):
 
 
 @pytest.mark.asyncio
+async def test_search_many_caps_to_settings_rag_top_k_by_default(
+    monkeypatch, settings
+):
+    async def fake_retrieve(q, **kwargs):
+        return RetrievalResult(
+            "hybrid_rerank",
+            q,
+            True,
+            [
+                _hit(hit_id, hit_id / 100)
+                for hit_id in range(1, settings.rag_top_k + 5)
+            ],
+        )
+
+    monkeypatch.setattr(search, "retrieve", fake_retrieve)
+    result = await search.search_many_result(
+        ["a"], repository=object(), settings=settings
+    )
+    assert len(result.hits) == settings.rag_top_k
+    assert result.hits[0].id == settings.rag_top_k + 4
+
+
+@pytest.mark.asyncio
 async def test_noop_rewriter_returns_question():
     assert await NoOpQueryRewriter().rewrite("能退吗") == "能退吗"

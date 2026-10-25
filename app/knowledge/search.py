@@ -69,7 +69,8 @@ async def search_many_result(
     """Run every query and merge hits, skipping failed queries.
 
     Hits are deduplicated by chunk id (keeping the highest score), sorted
-    by score descending, then truncated to ``top_k`` when given.
+    by score descending, then truncated to ``top_k`` (default:
+    ``settings.rag_top_k``, matching ``retrieve``).
     """
     active_rewriter = rewriter or NoOpQueryRewriter()
     results = await asyncio.gather(
@@ -113,8 +114,8 @@ async def search_many_result(
     merged = sorted(
         best.values(), key=lambda hit: hit.score, reverse=True
     )
-    if top_k is not None:
-        merged = merged[:top_k]
+    limit = top_k or settings.rag_top_k
+    merged = merged[:limit]
 
     strategy_label = getattr(strategy, "value", strategy)
     return RetrievalResult(
