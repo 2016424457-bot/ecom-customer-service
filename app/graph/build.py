@@ -5,14 +5,28 @@ from langgraph.graph import END, START, StateGraph
 
 from app.graph import nodes
 from app.graph.deps import GraphDeps
-from app.graph.routing import confidence_gate, route_by_intent, should_continue
+from app.graph.routing import (
+    confidence_gate,
+    pending_check_route,
+    refund_scope_route,
+    route_by_intent,
+    should_continue,
+)
 from app.graph.state import ConversationState
+
+
+def refund_order_gate(state: dict) -> str:
+    """After the order lookup: continue with the order, or end and wait."""
+    return "have_order" if state.get("order") else "need_order"
 
 
 def _builder(deps: GraphDeps) -> StateGraph:
     builder = StateGraph(ConversationState)
 
-    builder.add_node("coref", partial(nodes.coref, deps=deps))
+    builder.add_node(
+        "coref_rewrite", partial(nodes.coref_rewrite, deps=deps)
+    )
+    builder.add_node("pending_check", partial(nodes.pending_check, deps=deps))
     builder.add_node(
         "classify_intent", partial(nodes.classify_intent, deps=deps)
     )
@@ -32,10 +46,29 @@ def _builder(deps: GraphDeps) -> StateGraph:
         "fallback_reply", partial(nodes.fallback_reply, deps=deps)
     )
     builder.add_node("budget_reply", partial(nodes.budget_reply, deps=deps))
+    builder.add_node("other_reply", partial(nodes.other_reply, deps=deps))
+    builder.add_node("refund_scope", partial(nodes.refund_scope, deps=deps))
+    builder.add_node(
+        "refund_order_lookup",
+        partial(nodes.refund_order_lookup, deps=deps),
+    )
+    builder.add_node(
+        "refund_policy_rag", partial(nodes.refund_policy_rag, deps=deps)
+    )
+    builder.add_node("refund_judge", partial(nodes.refund_judge, deps=deps))
+    builder.add_node(
+        "refund_fallback_reply",
+        partial(nodes.refund_fallback_reply, deps=deps),
+    )
     builder.add_node("log", partial(nodes.log_node, deps=deps))
 
-    builder.add_edge(START, "coref")
-    builder.add_edge("coref", "classify_intent")
+    builder.add_edge(START, "coref_rewrite")
+    builder.add_edge("coref_rewrite", "pending_check")
+    builder.add_conditional_edges(
+        "pending_check",
+        pending_check_route,
+        {"resume": "refund_order_lookup", "classify": "classify_intent"},
+    )
     builder.add_conditional_edges(
         "classify_intent",
         route_by_intent,
@@ -44,8 +77,28 @@ def _builder(deps: GraphDeps) -> StateGraph:
             "business": "agent_llm",
             "complaint": "complaint_reply",
             "chitchat": "chitchat_reply",
+            "refund": "refund_scope",
+            "other": "other_reply",
         },
     )
+
+    builder.add_conditional_edges(
+        "refund_scope",
+        refund_scope_route,
+        {"policy": "forced_rag", "order": "refund_order_lookup"},
+    )
+    builder.add_conditional_edges(
+        "refund_order_lookup",
+        refund_order_gate,
+        {"have_order": "refund_policy_rag", "need_order": "log"},
+    )
+    builder.add_conditional_edges(
+        "refund_policy_rag",
+        confidence_gate,
+        {"strong": "refund_judge", "weak": "refund_fallback_reply"},
+    )
+    builder.add_edge("refund_judge", "log")
+    builder.add_edge("refund_fallback_reply", "log")
 
     builder.add_edge("forced_rag", "confidence_check")
     builder.add_conditional_edges(
@@ -75,6 +128,7 @@ def _builder(deps: GraphDeps) -> StateGraph:
         "chitchat_reply",
         "fallback_reply",
         "budget_reply",
+        "other_reply",
     ):
         builder.add_edge(reply, "log")
     builder.add_edge("log", END)
@@ -83,5 +137,5 @@ def _builder(deps: GraphDeps) -> StateGraph:
 
 
 def build_graph(checkpointer: Any, deps: GraphDeps):
-    """Compile the CH05 graph with a checkpointer and per-turn deps."""
+    """Compile the CH06 graph with a checkpointer and per-turn deps."""
     return _builder(deps).compile(checkpointer=checkpointer)

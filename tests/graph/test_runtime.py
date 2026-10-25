@@ -35,9 +35,10 @@ class FakeRepository:
 
 
 class FakeGraph:
-    def __init__(self, *, final=None) -> None:
+    def __init__(self, *, final=None, refund_update=None) -> None:
         self.received = None
         self.final = final or {}
+        self.refund_update = refund_update
 
     async def astream(self, inp, config, stream_mode=None):
         self.received = (inp, config, stream_mode)
@@ -107,11 +108,17 @@ class FakeGraph:
                 }
             },
         )
+        if self.refund_update is not None:
+            yield ("updates", {"refund_judge": self.refund_update})
 
     async def aget_state(self, config):
         values = {
             "intent": "物流",
             "route": "business",
+            "standalone_query": "订单1001的物流到哪了",
+            "intent_confidence": 0.92,
+            "intent_tier": "fast",
+            "queries": ["订单1001物流", "物流进度"],
             "citations": [{"n": 1}],
             "suggested_actions": [{"type": "transfer_human"}],
             "steps": 2,
@@ -128,7 +135,8 @@ class FakeGraph:
                         "ok": True,
                         "intercepted": True,
                     },
-                ]
+                ],
+                "refund": {"stage": "judged", "eligible": True},
             },
             "messages": [AIMessage("已发货")],
         }
@@ -183,14 +191,107 @@ async def test_stream_turn_filters_and_maps_events(monkeypatch):
     assert done["route"] == "business"
     assert done["tool_calls"] == ["query_logistics", "create_ticket"]
     assert done["suggested_actions"] == [{"type": "transfer_human"}]
+    assert done["standalone_query"] == "订单1001的物流到哪了"
+    assert done["intent_confidence"] == pytest.approx(0.92)
+    assert done["intent_tier"] == "fast"
+    assert done["queries"] == ["订单1001物流", "物流进度"]
+    assert done["refund"] == {"stage": "judged", "eligible": True}
     assert repository.rows[0] == (7, "user", "hi")
 
     inp, config, stream_mode = graph.received
     assert inp["steps"] == 0
     assert inp["trace"] == {}
     assert inp["suggested_actions"] == []
+    assert inp["standalone_query"] == ""
+    assert inp["order_id"] is None
+    assert inp["intent_confidence"] == 0.0
+    assert inp["intent_tier"] == ""
+    assert inp["queries"] == []
+    assert inp["order"] is None
+    assert inp["refund_mode"] == ""
+    assert inp["refund_eligible"] is None
+    assert inp["pending_resume"] is False
     assert config["configurable"]["thread_id"] == "7"
     assert stream_mode == ["messages", "updates"]
+
+
+@pytest.mark.asyncio
+async def test_pending_not_in_graph_input(monkeypatch):
+    repository = FakeRepository()
+    graph = FakeGraph()
+    monkeypatch.setattr(runtime, "build_graph", lambda *a, **k: graph)
+
+    async for _ in runtime.stream_turn(
+        _deps(repository),
+        conversation_id=7,
+        user_id="u1",
+        message="订单号：1001",
+    ):
+        pass
+
+    inp = graph.received[0]
+    assert "pending" not in inp
+    assert "pending_resume" in inp
+
+
+@pytest.mark.asyncio
+async def test_refund_judge_update_emits_answer_token(monkeypatch):
+    repository = FakeRepository()
+    graph = FakeGraph(
+        final={
+            "route": "refund",
+            "refund_eligible": True,
+            "answer": "这一单可以退[1]。",
+        },
+        refund_update={
+            "answer": "这一单可以退[1]。",
+            "refund_eligible": True,
+            "route": "refund",
+            "suggested_actions": [{"type": "refund_form"}],
+        },
+    )
+    monkeypatch.setattr(runtime, "build_graph", lambda *a, **k: graph)
+
+    events = [
+        event
+        async for event in runtime.stream_turn(
+            _deps(repository),
+            conversation_id=7,
+            user_id="u1",
+            message="这个能退吗",
+        )
+    ]
+
+    deltas = [data["delta"] for kind, data in events if kind == "token"]
+    assert deltas == ["已", "发货", "抱歉", "这一单可以退[1]。"]
+    done = events[-1][1]
+    assert done["route"] == "refund"
+    assert done["answer"] == "这一单可以退[1]。"
+    assert done["refused"] is False
+
+
+@pytest.mark.asyncio
+async def test_refund_fallback_route_is_refused(monkeypatch):
+    repository = FakeRepository()
+    graph = FakeGraph(
+        final={
+            "route": "refund_fallback",
+            "trace": {"fallback": True},
+        }
+    )
+    monkeypatch.setattr(runtime, "build_graph", lambda *a, **k: graph)
+
+    events = [
+        event
+        async for event in runtime.stream_turn(
+            _deps(repository),
+            conversation_id=7,
+            user_id="u1",
+            message="这个能退吗",
+        )
+    ]
+
+    assert events[-1][1]["refused"] is True
 
 
 @pytest.mark.asyncio

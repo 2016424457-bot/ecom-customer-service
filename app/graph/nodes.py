@@ -171,6 +171,19 @@ async def coref(state: dict, *, deps: Any) -> dict:
     return {"trace": merge_trace(state, coref="passthrough")}
 
 
+async def coref_rewrite(state: dict, *, deps: Any) -> dict:
+    """Resolve references and normalize the user message before routing."""
+    query = _user_text(state)
+    result = await deps.coref_rewriter.resolve(
+        query, state.get("messages", [])
+    )
+    return {
+        "standalone_query": result.standalone_query,
+        "order_id": result.order_id,
+        "trace": merge_trace(state, coref="rewritten"),
+    }
+
+
 async def pending_check(state: dict, *, deps: Any = None) -> dict:
     """Resume a pending refund slot or clear it before re-classifying.
 

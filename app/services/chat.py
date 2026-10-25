@@ -60,6 +60,10 @@ async def stream_chat(
     faq_search: Any = None,
     evidence_checker: Any = None,
     intent_model: Any = None,
+    coref_model: Any = None,
+    expansion_model: Any = None,
+    refund_judge_model: Any = None,
+    intent_fast_model: Any = None,
 ) -> AsyncIterator[Event]:
     """Run one graph turn and map its events to the existing SSE contract."""
     lock = locks.lock_for(_lock_key(session_id))
@@ -85,6 +89,10 @@ async def stream_chat(
                 conversation_id=conversation.id,
                 evidence_checker=evidence_checker,
                 faq_search=faq_search,
+                coref_model=coref_model,
+                expansion_model=expansion_model,
+                refund_judge_model=refund_judge_model,
+                intent_fast_model=intent_fast_model,
             )
             async for event, data in graph_runtime.stream_turn(
                 deps,

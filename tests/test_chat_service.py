@@ -101,6 +101,10 @@ async def test_stream_chat_delegates_to_graph(
     assert events[1][1] == {"delta": "你好"}
     assert captured["turn"] == (7, "u1", "hi")
     assert captured["conversation_id"] == 7
+    assert captured["coref_model"] is None
+    assert captured["expansion_model"] is None
+    assert captured["refund_judge_model"] is None
+    assert captured["intent_fast_model"] is None
     assert repository.commits >= 1
 
 

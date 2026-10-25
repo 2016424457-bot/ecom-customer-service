@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -5,8 +6,10 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.graph import nodes, runtime
+from app.graph.coref import CorefResult
 from app.graph.deps import GraphDeps
 from app.graph.intent import IntentDecision
+from app.graph.refund import RefundVerdict
 from app.knowledge.types import KnowledgeHit, RetrievalResult
 from app.services.tool_exec import ToolResult
 
@@ -64,25 +67,113 @@ class FakeModel:
 
 
 class FakeRegistry:
-    def __init__(self) -> None:
+    def __init__(self, content: str = '{"status": "派送中"}') -> None:
         self.calls: list[tuple] = []
+        self.content = content
 
     async def execute(self, name, arguments):
         self.calls.append((name, arguments))
         return ToolResult(
             name=name,
             ok=True,
-            content='{"status": "派送中"}',
+            content=self.content,
             error_code=None,
             duration_ms=1.0,
             attempts=1,
         )
 
 
-def _deps(*, intent, model, registry=None):
+class FakeCoref:
+    def __init__(self, order_id=None, standalone_query=None) -> None:
+        self.order_id = order_id
+        self.standalone_query = standalone_query
+        self.calls: list[tuple] = []
+
+    async def resolve(self, query, history):
+        self.calls.append((query, list(history)))
+        return CorefResult(
+            standalone_query=self.standalone_query or query,
+            order_id=self.order_id,
+        )
+
+
+class FakeExpander:
+    def __init__(self, queries=None) -> None:
+        self.queries = queries
+        self.calls: list[tuple] = []
+
+    async def expand(self, query, order):
+        self.calls.append((query, order))
+        return list(self.queries or [query])
+
+
+class FakeJudgeModel:
+    def __init__(self, verdict=None) -> None:
+        self.verdict = verdict or RefundVerdict(
+            eligible=None, answer="无法确认"
+        )
+        self.calls: list[list] = []
+
+    async def ainvoke(self, messages):
+        self.calls.append(list(messages))
+        return self.verdict
+
+
+def _order_provider(user_id: str) -> list[dict]:
+    return [
+        {
+            "order_id": "1001",
+            "item": "蓝牙耳机",
+            "amount": 399.0,
+            "status": "已签收",
+            "signed_at": "2026-10-22",
+        }
+    ]
+
+
+ORDER = {
+    "order_id": "1001",
+    "status": "已签收",
+    "items": [{"name": "蓝牙耳机", "quantity": 1}],
+    "amount": 399.0,
+    "tracking_no": "SF000000000001",
+    "created_at": "2026-10-15",
+    "signed_at": "2026-10-22",
+}
+
+
+async def _policy_search(queries, **kwargs):
+    return RetrievalResult(
+        strategy="multi_hybrid_rerank",
+        rewritten_query=queries[0],
+        reranked=True,
+        hits=[
+            KnowledgeHit(
+                id=11,
+                category="退货",
+                questions="退货政策",
+                answer="7天无理由退货。",
+                score=0.9,
+                section_path="政策/退货",
+                content_type="policy",
+                source_doc="returns.md",
+            )
+        ],
+    )
+
+
+def _deps(
+    *,
+    intent,
+    model,
+    registry=None,
+    coref=None,
+    expander=None,
+    judge=None,
+):
     return GraphDeps(
         settings=SimpleNamespace(
-            max_agent_steps=6, rerank_min_score=0.0
+            max_agent_steps=6, rerank_min_score=0.0, rag_top_k=5
         ),
         chat_model=model,
         intent_classifier=FakeClassifier(intent),
@@ -96,6 +187,11 @@ def _deps(*, intent, model, registry=None):
         tools=[object()],
         tool_registry=registry or FakeRegistry(),
         agent_prompt="AGENT",
+        coref_rewriter=coref or FakeCoref(),
+        query_expander=expander or FakeExpander(),
+        refund_judge_model=judge or FakeJudgeModel(),
+        refund_judge_prompt="JUDGE PROMPT",
+        order_provider=_order_provider,
     )
 
 
@@ -339,3 +435,120 @@ async def test_checkpointer_carries_history_across_turns():
     assert "第一轮问题" in contents
     assert "第一轮答复" in contents
     assert "第二轮问题" in contents
+
+
+@pytest.mark.asyncio
+async def test_refund_route_judges_order_and_returns_form(monkeypatch):
+    monkeypatch.setattr(nodes, "search_many_result", _policy_search)
+    registry = FakeRegistry(content=json.dumps(ORDER, ensure_ascii=False))
+    judge = FakeJudgeModel(
+        RefundVerdict(eligible=True, answer="这一单在7天内可以退[1]。")
+    )
+    coref = FakeCoref(order_id="1001")
+    expander = FakeExpander(["q1", "q2"])
+    model = FakeModel([])
+    deps = _deps(
+        intent="退款退货",
+        model=model,
+        registry=registry,
+        coref=coref,
+        expander=expander,
+        judge=judge,
+    )
+
+    events = [
+        event
+        async for event in runtime.stream_turn(
+            deps, conversation_id=15, user_id="u1", message="这个能退吗"
+        )
+    ]
+
+    kinds = [kind for kind, _ in events]
+    deltas = [data["delta"] for kind, data in events if kind == "token"]
+    tool_names = [data["name"] for kind, data in events if kind == "tool"]
+    done = events[-1][1]
+
+    assert coref.calls[0][0] == "这个能退吗"
+    assert registry.calls == [("query_order", {"order_id": "1001"})]
+    assert expander.calls == [("这个能退吗", ORDER)]
+    assert tool_names == ["query_order"]
+    assert deltas == ["这一单在7天内可以退[1]。"]
+    assert "citations" in kinds
+    assert done["route"] == "refund"
+    assert done["standalone_query"] == "这个能退吗"
+    assert done["queries"] == ["q1", "q2"]
+    assert done["refund"]["eligible"] is True
+    assert done["refund"]["stage"] == "judged"
+    assert done["citations"][0]["n"] == 1
+    assert done["tool_calls"] == ["query_order"]
+    assert done["refused"] is False
+    assert done["suggested_actions"][0]["type"] == "refund_form"
+    assert model.calls == []
+
+
+@pytest.mark.asyncio
+async def test_refund_route_without_order_waits_for_selection():
+    model = FakeModel([])
+    coref = FakeCoref(order_id=None)
+    deps = _deps(intent="退款退货", model=model, coref=coref)
+
+    events = [
+        event
+        async for event in runtime.stream_turn(
+            deps, conversation_id=16, user_id="u1", message="这个能退吗"
+        )
+    ]
+
+    kinds = [kind for kind, _ in events]
+    deltas = [data["delta"] for kind, data in events if kind == "token"]
+    done = events[-1][1]
+
+    assert kinds.count("actions") == 1
+    assert deltas == [nodes.REFUND_AWAIT_ORDER_REPLY]
+    assert done["route"] == "refund_await_order"
+    orders = done["suggested_actions"][0]["orders"]
+    assert done["suggested_actions"][0]["type"] == "select_order"
+    assert [item["order_id"] for item in orders] == ["1001"]
+    assert model.calls == []
+
+
+@pytest.mark.asyncio
+async def test_pending_survives_and_resumes_refund_subflow(monkeypatch):
+    monkeypatch.setattr(nodes, "search_many_result", _policy_search)
+    registry = FakeRegistry(content=json.dumps(ORDER, ensure_ascii=False))
+    judge = FakeJudgeModel(
+        RefundVerdict(eligible=True, answer="这一单在7天内可以退[1]。")
+    )
+    model = FakeModel([])
+    deps = _deps(
+        intent="退款退货",
+        model=model,
+        registry=registry,
+        judge=judge,
+    )
+
+    first = [
+        event
+        async for event in runtime.stream_turn(
+            deps, conversation_id=17, user_id="u1", message="这个能退吗"
+        )
+    ]
+    assert first[-1][1]["suggested_actions"][0]["type"] == "select_order"
+    assert registry.calls == []
+
+    second = [
+        event
+        async for event in runtime.stream_turn(
+            deps,
+            conversation_id=17,
+            user_id="u1",
+            message="订单号：1001",
+        )
+    ]
+    done = second[-1][1]
+
+    assert registry.calls == [("query_order", {"order_id": "1001"})]
+    assert done["suggested_actions"][0]["type"] == "refund_form"
+    assert done["refund"]["stage"] == "judged"
+    assert done["refund"]["eligible"] is True
+    assert model.calls == []

@@ -9,11 +9,14 @@ from langchain_core.messages import AIMessage, HumanMessage
 from app.config import Settings
 from app.db.repositories import KnowledgeRepository
 from app.graph.build import build_graph
+from app.graph.coref import CorefRewriter
 from app.graph.deps import GraphDeps
 from app.graph.intent import IntentClassifier
 from app.graph.nodes import resolve_answer
 from app.graph.state import ConversationState
+from app.knowledge.expansion import QueryExpander
 from app.knowledge.search import search_knowledge_result
+from app.services.orders import list_user_orders
 from app.services.tool_exec import ToolRegistry
 from app.tools import build_tools
 
@@ -25,7 +28,11 @@ DETERMINISTIC_ANSWER_NODES = {
     "complaint_reply",
     "fallback_reply",
     "budget_reply",
+    "other_reply",
+    "refund_order_lookup",
+    "refund_fallback_reply",
 }
+UPDATE_ANSWER_NODES = {"refund_judge"}
 
 _checkpointer: Any = None
 _checkpointer_cm: Any = None
@@ -120,6 +127,10 @@ def build_deps(
     evidence_checker: Any = None,
     faq_search: Any = None,
     agent_prompt: str | None = None,
+    coref_model: Any = None,
+    expansion_model: Any = None,
+    refund_judge_model: Any = None,
+    intent_fast_model: Any = None,
 ) -> GraphDeps:
     """Assemble the per-turn dependency bag for the graph."""
     knowledge_repository = repository
@@ -153,11 +164,27 @@ def build_deps(
             encoding="utf-8"
         )
 
+    coref_rewriter = CorefRewriter(
+        coref_model,
+        settings.coref_prompt_path,
+        max_messages=settings.coref_history_messages,
+        max_chars=settings.coref_max_history_chars,
+    )
+    query_expander = QueryExpander(
+        expansion_model, settings.expansion_prompt_path
+    )
+    refund_judge_prompt = settings.refund_judge_prompt_path.read_text(
+        encoding="utf-8"
+    )
+
     return GraphDeps(
         settings=settings,
         chat_model=chat_model,
         intent_classifier=IntentClassifier(
-            intent_model, settings.intent_prompt_path
+            intent_model,
+            settings.intent_prompt_path,
+            fast_model=intent_fast_model,
+            confidence_threshold=settings.intent_confidence_threshold,
         ),
         prompt_builder=prompt_builder,
         repository=repository,
@@ -167,6 +194,11 @@ def build_deps(
         tools=tools,
         tool_registry=registry,
         agent_prompt=agent_prompt,
+        coref_rewriter=coref_rewriter,
+        query_expander=query_expander,
+        refund_judge_model=refund_judge_model,
+        refund_judge_prompt=refund_judge_prompt,
+        order_provider=list_user_orders,
     )
 
 
@@ -187,6 +219,15 @@ def _graph_input(
         "tokens_used": 0,
         "suggested_actions": [],
         "trace": {},
+        "standalone_query": "",
+        "order_id": None,
+        "intent_confidence": 0.0,
+        "intent_tier": "",
+        "queries": [],
+        "order": None,
+        "refund_mode": "",
+        "refund_eligible": None,
+        "pending_resume": False,
     }
 
 
@@ -245,6 +286,8 @@ async def stream_turn(
                 continue
             if node in DETERMINISTIC_ANSWER_NODES and update.get("answer"):
                 yield ("token", {"delta": update["answer"]})
+            if node in UPDATE_ANSWER_NODES and update.get("answer"):
+                yield ("token", {"delta": update["answer"]})
             if node == "agent_llm":
                 for message in update.get("messages", []):
                     if (
@@ -252,9 +295,11 @@ async def stream_turn(
                         and message.tool_calls
                     ):
                         yield ("reset", {"reason": "tool_step"})
-            if node == "forced_rag" and update.get("citations"):
+            if node in ("forced_rag", "refund_policy_rag") and update.get(
+                "citations"
+            ):
                 yield ("citations", {"items": update["citations"]})
-            if node == "agent_tools":
+            if node in ("agent_tools", "refund_order_lookup"):
                 for tool_event in _tool_events(update):
                     yield ("tool", tool_event)
             if update.get("suggested_actions"):
@@ -289,9 +334,15 @@ async def stream_turn(
             "steps": values.get("steps", 0),
             "tokens_used": values.get("tokens_used", 0),
             "trace": trace,
-            "refused": values.get("route") == "fallback"
+            "refused": values.get("route")
+            in ("fallback", "refund_fallback")
             or bool(trace.get("fallback")),
             "answer": resolve_answer(values),
+            "standalone_query": values.get("standalone_query", ""),
+            "intent_confidence": values.get("intent_confidence", 0.0),
+            "intent_tier": values.get("intent_tier", ""),
+            "queries": values.get("queries", []) or [],
+            "refund": trace.get("refund", {}) or {},
         },
     )
 

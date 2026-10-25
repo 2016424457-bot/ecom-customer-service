@@ -109,6 +109,14 @@ async def agent_endpoint(
                 conversation_id=conversation.id,
                 evidence_checker=runtime.evidence_checker,
                 faq_search=runtime.faq_search,
+                coref_model=getattr(runtime, "coref_model", None),
+                expansion_model=getattr(runtime, "expansion_model", None),
+                refund_judge_model=getattr(
+                    runtime, "refund_judge_model", None
+                ),
+                intent_fast_model=getattr(
+                    runtime, "intent_fast_model", None
+                ),
             )
             lock = runtime.locks.lock_for(str(conversation.id))
             async with lock:
@@ -164,6 +172,12 @@ async def chat_stream_endpoint(
             faq_search=runtime.faq_search,
             evidence_checker=runtime.evidence_checker,
             intent_model=runtime.intent_model,
+            coref_model=getattr(runtime, "coref_model", None),
+            expansion_model=getattr(runtime, "expansion_model", None),
+            refund_judge_model=getattr(
+                runtime, "refund_judge_model", None
+            ),
+            intent_fast_model=getattr(runtime, "intent_fast_model", None),
         ):
             yield ServerSentEvent(event=event, data=data)
 

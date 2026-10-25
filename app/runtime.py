@@ -19,9 +19,13 @@ from app.db.session import create_engine_and_session
 from app.knowledge.self_check import EvidenceChecker
 from app.llm import (
     build_chat_model,
+    build_coref_model,
     build_evidence_check_model,
+    build_expansion_model,
     build_extraction_model,
+    build_intent_fast_model,
     build_intent_model,
+    build_refund_judge_model,
 )
 from app.prompt_builder import PromptBuilder
 from app.sessions import ConversationLocks
@@ -37,6 +41,10 @@ class Runtime:
     extraction_model: Any
     locks: ConversationLocks
     intent_model: Any = None
+    coref_model: Any = None
+    expansion_model: Any = None
+    refund_judge_model: Any = None
+    intent_fast_model: Any = None
     session_factory: async_sessionmaker[AsyncSession] | None = None
     repository: Any = None
     engine: AsyncEngine | None = None
@@ -96,6 +104,10 @@ def build_runtime(settings: Settings) -> Runtime:
         ),
         chat_model=build_chat_model(settings),
         intent_model=build_intent_model(settings),
+        coref_model=build_coref_model(settings),
+        expansion_model=build_expansion_model(settings),
+        refund_judge_model=build_refund_judge_model(settings),
+        intent_fast_model=build_intent_fast_model(settings),
         extraction_model=build_extraction_model(settings),
         evidence_checker=EvidenceChecker(
             build_evidence_check_model(settings),

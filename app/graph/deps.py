@@ -24,3 +24,8 @@ class GraphDeps:
     tools: list
     tool_registry: Any
     agent_prompt: str
+    coref_rewriter: Any
+    query_expander: Any
+    refund_judge_model: Any
+    refund_judge_prompt: str
+    order_provider: Any
