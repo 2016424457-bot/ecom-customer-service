@@ -20,8 +20,16 @@ CHITCHAT_RE = re.compile(
 
 class IntentResult(BaseModel):
     intent: Literal[
-        "物流", "订单", "商品咨询", "退款退货", "售后", "投诉", "闲聊"
-    ] = Field(description="七类意图之一")
+        "物流",
+        "订单",
+        "商品咨询",
+        "退款退货",
+        "售后",
+        "投诉",
+        "闲聊",
+        "其他",
+    ] = Field(description="八类意图之一")
+    confidence: float = Field(default=0.0, ge=0, le=1)
 
 
 class IntentClassifier:

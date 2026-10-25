@@ -45,6 +45,26 @@ class Settings(BaseSettings):
     intent_temperature: float = 0.0
     intent_max_tokens: int = 128
 
+    # ch06 router: intent / coref / expansion / refund judge
+    intent_model: str = ""
+    intent_fast_model: str = ""
+    intent_confidence_threshold: float = Field(default=0.6, ge=0, le=1)
+    coref_prompt_path: Path = Path("app/prompts/coref_prompt.txt")
+    coref_temperature: float = 0.0
+    coref_max_tokens: int = 256
+    coref_timeout_seconds: float = 8
+    coref_max_retries: int = 0
+    coref_history_messages: int = Field(default=10, gt=0)
+    coref_max_history_chars: int = Field(default=2000, gt=0)
+    expansion_prompt_path: Path = Path("app/prompts/query_expansion_prompt.txt")
+    expansion_temperature: float = 0.0
+    expansion_max_tokens: int = 256
+    expansion_timeout_seconds: float = 8
+    expansion_max_retries: int = 0
+    refund_judge_prompt_path: Path = Path("app/prompts/refund_judge_prompt.txt")
+    refund_judge_temperature: float = 0.0
+    refund_judge_max_tokens: int = 512
+
     database_url: str = (
         "mysql+asyncmy://root:123456@127.0.0.1:3306/ecom_customer_service"
         "?charset=utf8mb4"

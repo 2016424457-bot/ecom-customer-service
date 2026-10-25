@@ -5,7 +5,10 @@ from langchain_openai import ChatOpenAI
 
 from app.config import Settings
 from app.evaluation.judge import FaithfulnessVerdict
+from app.graph.coref import CorefResult
 from app.graph.intent import IntentResult
+from app.graph.refund import RefundVerdict
+from app.knowledge.expansion import QueryExpansion
 from app.knowledge.query_understanding import QueryRewrite
 from app.knowledge.schemas import QaExtraction
 from app.knowledge.self_check import EvidenceAssessment
@@ -44,16 +47,70 @@ def build_chat_model(settings: Settings) -> ChatOpenAI:
 
 def build_intent_model(settings: Settings) -> Runnable:
     """Create the structured-output runnable used for intent classification."""
-    chat_model = ChatOpenAI(
+    kwargs = build_model_kwargs(
+        settings,
+        temperature=settings.intent_temperature,
+        max_tokens=settings.intent_max_tokens,
+    )
+    kwargs["model"] = settings.intent_model or settings.openai_model
+    return ChatOpenAI(**kwargs).with_structured_output(
+        IntentResult, method=settings.structured_output_method
+    )
+
+
+def build_intent_fast_model(settings: Settings) -> Runnable | None:
+    """Create the light intent runnable, if a fast model is configured."""
+    if not settings.intent_fast_model:
+        return None
+    kwargs = build_model_kwargs(
+        settings,
+        temperature=settings.intent_temperature,
+        max_tokens=settings.intent_max_tokens,
+    )
+    kwargs["model"] = settings.intent_fast_model
+    return ChatOpenAI(**kwargs).with_structured_output(
+        IntentResult, method=settings.structured_output_method
+    )
+
+
+def build_coref_model(settings: Settings) -> Runnable:
+    """Create the structured-output runnable used for coreference rewriting."""
+    kwargs = build_model_kwargs(
+        settings,
+        temperature=settings.coref_temperature,
+        max_tokens=settings.coref_max_tokens,
+    )
+    kwargs["timeout"] = settings.coref_timeout_seconds
+    kwargs["max_retries"] = settings.coref_max_retries
+    return ChatOpenAI(**kwargs).with_structured_output(
+        CorefResult, method=settings.structured_output_method
+    )
+
+
+def build_expansion_model(settings: Settings) -> Runnable:
+    """Create the structured-output runnable used for query expansion."""
+    kwargs = build_model_kwargs(
+        settings,
+        temperature=settings.expansion_temperature,
+        max_tokens=settings.expansion_max_tokens,
+    )
+    kwargs["timeout"] = settings.expansion_timeout_seconds
+    kwargs["max_retries"] = settings.expansion_max_retries
+    return ChatOpenAI(**kwargs).with_structured_output(
+        QueryExpansion, method=settings.structured_output_method
+    )
+
+
+def build_refund_judge_model(settings: Settings) -> Runnable:
+    """Create the structured-output runnable used for refund judging."""
+    return ChatOpenAI(
         **build_model_kwargs(
             settings,
-            temperature=settings.intent_temperature,
-            max_tokens=settings.intent_max_tokens,
+            temperature=settings.refund_judge_temperature,
+            max_tokens=settings.refund_judge_max_tokens,
         )
-    )
-    return chat_model.with_structured_output(
-        IntentResult,
-        method=settings.structured_output_method,
+    ).with_structured_output(
+        RefundVerdict, method=settings.structured_output_method
     )
 
 

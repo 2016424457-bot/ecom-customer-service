@@ -134,3 +134,22 @@ def test_ch04_settings_defaults(clean_unit_env: pytest.MonkeyPatch) -> None:
     assert settings.embed_timeout_seconds == 10
     assert settings.embed_max_retries == 1
     assert settings.refusal_message.startswith("抱歉，知识库中没有找到")
+
+
+def test_ch06_settings_defaults(clean_unit_env):
+    settings = Settings(_env_file=None, openai_api_key="test")
+    assert settings.intent_model == ""
+    assert settings.intent_fast_model == ""
+    assert settings.intent_confidence_threshold == 0.6
+    assert settings.coref_max_tokens == 256
+    assert settings.coref_history_messages == 10
+    assert settings.coref_max_history_chars == 2000
+    assert settings.expansion_max_tokens == 256
+    assert settings.refund_judge_max_tokens == 512
+    assert str(settings.coref_prompt_path) == "app/prompts/coref_prompt.txt"
+    assert str(settings.expansion_prompt_path) == (
+        "app/prompts/query_expansion_prompt.txt"
+    )
+    assert str(settings.refund_judge_prompt_path) == (
+        "app/prompts/refund_judge_prompt.txt"
+    )
