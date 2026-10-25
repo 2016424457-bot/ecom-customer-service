@@ -170,6 +170,10 @@ class ChatRepository:
             reason_code=reason_code,
             reason_label=reason_label,
             note=note,
+            # Set in Python as well as by the server default: otherwise the
+            # attribute stays expired after flush and cannot be read once
+            # the session is detached.
+            status="待处理",
         )
         # A duplicate refund number aborts only the savepoint, so the
         # service can retry with a fresh number on the same session.

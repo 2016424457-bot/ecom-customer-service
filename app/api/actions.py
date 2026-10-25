@@ -115,6 +115,10 @@ async def submit_refund_action(
                 detail="退款单号分配失败,请稍后重试",
             )
 
-    return SubmitRefundResponse(
-        refund_no=refund.refund_no, status=str(refund.status)
-    )
+        # Read the response fields while the instance is still bound to the
+        # session; server-default columns may otherwise need a refresh after
+        # the scope exits (DetachedInstanceError).
+        refund_no = refund.refund_no
+        status = str(refund.status)
+
+    return SubmitRefundResponse(refund_no=refund_no, status=status)

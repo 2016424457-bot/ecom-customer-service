@@ -183,6 +183,28 @@ async def test_next_refund_no_and_create_refund_request(session):
     assert row.status == "待处理"
 
 
+async def test_refund_status_survives_detach(session):
+    repo = ChatRepository(session)
+    conversation = await repo.get_or_create_conversation(None, "u1")
+    refund_no = await repo.next_refund_no(date(2026, 10, 21))
+
+    refund = await repo.create_refund_request(
+        conversation.id,
+        "1001",
+        "退款",
+        "quality",
+        "商品质量问题",
+        None,
+        refund_no,
+    )
+    # A server-default attribute left unset would still be "expired" after
+    # flush; detaching first reproduces the endpoint's DetachedInstanceError.
+    session.expunge(refund)
+
+    assert refund.refund_no == refund_no
+    assert refund.status == "待处理"
+
+
 async def test_duplicate_refund_number_leaves_session_usable(session):
     repo = ChatRepository(session)
     conversation = await repo.get_or_create_conversation(None, "u1")
