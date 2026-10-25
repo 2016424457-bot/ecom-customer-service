@@ -12,6 +12,13 @@ class QueryRewrite(BaseModel):
     standard_query: str
 
 
+class NoOpQueryRewriter:
+    """Pass-through rewriter for queries already rewritten upstream."""
+
+    async def rewrite(self, question: str) -> str:
+        return question
+
+
 class QueryRewriter:
     def __init__(self, model: Any, prompt_path: Path | str) -> None:
         self._model = model
