@@ -29,3 +29,13 @@ class ConversationState(TypedDict, total=False):
     tokens_used: int
     suggested_actions: list
     trace: dict
+    standalone_query: str
+    order_id: str | None
+    intent_confidence: float
+    intent_tier: str
+    queries: list[str]
+    order: dict | None
+    refund_mode: str
+    refund_eligible: bool | None
+    pending: dict | None
+    pending_resume: bool

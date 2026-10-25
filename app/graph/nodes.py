@@ -9,7 +9,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from app.graph.routing import route_by_intent
+from app.graph.routing import is_order_selection, route_by_intent
 from app.graph.state import merge_trace
 from app.knowledge.evidence import (
     citation_items_full,
@@ -139,6 +139,33 @@ async def budget_reply(state: dict, *, deps: Any) -> dict:
 async def coref(state: dict, *, deps: Any) -> dict:
     """Coreference: passthrough in this chapter."""
     return {"trace": merge_trace(state, coref="passthrough")}
+
+
+async def pending_check(state: dict, *, deps: Any = None) -> dict:
+    """Resume a pending refund slot or clear it before re-classifying.
+
+    Only a fixed ``订单号：<id>`` reply, or a short reply whose coref already
+    produced an order id, counts as an order selection. Anything else would
+    let the old refund subflow hijack a new topic, so the slot is dropped.
+    """
+    pending = state.get("pending")
+    if not pending:
+        return {"pending_resume": False}
+
+    selected = is_order_selection(_user_text(state), state.get("order_id"))
+    if selected is None:
+        return {"pending": None, "pending_resume": False}
+
+    query = pending.get("standalone_query") or ""
+    update: dict[str, Any] = {
+        "pending": None,
+        "pending_resume": True,
+        "order_id": selected,
+        "standalone_query": f"{query}（订单号 {selected}）",
+    }
+    if pending.get("intent"):
+        update["intent"] = pending["intent"]
+    return update
 
 
 async def classify_intent(state: dict, *, deps: Any) -> dict:
