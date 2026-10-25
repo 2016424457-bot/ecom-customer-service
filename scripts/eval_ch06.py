@@ -19,14 +19,19 @@ import asyncio
 import json
 import os
 import sys
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import httpx
 from langchain_core.messages import AIMessage, HumanMessage
+from sqlalchemy import select
 
 from app.config import Settings
+from app.db.models import RefundRequest
+from app.db.session import create_engine_and_session
 from app.graph.coref import CorefRewriter
 from app.graph.intent import IntentClassifier
 from app.graph.routing import classify_refund_scope, route_by_intent
@@ -38,6 +43,10 @@ from app.llm import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CASES = REPO_ROOT / "evals" / "ch06_router_cases.jsonl"
+BASE_URL = os.environ.get(
+    "ECOM_BASE_URL", "http://127.0.0.1:8000"
+).rstrip("/")
+E2E_USER_ID = "eval-ch06"
 
 CHECK_DIMENSIONS = ("coref", "intent", "route", "order")
 
@@ -237,8 +246,10 @@ def _print_failures(results: list[dict[str, Any]]) -> None:
             f"checks={result['checks']}"
         )
         print(
-            f"    expected: intent={result['expected'].get('expect_intent')!r} "
-            f"standalone={result['expected'].get('expect_standalone_equals') or result['expected'].get('expect_standalone_contains')} "
+            "    expected: "
+            f"intent={result['expected'].get('expect_intent')!r} "
+            "standalone="
+            f"{result['expected'].get('expect_standalone_equals') or result['expected'].get('expect_standalone_contains')} "
             f"order_id={result['expected'].get('expect_order_id')!r} "
             f"route={result['expected'].get('expect_route')!r}"
         )
@@ -328,6 +339,349 @@ async def run_prompts(cases: list[dict[str, Any]]) -> int:
     return 0
 
 
+# --- --e2e ------------------------------------------------------------
+
+
+async def read_events(
+    response: httpx.Response,
+) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+    """Parse an SSE response into (event, data) pairs."""
+    event: str | None = None
+    data_lines: list[str] = []
+    async for line in response.aiter_lines():
+        if line == "":
+            if event is not None:
+                yield event, json.loads("\n".join(data_lines))
+            event = None
+            data_lines = []
+        elif line.startswith("event:"):
+            event = line[len("event:") :].strip()
+        elif line.startswith("data:"):
+            data_lines.append(line[len("data:") :].strip())
+    if event is not None:
+        yield event, json.loads("\n".join(data_lines))
+
+
+async def stream_turn(
+    client: httpx.AsyncClient,
+    message: str,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Send one chat turn and return its ``done`` frame."""
+    payload: dict[str, Any] = {
+        "message": message,
+        "user_id": E2E_USER_ID,
+    }
+    if session_id:
+        payload["session_id"] = session_id
+    async with client.stream(
+        "POST", f"{BASE_URL}/api/chat/stream", json=payload
+    ) as response:
+        if response.status_code != 200:
+            body = await response.aread()
+            raise AssertionError(
+                f"HTTP {response.status_code}: {body[:200]!r}"
+            )
+        events = [item async for item in read_events(response)]
+
+    errors = [data for event, data in events if event == "error"]
+    if errors:
+        raise AssertionError(f"stream error: {errors[0]}")
+    done = next(
+        (data for event, data in events if event == "done"), None
+    )
+    if done is None:
+        raise AssertionError("stream ended without a done event")
+    return done
+
+
+def coref_standalone(done: dict[str, Any]) -> str:
+    """Read the rewritten query from ``trace.coref`` (or the top level)."""
+    trace = done.get("trace") or {}
+    coref = trace.get("coref") or {}
+    if isinstance(coref, dict):
+        return coref.get("standalone_query") or done.get(
+            "standalone_query", ""
+        )
+    return done.get("standalone_query", "") or ""
+
+
+def evidence_top(done: dict[str, Any]) -> Any:
+    """Return the top evidence score recorded on the turn trace."""
+    return (done.get("trace") or {}).get("evidence_top")
+
+
+def _action(
+    done: dict[str, Any], action_type: str
+) -> dict[str, Any] | None:
+    actions = done.get("suggested_actions") or []
+    return next(
+        (action for action in actions if action.get("type") == action_type),
+        None,
+    )
+
+
+def report(name: str, ok: bool, detail: Any) -> bool:
+    """Print one acceptance line and return its verdict."""
+    print(
+        f"{'PASS' if ok else 'FAIL'} {name}: "
+        f"{json.dumps(detail, ensure_ascii=False)}"
+    )
+    return ok
+
+
+async def refund_row_exists(
+    refund_no: str,
+    *,
+    conversation_id: int,
+    order_id: str,
+    reason_code: str,
+) -> bool:
+    """Check that the submitted refund request landed in the database."""
+    settings = Settings()
+    engine, factory = create_engine_and_session(settings)
+    try:
+        async with factory() as session:
+            row = await session.scalar(
+                select(RefundRequest).where(
+                    RefundRequest.refund_no == refund_no
+                )
+            )
+            if row is None:
+                return False
+            return (
+                row.conversation_id == conversation_id
+                and row.order_id == order_id
+                and row.reason_code == reason_code
+                and str(row.status) == "待处理"
+            )
+    finally:
+        await engine.dispose()
+
+
+async def _acceptance_switch(
+    client: httpx.AsyncClient,
+) -> tuple[bool, dict[str, Any], dict[str, Any]]:
+    """Acceptance 1: 物流 → 退款 → 物流 in one conversation."""
+    turn1 = await stream_turn(client, "订单1001的物流到哪了")
+    session_id = turn1.get("session_id")
+    turn2 = await stream_turn(client, "那这个能退吗", session_id)
+    turn3 = await stream_turn(client, "那它什么时候到", session_id)
+
+    queries = refund_queries(turn2)
+    trace_refund = (turn2.get("trace") or {}).get("refund") or {}
+    queries_source = (
+        "trace.refund.queries"
+        if trace_refund.get("queries")
+        else "done.queries"
+    )
+    checks = {
+        "turn1_intent": turn1.get("intent") == "物流",
+        "turn1_coref_1001": "1001" in coref_standalone(turn1),
+        "turn2_intent": turn2.get("intent") == "退款退货",
+        "turn2_route_refund": turn2.get("route") == "refund",
+        "turn2_queries_ge_2": len(queries) >= 2,
+        "turn2_query_order": "query_order"
+        in (turn2.get("tool_calls") or []),
+        "turn2_citations": bool(turn2.get("citations")),
+        "turn3_intent": turn3.get("intent") == "物流",
+        "turn3_coref_1001": "1001" in coref_standalone(turn3),
+    }
+    detail = {
+        "checks": checks,
+        "turn1": {
+            "intent": turn1.get("intent"),
+            "standalone": coref_standalone(turn1),
+        },
+        "turn2": {
+            "intent": turn2.get("intent"),
+            "route": turn2.get("route"),
+            "queries": queries,
+            "queries_source": queries_source,
+            "tool_calls": turn2.get("tool_calls"),
+            "citations": len(turn2.get("citations") or []),
+        },
+        "turn3": {
+            "intent": turn3.get("intent"),
+            "standalone": coref_standalone(turn3),
+        },
+    }
+    return all(checks.values()), detail, turn2
+
+
+async def _acceptance_other(
+    client: httpx.AsyncClient,
+) -> tuple[bool, dict[str, Any]]:
+    """Acceptance 2: weird question → 其他 / other, zero tools."""
+    done = await stream_turn(client, "帮我算一下 3 的平方")
+    checks = {
+        "intent_other": done.get("intent") == "其他",
+        "route_other": done.get("route") == "other",
+        "no_tools": (done.get("tool_calls") or []) == [],
+    }
+    detail = {
+        "intent": done.get("intent"),
+        "route": done.get("route"),
+        "tool_calls": done.get("tool_calls"),
+    }
+    return all(checks.values()), detail
+
+
+def _acceptance_diagnostics(
+    turn2: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """Acceptance 3: surface the refund turn's routing/retrieval detail."""
+    form = _action(turn2, "refund_form") or {}
+    order_summary = form.get("order_summary") or {}
+    detail = {
+        "standalone_query": coref_standalone(turn2),
+        "order_item": order_summary.get("item"),
+        "expanded_queries": refund_queries(turn2),
+        "evidence_top": evidence_top(turn2),
+    }
+    top = detail["evidence_top"]
+    ok = (
+        bool(detail["standalone_query"])
+        and bool(detail["order_item"])
+        and len(detail["expanded_queries"]) >= 2
+        and isinstance(top, (int, float))
+        and top > 0
+    )
+    return ok, detail
+
+
+async def _acceptance_refund_form(
+    client: httpx.AsyncClient,
+) -> tuple[bool, dict[str, Any]]:
+    """Acceptance 4: selector → refund form → persisted refund request."""
+    turn1 = await stream_turn(client, "我想退款")
+    select = _action(turn1, "select_order")
+    orders = (select or {}).get("orders") or []
+    if not orders:
+        return False, {
+            "error": "no select_order action with orders",
+            "actions": turn1.get("suggested_actions"),
+        }
+
+    order_id = str(orders[0]["order_id"])
+    turn2 = await stream_turn(
+        client, f"订单号：{order_id}", turn1.get("session_id")
+    )
+    form = _action(turn2, "refund_form")
+    if form is None:
+        return False, {
+            "error": "no refund_form action after order selection",
+            "actions": turn2.get("suggested_actions"),
+        }
+
+    request_type = form.get("request_type")
+    conversation_id = int(turn2["session_id"])
+    if request_type not in ("退款", "退货"):
+        return False, {
+            "error": f"invalid request_type {request_type!r}",
+            "form": form,
+        }
+
+    response = await client.post(
+        f"{BASE_URL}/api/actions/submit-refund",
+        json={
+            "conversation_id": conversation_id,
+            "order_id": form.get("order_id") or order_id,
+            "request_type": request_type,
+            "reason_code": "quality",
+        },
+    )
+    if response.status_code != 200:
+        return False, {
+            "error": f"submit-refund HTTP {response.status_code}",
+            "body": response.text[:300],
+        }
+    data = response.json()
+    stored = await refund_row_exists(
+        data.get("refund_no", ""),
+        conversation_id=conversation_id,
+        order_id=form.get("order_id") or order_id,
+        reason_code="quality",
+    )
+    checks = {
+        "select_order": select is not None,
+        "orders_present": bool(orders),
+        "refund_form": True,
+        "form_order_id": form.get("order_id") == order_id,
+        "refund_no": str(data.get("refund_no", "")).startswith("R"),
+        "status_pending": data.get("status") == "待处理",
+        "stored_in_db": stored,
+    }
+    detail = {
+        "checks": checks,
+        "order_id": order_id,
+        "request_type": request_type,
+        "refund_no": data.get("refund_no"),
+        "status": data.get("status"),
+        "conversation_id": conversation_id,
+        "stored_in_db": stored,
+    }
+    return all(checks.values()), detail
+
+
+async def run_e2e() -> int:
+    """Run the four CH06 acceptances against the running service."""
+    results: list[bool] = []
+    try:
+        async with httpx.AsyncClient(timeout=180) as client:
+            turn2: dict[str, Any] | None = None
+            try:
+                ok, detail, turn2 = await _acceptance_switch(client)
+            except Exception as exc:  # noqa: BLE001 - report, keep going
+                ok, detail = False, {"error": repr(exc)}
+            results.append(
+                report("1 物流→退款→物流", ok, detail)
+            )
+            if ok and (detail["turn2"]["queries_source"]) == (
+                "done.queries"
+            ):
+                print(
+                    "NOTE: trace.refund.queries is absent after the judge "
+                    "stage; expanded queries were read from done.queries."
+                )
+
+            try:
+                ok, detail = await _acceptance_other(client)
+            except Exception as exc:  # noqa: BLE001
+                ok, detail = False, {"error": repr(exc)}
+            results.append(report("2 其他零模型零工具", ok, detail))
+
+            if turn2 is None:
+                results.append(
+                    report(
+                        "3 退款轮诊断",
+                        False,
+                        {"error": "turn 2 data unavailable"},
+                    )
+                )
+            else:
+                ok, detail = _acceptance_diagnostics(turn2)
+                results.append(report("3 退款轮诊断", ok, detail))
+
+            try:
+                ok, detail = await _acceptance_refund_form(client)
+            except Exception as exc:  # noqa: BLE001
+                ok, detail = False, {"error": repr(exc)}
+            results.append(
+                report("4 选单→退款表单→落库", ok, detail)
+            )
+    except httpx.ConnectError as exc:
+        raise SystemExit(
+            f"eval-ch06 --e2e needs the service on {BASE_URL}"
+        ) from exc
+
+    if all(results):
+        print("\nCH06 E2E ACCEPTANCE PASS")
+        return 0
+    print("\nCH06 E2E ACCEPTANCE FAIL")
+    return 1
+
+
 # --- CLI --------------------------------------------------------------
 
 
@@ -335,10 +689,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="CH06 router evaluation"
     )
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
         "--prompts",
         action="store_true",
         help="replay the labeled cases through the real models",
+    )
+    mode.add_argument(
+        "--e2e",
+        action="store_true",
+        help="run the four end-to-end acceptances",
     )
     parser.add_argument(
         "--cases",
@@ -346,10 +706,10 @@ def main(argv: list[str] | None = None) -> int:
         help="JSONL evaluation set used by --prompts",
     )
     args = parser.parse_args(argv)
-    if not args.prompts:
-        parser.error("one of --prompts or --e2e is required")
 
-    return asyncio.run(run_prompts(load_cases(args.cases)))
+    if args.prompts:
+        return asyncio.run(run_prompts(load_cases(args.cases)))
+    return asyncio.run(run_e2e())
 
 
 if __name__ == "__main__":
