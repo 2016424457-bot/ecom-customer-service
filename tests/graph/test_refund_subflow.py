@@ -82,6 +82,15 @@ class FakeExpander:
         return list(self.queries)
 
 
+class FakeEvidenceChecker:
+    def __init__(self) -> None:
+        self.questions: list[str] = []
+
+    async def assess(self, question, items):
+        self.questions.append(question)
+        return SimpleNamespace(useful=True, reason="ok")
+
+
 class FakeJudgeModel:
     def __init__(self, verdict=None, error: Exception | None = None) -> None:
         self.verdict = verdict
@@ -360,14 +369,6 @@ async def test_policy_assessment_question_is_policy_focused(monkeypatch):
     async def fake_search(queries, **kwargs):
         return _result([_hit(0.9)])
 
-    class FakeEvidenceChecker:
-        def __init__(self) -> None:
-            self.questions: list[str] = []
-
-        async def assess(self, question, items):
-            self.questions.append(question)
-            return SimpleNamespace(useful=True, reason="ok")
-
     monkeypatch.setattr(nodes, "search_many_result", fake_search)
     checker = FakeEvidenceChecker()
     judge = FakeJudgeModel(RefundVerdict(eligible=True, answer="可以退。"))
@@ -398,6 +399,32 @@ async def test_policy_assessment_question_is_policy_focused(monkeypatch):
 
     assert out["refund_eligible"] is True
     assert json.loads(judge.calls[0][1].content)["order"] == ORDER
+
+
+@pytest.mark.asyncio
+async def test_after_sales_assessment_question_is_warranty_focused(
+    monkeypatch,
+):
+    async def fake_search(queries, **kwargs):
+        return _result([_hit(0.9)])
+
+    monkeypatch.setattr(nodes, "search_many_result", fake_search)
+    checker = FakeEvidenceChecker()
+    deps = _deps(
+        evidence_checker=checker, expander=FakeExpander(["q1", "q2"])
+    )
+
+    out = await nodes.refund_policy_rag(
+        _state(intent="售后", order_id="1001", order=ORDER), deps=deps
+    )
+
+    assert out["evidence_strong"] is True
+    assert checker.questions == [
+        "售后政策条款：保修条件、期限、范围、维修流程"
+    ]
+    question = checker.questions[0]
+    assert "保修" in question
+    assert "七天无理由" not in question
 
 
 @pytest.mark.asyncio

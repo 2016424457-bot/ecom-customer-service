@@ -468,9 +468,8 @@ async def refund_policy_rag(state: dict, *, deps: Any) -> dict:
     """Expanded multi-query policy retrieval plus the shared evidence gate."""
     query = state.get("standalone_query") or _user_text(state)
     queries = await deps.query_expander.expand(query, state.get("order"))
-    content_type = (
-        "policy" if state.get("intent") == "退款退货" else "manual"
-    )
+    intent = state.get("intent")
+    content_type = "policy" if intent == "退款退货" else "manual"
 
     try:
         result = await search_many_result(
@@ -492,16 +491,23 @@ async def refund_policy_rag(state: dict, *, deps: Any) -> dict:
         update["queries"] = queries
         return update
 
+    # The self-check question must match the policy corpus being queried:
+    # after-sales evidence is warranty/manual text, not return policy.
+    assess_query = (
+        "售后政策条款：保修条件、期限、范围、维修流程"
+        if intent == "售后"
+        else (
+            f"{intent}政策条款："
+            "七天无理由退货条件、例外、运费、到账时效"
+        )
+    )
     update = await _evidence_update(
         state,
         query,
         result,
         deps,
         trace={},
-        assess_query=(
-            f"{state.get('intent')}政策条款："
-            "七天无理由退货条件、例外、运费、到账时效"
-        ),
+        assess_query=assess_query,
     )
     if update["evidence_strong"]:
         update["trace"]["refund"] = {

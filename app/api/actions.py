@@ -80,13 +80,15 @@ async def submit_refund_action(
     note = (payload.note or "").strip() or None
 
     async with runtime.repository_scope() as repository:
-        conversation = await repository.get_conversation(
-            payload.conversation_id
-        )
-        if conversation is None:
-            raise HTTPException(status_code=404, detail="会话不存在")
-
         try:
+            conversation = await repository.get_conversation(
+                payload.conversation_id
+            )
+            # HTTPException is not a SQLAlchemyError, so the 404 still
+            # propagates while DB failures map to 503 below.
+            if conversation is None:
+                raise HTTPException(status_code=404, detail="会话不存在")
+
             refund = await create_refund_record(
                 repository,
                 payload.conversation_id,

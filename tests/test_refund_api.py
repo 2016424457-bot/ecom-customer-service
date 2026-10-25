@@ -22,15 +22,19 @@ class FakeRepository:
         *,
         exists: bool = True,
         fail: bool = False,
+        fail_lookup: bool = False,
         fail_number: bool = False,
     ) -> None:
         self.exists = exists
         self.fail = fail
+        self.fail_lookup = fail_lookup
         self.fail_number = fail_number
         self.refunds: list[dict] = []
         self.commits = 0
 
     async def get_conversation(self, conversation_id):
+        if self.fail_lookup:
+            raise SQLAlchemyError("db down")
         if not self.exists:
             return None
         return SimpleNamespace(id=conversation_id, user_id="u1")
@@ -154,6 +158,22 @@ async def test_submit_refund_missing_conversation_404():
         )
 
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_submit_refund_lookup_database_error_503():
+    with pytest.raises(HTTPException) as exc:
+        await actions.submit_refund_action(
+            SubmitRefundRequest(
+                conversation_id=5,
+                order_id="1001",
+                request_type="退款",
+                reason_code="quality",
+            ),
+            _runtime(FakeRepository(fail_lookup=True)),
+        )
+
+    assert exc.value.status_code == 503
 
 
 @pytest.mark.asyncio
