@@ -9,7 +9,12 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from app.graph.routing import is_order_selection, route_by_intent
+from app.graph.refund import RefundVerdict, request_type_for
+from app.graph.routing import (
+    classify_refund_scope,
+    is_order_selection,
+    route_by_intent,
+)
 from app.graph.state import merge_trace
 from app.knowledge.evidence import (
     citation_items_full,
@@ -17,7 +22,9 @@ from app.knowledge.evidence import (
     prompt_order,
     render_evidence_block,
 )
-from app.knowledge.search import search_knowledge_result
+from app.knowledge.query_understanding import NoOpQueryRewriter
+from app.knowledge.search import search_knowledge_result, search_many_result
+from app.services.refunds import REFUND_REASONS
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +48,29 @@ STEP_CAP_REPLY = (
 EMPTY_REPLY = (
     "抱歉，我这边暂时没有生成有效回复，"
     "请换个说法或转人工客服。"
+)
+REFUND_AWAIT_ORDER_REPLY = (
+    "为了核对这一单能否退款/退货，请先选择对应的订单。"
+    "您也可以直接回复「订单号：1001」这样的格式。"
+)
+AFTER_SALES_AWAIT_ORDER_REPLY = (
+    "为了核对该订单的售后处理方式，请先选择对应的订单。"
+    "您也可以直接回复「订单号：1001」这样的格式。"
+)
+REFUND_UNCERTAIN_REPLY = (
+    "抱歉，这一单的退款/售后资格我暂时无法确认，"
+    "不敢直接下结论。建议您转接人工客服核实，"
+    "也可以先创建一个售后工单，我们会尽快跟进。"
+)
+REFUND_WEAK_REPLY = (
+    "抱歉，关于这一单的退款/售后政策，我暂时没有查到足够依据，"
+    "不敢直接下结论。建议您转接人工客服核实，"
+    "或创建一个售后工单，我们会尽快处理。"
+)
+OTHER_REPLY = (
+    "抱歉，这个问题我还需要更多信息才能准确处理。"
+    "您可以补充一下具体需求，或点击下方按钮转接人工客服，"
+    "也可以创建一个咨询工单，我们会尽快回复。"
 )
 
 
@@ -195,26 +225,24 @@ def _weak_evidence(state: dict, **trace: Any) -> dict:
         "evidence_strong": False,
         "evidence": "",
         "citations": [],
-        "trace": merge_trace(state, forced_rag=True, **trace),
+        "trace": merge_trace(state, **trace),
     }
 
 
-async def forced_rag(state: dict, *, deps: Any) -> dict:
-    """Knowledge route: mandatory retrieval plus generation-time evidence gate."""
-    query = _user_text(state)
-    try:
-        result = await search_knowledge_result(
-            query,
-            repository=deps.knowledge_repository,
-            settings=deps.settings,
-            strategy="hybrid_rerank",
-        )
-    except Exception as exc:
-        logger.warning("forced_rag_failed error=%r", exc)
-        return _weak_evidence(
-            state, retrieval_error=str(exc), evidence_top=0.0
-        )
+async def _evidence_update(
+    state: dict,
+    query: str,
+    result: Any,
+    deps: Any,
+    *,
+    trace: dict[str, Any],
+) -> dict:
+    """Shared evidence gate: order hits, score them, and render evidence.
 
+    ``trace`` carries caller-specific keys (``forced_rag`` for the knowledge
+    route, ``refund`` for the refund subflow); every outcome merges them so
+    weak and strong branches record the same context.
+    """
     ordered = prompt_order(result.hits)
     if not ordered:
         return _weak_evidence(
@@ -222,6 +250,7 @@ async def forced_rag(state: dict, *, deps: Any) -> dict:
             evidence_top=0.0,
             retrieval_strategy=result.strategy,
             reranked=result.reranked,
+            **trace,
         )
 
     top = ordered[0][1].score
@@ -229,6 +258,7 @@ async def forced_rag(state: dict, *, deps: Any) -> dict:
         "evidence_top": top,
         "retrieval_strategy": result.strategy,
         "reranked": result.reranked,
+        **trace,
     }
     if top < deps.settings.rerank_min_score:
         return _weak_evidence(
@@ -263,17 +293,329 @@ async def forced_rag(state: dict, *, deps: Any) -> dict:
         "citations": light_items,
         "trace": merge_trace(
             state,
-            forced_rag=True,
             **base_trace,
             self_check=getattr(assessment, "reason", ""),
         ),
     }
 
 
+async def forced_rag(state: dict, *, deps: Any) -> dict:
+    """Knowledge route: mandatory retrieval plus generation-time evidence gate."""
+    query = _user_text(state)
+    try:
+        result = await search_knowledge_result(
+            query,
+            repository=deps.knowledge_repository,
+            settings=deps.settings,
+            strategy="hybrid_rerank",
+        )
+    except Exception as exc:
+        logger.warning("forced_rag_failed error=%r", exc)
+        return _weak_evidence(
+            state,
+            forced_rag=True,
+            retrieval_error=str(exc),
+            evidence_top=0.0,
+        )
+
+    return await _evidence_update(
+        state, query, result, deps, trace={"forced_rag": True}
+    )
+
+
 async def confidence_check(state: dict, *, deps: Any) -> dict:
     """Record the generation-time gate decision for observability."""
     decision = "strong" if state.get("evidence_strong") else "weak"
     return {"trace": merge_trace(state, confidence=decision)}
+
+
+def _order_summary(order: dict) -> dict:
+    items = order.get("items") or []
+    return {
+        "item": items[0].get("name", "") if items else "",
+        "amount": order.get("amount"),
+        "status": order.get("status", ""),
+    }
+
+
+def _refund_ticket_action(query: str) -> dict:
+    return {
+        "type": "create_ticket",
+        "draft": {"description": query, "ticket_type": "售后"},
+    }
+
+
+async def refund_scope(state: dict, *, deps: Any) -> dict:
+    """Separate policy-only refund questions from one-order requests."""
+    query = state.get("standalone_query") or _user_text(state)
+    mode, reason = classify_refund_scope(query, state.get("order_id"))
+    return {
+        "route": "knowledge" if mode == "policy" else "refund",
+        "refund_mode": mode,
+        "trace": merge_trace(
+            state,
+            refund={"stage": "scope", "mode": mode, "reason": reason},
+        ),
+    }
+
+
+async def refund_order_lookup(state: dict, *, deps: Any) -> dict:
+    """Load the selected order, or offer the order selector and wait.
+
+    A missing, failed, or invalid lookup never guesses: it returns the
+    selector action plus a ``pending`` slot so the next turn can resume.
+    """
+    order_id = state.get("order_id")
+    existing_tools = list(state.get("trace", {}).get("tools", []))
+    tool_entry = None
+    order = None
+
+    if order_id:
+        result = await deps.tool_registry.execute(
+            "query_order", {"order_id": order_id}
+        )
+        tool_entry = {
+            "name": "query_order",
+            "ok": result.ok,
+            "error_code": result.error_code,
+            "duration_ms": result.duration_ms,
+            "args": {"order_id": order_id},
+            "intercepted": False,
+            "tool_call_id": f"refund_order_{order_id}",
+        }
+        try:
+            payload = json.loads(result.content)
+        except (TypeError, ValueError):
+            payload = None
+        if (
+            result.ok
+            and isinstance(payload, dict)
+            and payload.get("order_id")
+        ):
+            order = payload
+
+    tools = existing_tools + ([tool_entry] if tool_entry else [])
+    if order is not None:
+        return {
+            "order": order,
+            "route": "refund",
+            "trace": merge_trace(state, tools=tools),
+        }
+
+    orders = deps.order_provider(state.get("user_id", ""))
+    intent = state.get("intent") or "退款退货"
+    answer = (
+        AFTER_SALES_AWAIT_ORDER_REPLY
+        if intent == "售后"
+        else REFUND_AWAIT_ORDER_REPLY
+    )
+    pending = {
+        "type": "refund",
+        "intent": intent,
+        "standalone_query": state.get("standalone_query")
+        or _user_text(state),
+        "candidate_order_ids": [
+            item["order_id"] for item in orders if item.get("order_id")
+        ],
+        "missing": "order_id",
+    }
+    return {
+        "answer": answer,
+        "suggested_actions": [{"type": "select_order", "orders": orders}],
+        "pending": pending,
+        "route": "refund_await_order",
+        "trace": merge_trace(
+            state,
+            tools=tools,
+            refund={"stage": "await_order", "intent": intent},
+        ),
+    }
+
+
+async def refund_policy_rag(state: dict, *, deps: Any) -> dict:
+    """Expanded multi-query policy retrieval plus the shared evidence gate."""
+    query = state.get("standalone_query") or _user_text(state)
+    queries = await deps.query_expander.expand(query, state.get("order"))
+    content_type = (
+        "policy" if state.get("intent") == "退款退货" else "manual"
+    )
+
+    try:
+        result = await search_many_result(
+            queries,
+            repository=deps.knowledge_repository,
+            settings=deps.settings,
+            strategy="hybrid_rerank",
+            content_type=content_type,
+            rewriter=NoOpQueryRewriter(),
+        )
+    except Exception as exc:
+        logger.warning("refund_policy_rag_failed error=%r", exc)
+        update = _weak_evidence(
+            state,
+            retrieval_error=str(exc),
+            evidence_top=0.0,
+            refund={"stage": "policy_weak", "queries": queries},
+        )
+        update["queries"] = queries
+        return update
+
+    update = await _evidence_update(state, query, result, deps, trace={})
+    if update["evidence_strong"]:
+        update["trace"]["refund"] = {
+            "stage": "policy",
+            "queries": queries,
+            "content_type": content_type,
+            "evidence_top": update["trace"].get("evidence_top"),
+            "retrieval_strategy": update["trace"].get(
+                "retrieval_strategy"
+            ),
+            "reranked": update["trace"].get("reranked"),
+        }
+    else:
+        update["trace"]["refund"] = {
+            "stage": "policy_weak",
+            "queries": queries,
+        }
+    update["queries"] = queries
+    return update
+
+
+async def refund_judge(state: dict, *, deps: Any) -> dict:
+    """Judge this one order against policy evidence and pick next actions."""
+    query = state.get("standalone_query") or _user_text(state)
+    intent = state.get("intent", "")
+    payload = {
+        "question": query,
+        "intent": intent,
+        "order": state.get("order"),
+        "policy_evidence": state.get("evidence", ""),
+    }
+
+    error = None
+    try:
+        verdict = await deps.refund_judge_model.ainvoke(
+            [
+                SystemMessage(content=deps.refund_judge_prompt),
+                HumanMessage(
+                    content=json.dumps(payload, ensure_ascii=False)
+                ),
+            ]
+        )
+    except Exception as exc:
+        logger.warning("refund_judge_failed error=%r", exc)
+        error = str(exc)
+        verdict = RefundVerdict(
+            eligible=None, answer=REFUND_UNCERTAIN_REPLY
+        )
+
+    eligible = getattr(verdict, "eligible", None)
+    answer = getattr(verdict, "answer", "") or REFUND_UNCERTAIN_REPLY
+    request_type = request_type_for(query)
+
+    if eligible is True and intent == "退款退货" and request_type != "换货":
+        order = state.get("order") or {}
+        actions = [
+            {
+                "type": "refund_form",
+                "order_id": order.get("order_id")
+                or state.get("order_id"),
+                "order_summary": _order_summary(order),
+                "request_type": request_type,
+                "categories": REFUND_REASONS,
+            }
+        ]
+    elif eligible is True and (
+        intent == "售后" or request_type == "换货"
+    ):
+        actions = [
+            _refund_ticket_action(query),
+            {"type": "transfer_human"},
+        ]
+    else:
+        actions = [
+            {"type": "transfer_human"},
+            _refund_ticket_action(query),
+        ]
+
+    refund_trace: dict[str, Any] = {
+        "stage": "judged",
+        "eligible": eligible,
+        "request_type": request_type,
+    }
+    if error is not None:
+        refund_trace["error"] = error
+    return {
+        "answer": answer,
+        "refund_eligible": eligible,
+        "route": "refund",
+        "suggested_actions": actions,
+        "trace": merge_trace(state, refund=refund_trace),
+    }
+
+
+def _refund_weak_reason(state: dict) -> str:
+    trace = state.get("trace", {})
+    parts: list[str] = []
+    top = trace.get("evidence_top")
+    if isinstance(top, (int, float)):
+        parts.append(f"检索证据不足(top={top:.3f})")
+    if trace.get("retrieval_error"):
+        parts.append(str(trace["retrieval_error"]))
+    if trace.get("gate_reason"):
+        parts.append(str(trace["gate_reason"]))
+    if trace.get("self_check"):
+        parts.append(str(trace["self_check"]))
+    return "refund_policy_weak: " + ("；".join(parts) or "检索证据不足")
+
+
+async def refund_fallback_reply(state: dict, *, deps: Any) -> dict:
+    """Weak refund-policy evidence: fixed reply plus human hand-off."""
+    await deps.repository.insert_low_confidence_question(
+        state.get("conversation_id"),
+        _user_text(state),
+        "retrieval_low_conf",
+        _refund_weak_reason(state),
+    )
+    await deps.repository.commit()
+    actions = [
+        {"type": "transfer_human"},
+        {
+            "type": "create_ticket",
+            "draft": {
+                "description": _user_text(state),
+                "ticket_type": "售后",
+            },
+        },
+    ]
+    return {
+        "answer": REFUND_WEAK_REPLY,
+        "suggested_actions": actions,
+        "route": "refund_fallback",
+        "trace": merge_trace(
+            state, route="refund_fallback", fallback=True
+        ),
+    }
+
+
+async def other_reply(state: dict, *, deps: Any) -> dict:
+    """Other intent: zero-model clarification plus human hand-off."""
+    actions = [
+        {"type": "transfer_human"},
+        {
+            "type": "create_ticket",
+            "draft": {
+                "description": _user_text(state),
+                "ticket_type": "咨询",
+            },
+        },
+    ]
+    return {
+        "answer": OTHER_REPLY,
+        "suggested_actions": actions,
+        "route": "other",
+        "trace": merge_trace(state, route="other", actions=2),
+    }
 
 
 _KNOWLEDGE_EVIDENCE_HINT = (
