@@ -1,7 +1,6 @@
-import random
-from datetime import date, timedelta
-
 from langchain_core.tools import tool
+
+from app.services.orders import get_order
 
 
 @tool(parse_docstring=True)
@@ -11,17 +10,12 @@ def query_order(order_id: str) -> dict:
     Args:
         order_id: 订单号
     """
-    created = date.today() - timedelta(days=random.randint(1, 30))
-    return {
-        "order_id": order_id,
-        "status": random.choice(["已支付", "已发货", "已完成"]),
-        "items": [
-            {
-                "name": random.choice(["蓝牙耳机", "机械键盘", "保温杯", "充电宝"]),
-                "quantity": random.randint(1, 2),
+    order = get_order(order_id)
+    if order is None:
+        return {
+            "error": {
+                "code": "order_not_found",
+                "message": f"订单 {order_id} 不存在",
             }
-        ],
-        "amount": round(random.uniform(39, 899), 2),
-        "tracking_no": "SF" + "".join(random.choices("0123456789", k=12)),
-        "created_at": created.isoformat(),
-    }
+        }
+    return order

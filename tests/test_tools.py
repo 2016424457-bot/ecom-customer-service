@@ -78,11 +78,20 @@ async def test_query_order_shape():
     result = await query_order.ainvoke({"order_id": "1001"})
 
     assert result["order_id"] == "1001"
-    assert result["status"] in {"已支付", "已发货", "已完成"}
-    assert isinstance(result["amount"], float)
-    assert result["items"]
+    assert result["status"] == "已签收"
+    assert result["amount"] == 399.0
+    assert result["items"][0]["name"] == "蓝牙耳机"
+    assert result["signed_at"] is not None
     assert result["tracking_no"].startswith("SF")
     assert len(result["tracking_no"]) == 14
+
+
+async def test_query_order_invalid_id_returns_error():
+    result = await query_order.ainvoke({"order_id": "中文"})
+
+    assert result["error"]["code"] == "order_not_found"
+    assert "中文" in result["error"]["message"]
+    assert "items" not in result
 
 
 async def test_query_product_shape():
@@ -102,6 +111,9 @@ async def test_query_logistics_shape():
     assert result["tracking_no"] == "SF123456789012"
     assert result["status"] in {"运输中", "派送中", "已签收"}
     assert result["latest_event"]
+    assert result == await query_logistics.ainvoke(
+        {"tracking_no": "SF123456789012"}
+    )
 
 
 async def test_query_faq_returns_ranked_items_and_retrieval_meta():
