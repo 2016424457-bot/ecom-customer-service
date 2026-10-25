@@ -166,12 +166,12 @@ async def test_knowledge_route_forces_retrieval_and_injects_evidence(
 
     monkeypatch.setattr(nodes, "search_knowledge_result", fake_search)
     model = FakeModel([AIMessage("7天内可退[1]。")])
-    deps = _deps(intent="退款退货", model=model)
+    deps = _deps(intent="商品咨询", model=model)
 
     events = [
         event
         async for event in runtime.stream_turn(
-            deps, conversation_id=8, user_id="u1", message="退货政策是什么"
+            deps, conversation_id=8, user_id="u1", message="商品怎么保修"
         )
     ]
 
