@@ -46,6 +46,7 @@ def test_invalid_order_id_returns_none():
     assert get_order("中文") is None
     assert get_order("") is None
     assert get_order("x") is None
+    assert get_order("1001\n") is None
 
 
 def test_list_user_orders_returns_three_summaries():

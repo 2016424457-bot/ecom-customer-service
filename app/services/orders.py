@@ -115,7 +115,9 @@ def _generated_order(order_id: str) -> dict:
 
 def get_order(order_id: str) -> dict | None:
     """Return a deterministic order, or None for an invalid order id."""
-    if not isinstance(order_id, str) or not _VALID_ORDER_RE.match(order_id):
+    # fullmatch (not match): "$" also matches before a trailing newline, which
+    # would let ids like "1001\n" slip through and be fabricated.
+    if not isinstance(order_id, str) or not _VALID_ORDER_RE.fullmatch(order_id):
         return None
     if order_id in _FIXED_ORDERS:
         return _fixed_order(order_id)
