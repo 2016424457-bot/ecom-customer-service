@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from app.config import Settings
@@ -95,23 +97,32 @@ async def test_search_many_passes_noop_rewriter(monkeypatch, settings):
 
 
 @pytest.mark.asyncio
-async def test_search_many_shares_one_backend_across_queries(
+async def test_search_many_runs_in_order_on_one_backend(
     monkeypatch, settings
 ):
     seen = []
+    in_flight = 0
+    max_in_flight = 0
 
     async def fake_retrieve(q, **kwargs):
-        seen.append(kwargs["backend"])
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        seen.append((q, kwargs["backend"]))
+        await asyncio.sleep(0)
+        in_flight -= 1
         return RetrievalResult("hybrid_rerank", q, True, [])
 
     monkeypatch.setattr(search, "retrieve", fake_retrieve)
-    await search.search_many_result(
+    result = await search.search_many_result(
         ["a", "b", "c"], repository=object(), settings=settings
     )
 
-    assert len(seen) == 3
-    assert isinstance(seen[0], MilvusSearchBackend)
-    assert all(backend is seen[0] for backend in seen)
+    assert [query for query, _ in seen] == ["a", "b", "c"]
+    assert max_in_flight == 1
+    assert isinstance(seen[0][1], MilvusSearchBackend)
+    assert all(backend is seen[0][1] for _, backend in seen)
+    assert result.queries == ["a", "b", "c"]
 
 
 @pytest.mark.asyncio

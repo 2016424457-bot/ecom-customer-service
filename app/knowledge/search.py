@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from typing import Any, Callable
 
@@ -67,19 +66,22 @@ async def search_many_result(
     rewriter: Any | None = None,
     reranker: Reranker | None = None,
 ) -> RetrievalResult:
-    """Run every query and merge hits, skipping failed queries.
+    """Run every query in order and merge hits, skipping failed queries.
 
-    Hits are deduplicated by chunk id (keeping the highest score), sorted
-    by score descending, then truncated to ``top_k`` (default:
-    ``settings.rag_top_k``, matching ``retrieve``).
+    Queries are retrieved sequentially: Milvus Lite cannot service
+    concurrent operations while its connection is provisioning. Hits are
+    deduplicated by chunk id (keeping the highest score), sorted by score
+    descending, then truncated to ``top_k`` (default: ``settings.rag_top_k``,
+    matching ``retrieve``).
     """
     active_rewriter = rewriter or NoOpQueryRewriter()
-    # Share one backend (and therefore one cached Milvus client) across the
-    # concurrent retrievals; separate backends race the Milvus Lite lock.
+    # One backend for every query; the backend's client cache is shared.
     active_backend = backend or MilvusSearchBackend(settings)
-    results = await asyncio.gather(
-        *(
-            retrieve(
+    best: dict[int, KnowledgeHit] = {}
+    reranked = False
+    for query in queries:
+        try:
+            result = await retrieve(
                 query,
                 repository=repository,
                 settings=settings,
@@ -94,19 +96,11 @@ async def search_many_result(
                 rewriter=active_rewriter,
                 reranker=reranker,
             )
-            for query in queries
-        ),
-        return_exceptions=True,
-    )
-
-    best: dict[int, KnowledgeHit] = {}
-    reranked = False
-    for query, result in zip(queries, results):
-        if isinstance(result, BaseException):
+        except Exception as exc:
             logger.warning(
                 "multi_query_retrieve_failed query=%r error=%r",
                 query,
-                result,
+                exc,
             )
             continue
         reranked = reranked or result.reranked

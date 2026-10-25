@@ -499,7 +499,8 @@ async def refund_policy_rag(state: dict, *, deps: Any) -> dict:
         deps,
         trace={},
         assess_query=(
-            f"{state.get('intent')}政策条款：{'；'.join(queries)}"
+            f"{state.get('intent')}政策条款："
+            "七天无理由退货条件、例外、运费、到账时效"
         ),
     )
     if update["evidence_strong"]:

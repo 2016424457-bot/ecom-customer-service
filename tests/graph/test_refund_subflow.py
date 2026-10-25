@@ -371,7 +371,10 @@ async def test_policy_assessment_question_is_policy_focused(monkeypatch):
     monkeypatch.setattr(nodes, "search_many_result", fake_search)
     checker = FakeEvidenceChecker()
     judge = FakeJudgeModel(RefundVerdict(eligible=True, answer="可以退。"))
-    deps = _deps(evidence_checker=checker, judge_model=judge)
+    expander = FakeExpander(["未拆封蓝牙耳机能退吗", "蓝牙耳机退款政策"])
+    deps = _deps(
+        evidence_checker=checker, judge_model=judge, expander=expander
+    )
     state = _state(
         order_id="1001",
         order=ORDER,
@@ -381,11 +384,14 @@ async def test_policy_assessment_question_is_policy_focused(monkeypatch):
     rag = await nodes.refund_policy_rag(state, deps=deps)
 
     assert rag["evidence_strong"] is True
-    assert len(checker.questions) == 1
+    assert rag["queries"] == ["未拆封蓝牙耳机能退吗", "蓝牙耳机退款政策"]
+    assert checker.questions == [
+        "退款退货政策条款：七天无理由退货条件、例外、运费、到账时效"
+    ]
     question = checker.questions[0]
-    assert "q1" in question
-    assert "q2" in question
     assert "1001" not in question
+    assert "未拆封" not in question
+    assert "蓝牙耳机" not in question
 
     merged = {**state, **rag, "trace": rag["trace"]}
     out = await nodes.refund_judge(merged, deps=deps)
