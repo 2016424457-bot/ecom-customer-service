@@ -276,3 +276,30 @@ class FaithCase(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime, nullable=True
     )
+
+
+class RefundRequest(Base):
+    __tablename__ = "refund_requests"
+
+    refund_no: Mapped[str] = mapped_column(String(32), primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("conversations.id"),
+        nullable=False,
+    )
+    order_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_type: Mapped[str] = mapped_column(
+        Enum("退款", "退货", name="refund_request_type"),
+        nullable=False,
+    )
+    reason_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason_label: Mapped[str] = mapped_column(String(64), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        Enum("待处理", "已处理", name="refund_request_status"),
+        nullable=False,
+        server_default="待处理",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )

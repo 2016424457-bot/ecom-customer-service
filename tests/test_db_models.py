@@ -12,6 +12,7 @@ def test_table_and_column_names_match_schema():
         "knowledge_mining_state",
         "low_confidence_questions",
         "faith_cases",
+        "refund_requests",
     }
     assert [c.name for c in Base.metadata.tables["conversations"].columns] == [
         "id",
@@ -111,4 +112,21 @@ def test_ch04_tables_and_columns():
         "last_seen_at",
         "resolution",
         "resolved_at",
+    ]
+
+
+def test_ch06_refund_requests_columns():
+    assert "refund_requests" in Base.metadata.tables
+    assert [
+        c.name for c in Base.metadata.tables["refund_requests"].columns
+    ] == [
+        "refund_no",
+        "conversation_id",
+        "order_id",
+        "request_type",
+        "reason_code",
+        "reason_label",
+        "note",
+        "status",
+        "created_at",
     ]

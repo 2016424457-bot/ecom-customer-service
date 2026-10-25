@@ -127,6 +127,23 @@ class CreateTicketResponse(BaseModel):
     status: str
 
 
+class SubmitRefundRequest(BaseModel):
+    """Payload for the user-clicked submit-refund action."""
+
+    conversation_id: int
+    order_id: str = Field(min_length=1, max_length=32)
+    request_type: Literal["退款", "退货"]
+    reason_code: str = Field(min_length=1, max_length=32)
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class SubmitRefundResponse(BaseModel):
+    """Created refund summary returned to the frontend."""
+
+    refund_no: str
+    status: str
+
+
 class AfterSalesExtraction(BaseModel):
     """Fixed fields extracted from an after-sales message."""
 

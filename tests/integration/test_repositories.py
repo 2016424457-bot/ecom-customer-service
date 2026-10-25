@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
-from app.db.models import Ticket
+from app.db.models import RefundRequest, Ticket
 from app.db.repositories import ChatRepository
 
 pytestmark = pytest.mark.integration
@@ -148,3 +148,65 @@ async def test_message_with_unknown_conversation_violates_foreign_key(session):
 
     with pytest.raises(IntegrityError):
         await repo.add_message(999_999_999, "user", content="orphan")
+
+
+async def test_next_refund_no_and_create_refund_request(session):
+    repo = ChatRepository(session)
+    conversation = await repo.get_or_create_conversation(None, "u1")
+
+    refund_no = await repo.next_refund_no(date(2026, 10, 21))
+    assert re.fullmatch(r"R20261021\d{3}", refund_no)
+
+    refund = await repo.create_refund_request(
+        conversation.id,
+        "1001",
+        "退款",
+        "quality",
+        "商品质量问题",
+        "耳机有杂音",
+        refund_no,
+    )
+    row = await session.scalar(
+        select(RefundRequest).where(
+            RefundRequest.refund_no == refund.refund_no
+        )
+    )
+
+    assert refund.status == "待处理"
+    assert row is not None
+    assert row.conversation_id == conversation.id
+    assert row.order_id == "1001"
+    assert row.request_type == "退款"
+    assert row.reason_code == "quality"
+    assert row.reason_label == "商品质量问题"
+    assert row.note == "耳机有杂音"
+    assert row.status == "待处理"
+
+
+async def test_duplicate_refund_number_leaves_session_usable(session):
+    repo = ChatRepository(session)
+    conversation = await repo.get_or_create_conversation(None, "u1")
+    refund_no = await repo.next_refund_no(date(2026, 10, 21))
+    await repo.create_refund_request(
+        conversation.id,
+        "1001",
+        "退款",
+        "quality",
+        "商品质量问题",
+        None,
+        refund_no,
+    )
+
+    with pytest.raises(IntegrityError):
+        await repo.create_refund_request(
+            conversation.id,
+            "1002",
+            "退货",
+            "other",
+            "其他",
+            None,
+            refund_no,
+        )
+
+    next_no = await repo.next_refund_no(date(2026, 10, 21))
+    assert next_no != refund_no

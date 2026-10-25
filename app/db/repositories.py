@@ -12,6 +12,7 @@ from app.db.models import (
     LowConfidenceQuestion,
     Message,
     QaExtractionStaging,
+    RefundRequest,
     Ticket,
 )
 from app.knowledge.types import ConversationWindow, StagingRow
@@ -141,6 +142,41 @@ class ChatRepository:
             self.session.add(ticket)
             await self.session.flush()
         return ticket
+
+    async def next_refund_no(self, day: date) -> str:
+        prefix = f"R{day.strftime('%Y%m%d')}"
+        count = await self.session.scalar(
+            select(func.count())
+            .select_from(RefundRequest)
+            .where(RefundRequest.refund_no.like(f"{prefix}%"))
+        )
+        return f"{prefix}{(count or 0) + 1:03d}"
+
+    async def create_refund_request(
+        self,
+        conversation_id: int,
+        order_id: str,
+        request_type: str,
+        reason_code: str,
+        reason_label: str,
+        note: str | None,
+        refund_no: str,
+    ) -> RefundRequest:
+        refund = RefundRequest(
+            refund_no=refund_no,
+            conversation_id=conversation_id,
+            order_id=order_id,
+            request_type=request_type,
+            reason_code=reason_code,
+            reason_label=reason_label,
+            note=note,
+        )
+        # A duplicate refund number aborts only the savepoint, so the
+        # service can retry with a fresh number on the same session.
+        async with self.session.begin_nested():
+            self.session.add(refund)
+            await self.session.flush()
+        return refund
 
     async def insert_low_confidence_question(
         self,
