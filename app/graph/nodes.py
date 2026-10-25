@@ -142,13 +142,24 @@ async def coref(state: dict, *, deps: Any) -> dict:
 
 
 async def classify_intent(state: dict, *, deps: Any) -> dict:
-    """Classify the user message and record its route in state."""
-    intent = await deps.intent_classifier.classify(_user_text(state))
+    """Classify the user message and record confidence, tier, and route."""
+    query = state.get("standalone_query") or _user_text(state)
+    decision = await deps.intent_classifier.classify(query)
+    intent = decision.intent
     route = route_by_intent({"intent": intent})
     return {
         "intent": intent,
+        "intent_confidence": decision.confidence,
+        "intent_tier": decision.tier,
         "route": route,
-        "trace": merge_trace(state, intent=intent, route=route),
+        "trace": merge_trace(
+            state,
+            intent=intent,
+            intent_query=query,
+            intent_confidence=decision.confidence,
+            intent_tier=decision.tier,
+            intent_error=decision.error,
+        ),
     }
 
 

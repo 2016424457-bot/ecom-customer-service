@@ -4,6 +4,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from app.graph import nodes
+from app.graph.intent import IntentDecision
 from app.knowledge.types import KnowledgeHit, RetrievalResult
 
 
@@ -12,9 +13,9 @@ class FakeClassifier:
         self.intent = intent
         self.calls: list[str] = []
 
-    async def classify(self, query: str) -> str:
+    async def classify(self, query: str) -> IntentDecision:
         self.calls.append(query)
-        return self.intent
+        return IntentDecision(self.intent, 1.0, "big")
 
 
 class FakeChecker:
@@ -74,8 +75,29 @@ async def test_classify_intent_uses_classifier():
     )
 
     assert out["intent"] == "订单"
+    assert out["intent_confidence"] == 1.0
+    assert out["intent_tier"] == "big"
     assert out["route"] == "business"
     assert out["trace"]["intent"] == "订单"
+    assert out["trace"]["intent_query"] == "订单1001什么状态"
+    assert out["trace"]["intent_confidence"] == 1.0
+    assert out["trace"]["intent_tier"] == "big"
+    assert out["trace"]["intent_error"] is None
+    assert deps.intent_classifier.calls == ["订单1001什么状态"]
+
+
+@pytest.mark.asyncio
+async def test_classify_intent_prefers_standalone_query():
+    deps = _deps()
+    out = await nodes.classify_intent(
+        {
+            "messages": [HumanMessage("那个咋样了")],
+            "standalone_query": "订单1001什么状态",
+        },
+        deps=deps,
+    )
+
+    assert out["trace"]["intent_query"] == "订单1001什么状态"
     assert deps.intent_classifier.calls == ["订单1001什么状态"]
 
 

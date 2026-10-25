@@ -6,6 +6,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from app.graph import nodes, runtime
 from app.graph.deps import GraphDeps
+from app.graph.intent import IntentDecision
 from app.knowledge.types import KnowledgeHit, RetrievalResult
 from app.services.tool_exec import ToolResult
 
@@ -45,8 +46,8 @@ class FakeClassifier:
     def __init__(self, intent: str) -> None:
         self.intent = intent
 
-    async def classify(self, query: str) -> str:
-        return self.intent
+    async def classify(self, query: str) -> IntentDecision:
+        return IntentDecision(self.intent, 1.0, "big")
 
 
 class FakeModel:

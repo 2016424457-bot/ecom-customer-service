@@ -1,11 +1,13 @@
-"""Labeled evaluation for the seven-class intent classifier.
+"""Labeled evaluation for the eight-class intent classifier.
 
 Usage:
 
     .venv/bin/python -m scripts.eval_intent
 
-Requires the upstream model. Accuracy is not asserted here because the
-model is non-deterministic; record the real number in dev-notes.
+Uses ``INTENT_FAST_MODEL`` for the first pass when configured, then escalates
+to the big model on low confidence, mirroring the graph classifier. Requires
+the upstream model. Accuracy is not asserted here because the model is
+non-deterministic; record the real number in dev-notes.
 """
 
 import asyncio
@@ -13,7 +15,7 @@ from collections import defaultdict
 
 from app.config import Settings
 from app.graph.intent import IntentClassifier
-from app.llm import build_intent_model
+from app.llm import build_intent_fast_model, build_intent_model
 
 SAMPLES = [
     ("订单1001的快递到哪了", "物流"),
@@ -36,13 +38,16 @@ SAMPLES = [
 async def main() -> int:
     settings = Settings()
     classifier = IntentClassifier(
-        build_intent_model(settings), settings.intent_prompt_path
+        build_intent_model(settings),
+        settings.intent_prompt_path,
+        fast_model=build_intent_fast_model(settings),
+        confidence_threshold=settings.intent_confidence_threshold,
     )
 
     passed = 0
     per_class: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     for query, expected in SAMPLES:
-        actual = await classifier.classify(query)
+        actual = (await classifier.classify(query)).intent
         ok = actual == expected
         passed += int(ok)
         per_class[expected][0] += int(ok)
