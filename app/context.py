@@ -7,6 +7,7 @@ themselves.
 
 import json
 from dataclasses import dataclass
+from functools import partial
 from math import ceil
 from typing import Iterable
 
@@ -14,9 +15,13 @@ from langchain_core.messages import (
     AIMessage,
     BaseMessage,
     HumanMessage,
+    SystemMessage,
     ToolMessage,
 )
-from langchain_core.messages.utils import count_tokens_approximately
+from langchain_core.messages.utils import (
+    count_tokens_approximately,
+    trim_messages,
+)
 
 from app.config import Settings
 from app.errors import AppError
@@ -370,3 +375,222 @@ def degrade_layer1(
             break
         current = anchors[1]
     return current, old
+
+
+TURN_CTX_ID = "turn-ctx"
+
+_KNOWLEDGE_EVIDENCE_HINT = (
+    "\n\n## 已检索到的知识证据（请直接引用，不要再调用 query_faq；"
+    "仍可按需调用订单/物流/商品工具）\n"
+)
+
+
+def summary_line(summary: str | None) -> str:
+    return f"(早前对话摘要:{summary})" if summary else ""
+
+
+def build_turn_context(
+    summary: str | None, evidence: str | None
+) -> str:
+    parts: list[str] = []
+    if summary:
+        parts.append(summary_line(summary))
+    if evidence:
+        parts.append(_KNOWLEDGE_EVIDENCE_HINT + evidence)
+    return "".join(parts)
+
+
+def _split_turns(
+    messages: list[BaseMessage],
+) -> list[list[BaseMessage]]:
+    turns: list[list[BaseMessage]] = []
+    current: list[BaseMessage] = []
+    for message in messages:
+        if isinstance(message, HumanMessage) and current:
+            turns.append(current)
+            current = [message]
+        else:
+            current.append(message)
+    if current:
+        turns.append(current)
+    return turns
+
+
+def _trim_turns_to_budget(
+    messages: list[BaseMessage],
+    max_tokens: int,
+    chars_per_token: float,
+) -> list[BaseMessage]:
+    turns = _split_turns(messages)
+    while len(turns) > 1:
+        flat = [message for turn in turns for message in turn]
+        if estimate_tokens(flat, chars_per_token) <= max_tokens:
+            break
+        turns.pop(0)
+    return [message for turn in turns for message in turn]
+
+
+def _tail_lines(
+    lines: list[tuple[str, str]],
+    max_messages: int,
+    max_chars: int,
+) -> list[tuple[str, str]]:
+    if max_messages <= 0 or max_chars <= 0:
+        return []
+    kept: list[tuple[str, str]] = []
+    used = 0
+    for label, text in reversed(lines):
+        line = f"{label}: {text}"
+        extra = len(line) + (1 if kept else 0)
+        if used + extra <= max_chars:
+            kept.append((label, text))
+            used += extra
+        else:
+            if not kept:
+                kept.append((label, text[:max_chars]))
+            break
+        if len(kept) >= max_messages:
+            break
+    return list(reversed(kept))
+
+
+def build_agent_messages(state: dict, deps) -> list[BaseMessage]:
+    settings = deps.settings
+    budget = deps.context_budget
+    layers = slice_layers(
+        state.get("messages", []),
+        state.get("summary_upto_msg_id") or 0,
+        state.get("layer1_from_msg_id") or 0,
+    )
+    middle = render_layer2(
+        layers.middle,
+        assistant_chars=settings.layer2_assistant_chars,
+        tool_keep_tokens=settings.layer2_tool_result_keep_tokens,
+        chars_per_token=settings.token_chars_per_token,
+    )
+    middle = _trim_turns_to_budget(
+        middle, budget.layer2, settings.token_chars_per_token
+    )
+
+    recent = layers.recent
+    if recent:
+        recent = trim_messages(
+            recent,
+            max_tokens=budget.layer1,
+            strategy="last",
+            start_on="human",
+            token_counter=partial(
+                count_tokens_approximately,
+                chars_per_token=settings.token_chars_per_token,
+            ),
+        )
+    if not recent:
+        recent = layers.recent
+
+    current_index = None
+    for index in range(len(recent) - 1, -1, -1):
+        if isinstance(recent[index], HumanMessage):
+            current_index = index
+            break
+    if current_index is None:
+        before_current = list(recent)
+        current_turn: list[BaseMessage] = []
+    else:
+        before_current = recent[:current_index]
+        current_turn = recent[current_index:]
+
+    context = build_turn_context(
+        state.get("summary"),
+        state.get("evidence_prompt") or state.get("evidence"),
+    )
+    system = (
+        deps.prompt_builder.render_system_text()
+        + "\n\n"
+        + deps.agent_prompt
+    )
+    out: list[BaseMessage] = [
+        SystemMessage(content=system),
+        *middle,
+        *before_current,
+    ]
+    if current_turn:
+        out.append(current_turn[0])
+        if context:
+            out.append(
+                HumanMessage(content=context, id=TURN_CTX_ID)
+            )
+        out.extend(current_turn[1:])
+    elif context:
+        out.append(HumanMessage(content=context, id=TURN_CTX_ID))
+    return out
+
+
+def build_history_ctx(state: dict, deps) -> str:
+    settings = deps.settings
+    layers = slice_layers(
+        state.get("messages", []),
+        state.get("summary_upto_msg_id") or 0,
+        state.get("layer1_from_msg_id") or 0,
+    )
+    lines = render_layer2_text(
+        layers.middle,
+        assistant_chars=settings.layer2_assistant_chars,
+        tool_keep_tokens=settings.layer2_tool_result_keep_tokens,
+        chars_per_token=settings.token_chars_per_token,
+    )
+    for message in layers.recent_before_current:
+        if isinstance(message, HumanMessage):
+            text = _content_text(message.content)
+            if text:
+                lines.append(("用户", text))
+        elif isinstance(message, AIMessage):
+            text = _content_text(message.content)
+            if text:
+                lines.append(("客服", text))
+    trimmed = _tail_lines(
+        lines,
+        settings.coref_history_messages,
+        settings.coref_max_history_chars,
+    )
+    body = "\n".join(
+        f"{label}: {text}" for label, text in trimmed
+    )
+    head = summary_line(state.get("summary"))
+    return f"{head}\n{body}".strip() if head else body
+
+
+def format_model_ctx(
+    state: dict,
+    messages: list[BaseMessage],
+    chars_per_token: float,
+) -> str:
+    layers = slice_layers(
+        state.get("messages", []),
+        state.get("summary_upto_msg_id") or 0,
+        state.get("layer1_from_msg_id") or 0,
+    )
+    tokens = estimate_tokens(messages, chars_per_token)
+    header = (
+        "model_ctx "
+        f"conv={state.get('conversation_id', '-')} "
+        f"summary_upto={state.get('summary_upto_msg_id') or 0} "
+        f"layer1_from={state.get('layer1_from_msg_id') or 0} "
+        f"layer1_msgs={len(layers.recent)} "
+        f"layer2_msgs={len(layers.middle)} "
+        f"history_tokens={tokens}"
+    )
+    lines = [
+        header,
+        f"summary={(state.get('summary') or '')!r}",
+    ]
+    for message in messages:
+        role = getattr(message, "type", "message")
+        text = _content_text(getattr(message, "content", ""))
+        if (
+            isinstance(message, AIMessage)
+            and message.tool_calls
+            and not text
+        ):
+            text = _tool_call_line(message)
+        lines.append(f"[{role}] {text[:40]!r}")
+    return "\n".join(lines)
