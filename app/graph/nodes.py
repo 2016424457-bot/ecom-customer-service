@@ -17,6 +17,7 @@ from app.context import (
     degrade_layer1,
     estimate_tokens,
     format_model_ctx,
+    require_context_budget,
     slice_layers,
 )
 from app.graph.refund import RefundVerdict, request_type_for
@@ -192,6 +193,7 @@ def prepare_context(state: dict, *, deps: Any) -> dict:
     new = old
     budget = getattr(deps, "context_budget", None)
     if budget is not None:
+        require_context_budget(budget)
         before = estimate_tokens(
             slice_layers(messages, summary_upto, old).recent,
             chars,

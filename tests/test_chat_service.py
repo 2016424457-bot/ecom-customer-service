@@ -152,3 +152,36 @@ async def test_stream_chat_maps_conversation_not_found(
 
     assert events[-1][0] == "error"
     assert events[-1][1]["code"] == "conversation_not_found"
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_yields_context_budget_error(monkeypatch):
+    from app.context import ContextBudgetError
+
+    def boom(**kwargs):
+        raise ContextBudgetError("上下文预算不足")
+
+    monkeypatch.setattr(graph_runtime, "build_deps", boom)
+
+    events = [
+        event
+        async for event in stream_chat(
+            session_id=None,
+            user_id="u1",
+            user_message="hi",
+            chat_model=object(),
+            intent_model=object(),
+            repository=FakeRepository(),
+            prompt_builder=object(),
+            settings=SimpleNamespace(
+                structured_output_method="function_calling"
+            ),
+            locks=ConversationLocks(),
+        )
+    ]
+
+    assert events[-1][0] == "error"
+    assert (
+        events[-1][1]["code"]
+        == "context_budget_insufficient"
+    )

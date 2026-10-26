@@ -66,3 +66,11 @@ def test_app_error_can_be_raised_and_caught() -> None:
     assert caught.status_code == 502
     assert caught.message == ERROR_MESSAGES["upstream_error"]
     assert str(caught) == caught.message
+
+
+def test_map_upstream_error_preserves_app_error() -> None:
+    original = AppError(
+        "context_budget_insufficient", "上下文预算不足", 503
+    )
+
+    assert map_upstream_error(original) is original

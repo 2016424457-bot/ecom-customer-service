@@ -9,11 +9,42 @@ from fastapi.staticfiles import StaticFiles
 from app.api.actions import router as actions_router
 from app.api.routes import router
 from app.config import Settings
+from app.context import format_context_budget
 from app.errors import AppError
 from app.graph import runtime as graph_runtime
 from app.runtime import Runtime, build_runtime
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+logger = logging.getLogger(__name__)
+
+
+def _configure_logging(settings: Settings) -> None:
+    level = getattr(settings, "log_level", "INFO").upper()
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    root = logging.getLogger()
+    root.setLevel(level)
+    log_file = getattr(settings, "log_file", None)
+    if log_file is None:
+        return
+    log_path = Path(log_file)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    target = str(log_path.resolve())
+    for handler in root.handlers:
+        if (
+            isinstance(handler, logging.FileHandler)
+            and getattr(handler, "baseFilename", None) == target
+        ):
+            return
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s %(message)s"
+        )
+    )
+    root.addHandler(handler)
 
 
 def create_app(
@@ -27,7 +58,14 @@ def create_app(
     ``uvicorn app.main:create_app --factory``.
     """
     runtime = runtime or build_runtime(settings or Settings())
-    logging.basicConfig(level=runtime.settings.log_level.upper())
+    _configure_logging(runtime.settings)
+    budget = getattr(runtime, "context_budget", None)
+    if budget is not None:
+        logger.info(format_context_budget(budget))
+        if not budget.ok:
+            logger.error(budget.warning)
+        elif budget.warning:
+            logger.warning(budget.warning)
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI):

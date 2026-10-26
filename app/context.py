@@ -141,11 +141,12 @@ def compute_context_budget(settings: Settings) -> ContextBudget:
 
 
 def require_context_budget(budget: ContextBudget) -> ContextBudget:
-    if not budget.ok:
-        raise ContextBudgetError(
-            budget.warning or "上下文预算不足"
-        )
-    return budget
+    if getattr(budget, "ok", True):
+        return budget
+    raise ContextBudgetError(
+        getattr(budget, "warning", None)
+        or "上下文预算不足"
+    )
 
 
 def format_context_budget(budget: ContextBudget) -> str:

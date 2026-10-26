@@ -39,6 +39,8 @@ def map_upstream_error(exc: BaseException) -> AppError:
     The message is always a generic user-facing Chinese sentence; detailed
     exception text stays in the logs.
     """
+    if isinstance(exc, AppError):
+        return exc
     status_code = getattr(exc, "status_code", None)
     if status_code in (401, 403):
         return _make_error("upstream_auth_error", 502)

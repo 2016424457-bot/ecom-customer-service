@@ -110,6 +110,11 @@ async def stream_chat(
             "error",
             {"code": "conversation_not_found", "message": "会话不存在"},
         )
+    except AppError as error:
+        yield (
+            "error",
+            {"code": error.code, "message": error.message},
+        )
     except Exception as exc:
         error = map_upstream_error(exc)
         if error.code == "parse_error":
