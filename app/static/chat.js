@@ -8,6 +8,7 @@
   const HEALTH_URL = "/health";
   const TICKET_URL = "/api/actions/create-ticket";
   const REFUND_URL = "/api/actions/submit-refund";
+  const CONVERSATIONS_URL = "/api/conversations";
   const MAX_INPUT = 8000;
 
   const WELCOME =
@@ -60,8 +61,11 @@
   const closeRefund = document.getElementById("closeRefund");
   const cancelRefund = document.getElementById("cancelRefund");
   const submitRefund = document.getElementById("submitRefund");
+  const conversationList = document.getElementById("conversationList");
+  const sidebarNewBtn = document.getElementById("sidebarNewBtn");
 
   let sessionId = loadSessionId();
+  let conversationId = null;
   let userId = loadUserId();
   let history = loadHistory();
   let busy = false;
@@ -577,6 +581,120 @@
     }
   }
 
+  function formatConversationTime(value) {
+    if (!value) return "新会话";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleString("zh-CN", {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  function renderConversations(items) {
+    if (!conversationList) return;
+    conversationList.innerHTML = "";
+    if (!Array.isArray(items) || !items.length) {
+      const empty = document.createElement("p");
+      empty.className = "conversation-empty";
+      empty.textContent = "还没有会话";
+      conversationList.append(empty);
+      return;
+    }
+    for (const item of items) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "conversation-item";
+      button.dataset.id = String(item.id);
+      if (Number(item.id) === conversationId) {
+        button.classList.add("is-active");
+      }
+      const preview = document.createElement("span");
+      preview.className = "conversation-preview";
+      preview.textContent = item.preview || "新会话";
+      const meta = document.createElement("span");
+      meta.className = "conversation-meta";
+      const time = document.createElement("span");
+      time.textContent = formatConversationTime(item.last_message_at);
+      meta.append(time);
+      if (item.has_summary) {
+        const badge = document.createElement("span");
+        badge.className = "conversation-badge";
+        badge.textContent = "已摘要";
+        meta.append(badge);
+      }
+      button.append(preview, meta);
+      conversationList.append(button);
+    }
+  }
+
+  async function loadConversations() {
+    if (!conversationList) return;
+    try {
+      const response = await fetch(
+        `${CONVERSATIONS_URL}?user_id=${encodeURIComponent(userId)}`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) return;
+      const data = await response.json();
+      renderConversations(data && data.items);
+    } catch {
+      /* sidebar is optional; chat keeps working */
+    }
+  }
+
+  async function switchConversation(id) {
+    if (busy) return false;
+    const target = Number(id);
+    if (!Number.isInteger(target) || target <= 0) return false;
+    try {
+      const response = await fetch(
+        `${CONVERSATIONS_URL}/${target}/messages`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) return false;
+      const data = await response.json();
+      const items = Array.isArray(data && data.items)
+        ? data.items
+        : [];
+      sessionId = String(target);
+      conversationId = target;
+      saveSessionId();
+      history = items
+        .filter(
+          (item) =>
+            item &&
+            (item.role === "user" || item.role === "assistant") &&
+            typeof item.content === "string",
+        )
+        .map((item) => ({
+          role: item.role,
+          text: item.content,
+        }));
+      saveHistory();
+      renderHistory();
+      showSuggestions(false);
+      void loadConversations();
+      return true;
+    } catch {
+      /* keep the current conversation on failure */
+      return false;
+    }
+  }
+
+  async function restoreConversation() {
+    await loadConversations();
+    const saved = Number(sessionId);
+    if (Number.isInteger(saved) && saved > 0) {
+      const restored = await switchConversation(saved);
+      if (!restored) renderHistory();
+    } else {
+      renderHistory();
+    }
+  }
+
   function renderHistory() {
     messagesEl.innerHTML = "";
     if (!history.length) {
@@ -741,6 +859,7 @@
       await readSse(response, (event, data) => {
         if (event === "session" && data && data.session_id) {
           sessionId = String(data.session_id);
+          conversationId = Number(data.session_id) || null;
           saveSessionId();
           return;
         }
@@ -847,6 +966,7 @@
       setBusy(false);
       scrollToBottom();
       input.focus();
+      void loadConversations();
     }
   }
 
@@ -874,12 +994,14 @@
     history = [];
     saveHistory();
     sessionId = uuid();
+    conversationId = null;
     saveSessionId();
     messagesEl.innerHTML = "";
     createMessage("assistant", WELCOME);
     showSuggestions(true);
     autoResize();
     input.focus();
+    void loadConversations();
   }
 
   composer.addEventListener("submit", (event) => {
@@ -897,6 +1019,18 @@
   input.addEventListener("input", autoResize);
 
   newChatBtn.addEventListener("click", newChat);
+
+  if (sidebarNewBtn) {
+    sidebarNewBtn.addEventListener("click", newChat);
+  }
+
+  if (conversationList) {
+    conversationList.addEventListener("click", (event) => {
+      const item = event.target.closest(".conversation-item");
+      if (!item) return;
+      void switchConversation(item.dataset.id);
+    });
+  }
 
   suggestions.addEventListener("click", (event) => {
     const chip = event.target.closest("[data-message]");
@@ -1123,7 +1257,7 @@
     });
   }
 
-  renderHistory();
+  void restoreConversation();
   autoResize();
   void checkHealth();
   input.focus();

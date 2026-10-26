@@ -5,10 +5,19 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#1f3b2f" />
   <title>示例商城 · 售后客服</title>
-  <link rel="stylesheet" href="/static/chat.css?v=6" />
+  <link rel="stylesheet" href="/static/chat.css?v=7" />
 </head>
 <body>
   <div class="app-shell">
+    <aside id="conversationSidebar" class="conversation-sidebar" aria-label="会话列表">
+      <div class="sidebar-head">
+        <span>会话</span>
+        <button id="sidebarNewBtn" class="sidebar-new" type="button">＋ 新对话</button>
+      </div>
+      <div id="conversationList" class="conversation-list"></div>
+    </aside>
+
+    <div class="chat-main">
     <header class="topbar">
       <div class="brand">
         <div class="brand-mark" aria-hidden="true">客</div>
@@ -49,6 +58,7 @@
         </button>
       </form>
       <p class="hint">Enter 发送 · Shift + Enter 换行</p>
+    </div>
     </div>
   </div>
 
@@ -124,6 +134,6 @@
     <div id="sourceAnswer" class="source-answer"></div>
   </dialog>
 
-  <script src="/static/chat.js?v=6"></script>
+  <script src="/static/chat.js?v=7"></script>
 </body>
 </html>
