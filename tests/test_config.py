@@ -153,3 +153,24 @@ def test_ch06_settings_defaults(clean_unit_env):
     assert str(settings.refund_judge_prompt_path) == (
         "app/prompts/refund_judge_prompt.txt"
     )
+
+
+def test_ch07_settings_defaults(clean_unit_env):
+    settings = Settings(_env_file=None, openai_api_key="test")
+    assert settings.model_context_window == 128000
+    assert settings.max_output_tokens == 2000
+    assert settings.max_user_input_tokens == 2000
+    assert settings.tool_result_max_tokens == 1200
+    assert settings.rerank_top_k == 5
+    assert settings.system_overhead_tokens == 2000
+    assert settings.evidence_tokens_per_item == 300
+    assert settings.summary_projection_tokens == 650
+    assert settings.context_safety_ratio == 0.10
+    assert settings.context_desired_turns == 40
+    assert settings.context_turn_steady_tokens == 600
+    assert settings.token_chars_per_token == 1.5
+    assert settings.layer2_assistant_chars == 60
+    assert settings.layer2_tool_result_keep_tokens == 120
+    assert settings.summary_projection_segments == 3
+    assert settings.summary_prompt_path.name == "summary_prompt.txt"
+    assert settings.log_file.name == "app.log"

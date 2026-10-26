@@ -65,6 +65,30 @@ class Settings(BaseSettings):
     refund_judge_temperature: float = 0.0
     refund_judge_max_tokens: int = 512
 
+    # ch07 context management: budget derived from the model window
+    model_context_window: int = Field(default=128000, gt=0)
+    max_output_tokens: int = Field(default=2000, gt=0)
+    max_user_input_tokens: int = Field(default=2000, gt=0)
+    tool_result_max_tokens: int = Field(default=1200, gt=0)
+    rerank_top_k: int = Field(default=5, gt=0)
+    system_overhead_tokens: int = Field(default=2000, gt=0)
+    evidence_tokens_per_item: int = Field(default=300, gt=0)
+    summary_projection_tokens: int = Field(default=650, gt=0)
+    context_safety_ratio: float = Field(default=0.10, ge=0, le=1)
+    context_desired_turns: int = Field(default=40, gt=0)
+    context_turn_steady_tokens: int = Field(default=600, gt=0)
+    token_chars_per_token: float = Field(default=1.5, gt=0)
+    layer2_assistant_chars: int = Field(default=60, gt=0)
+    layer2_tool_result_keep_tokens: int = Field(default=120, gt=0)
+    summary_model: str = ""
+    summary_prompt_path: Path = Path("app/prompts/summary_prompt.txt")
+    summary_temperature: float = 0.0
+    summary_max_tokens: int = Field(default=512, gt=0)
+    summary_projection_segments: int = Field(default=3, gt=0)
+    summary_timeout_seconds: float = Field(default=30, gt=0)
+    summary_max_retries: int = Field(default=0, ge=0)
+    log_file: Path = Path("log/app.log")
+
     database_url: str = (
         "mysql+asyncmy://root:123456@127.0.0.1:3306/ecom_customer_service"
         "?charset=utf8mb4"
