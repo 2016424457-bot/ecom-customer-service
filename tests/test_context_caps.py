@@ -1,6 +1,10 @@
 import json
 
-from app.context import cap_evidence_block, cap_tool_content
+from app.context import (
+    cap_evidence_block,
+    cap_tool_content,
+    estimate_tokens,
+)
 
 
 def test_small_tool_content_unchanged():
@@ -42,3 +46,31 @@ def test_evidence_cap_keeps_top_k_and_full_items():
     assert "[1]" in out
     assert "[5]" in out
     assert "[6]" not in out
+
+
+def test_capped_json_respects_small_token_budget():
+    raw = json.dumps({"items": ["x" * 5000]}, ensure_ascii=False)
+
+    out = cap_tool_content(
+        "query_faq", raw, max_tokens=200, chars_per_token=1.5
+    )
+
+    assert (
+        estimate_tokens([("human", out)], 1.5) <= 200
+    )
+    payload = json.loads(out)
+    assert payload["truncated"] is True
+    assert payload["tool"] == "query_faq"
+
+
+def test_capped_text_respects_small_token_budget():
+    raw = "[1] 章节\na" * 3000
+
+    out = cap_tool_content(
+        "query_faq", raw, max_tokens=200, chars_per_token=1.5
+    )
+
+    assert (
+        estimate_tokens([("human", out)], 1.5) <= 200
+    )
+    assert "[工具结果已截断]" in out

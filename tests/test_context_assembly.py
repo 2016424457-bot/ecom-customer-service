@@ -116,3 +116,21 @@ def test_model_ctx_contains_summary_window_and_estimate():
     assert "订单1001" in text
     assert "tokens=" in text
     assert "[human] 'q1" in text
+
+
+def test_tiny_layer1_budget_keeps_current_user():
+    state = _state(n=2)
+    deps = _deps(
+        budget=SimpleNamespace(layer1=1, layer2=100000)
+    )
+
+    msgs = build_agent_messages(state, deps)
+
+    humans = [
+        message
+        for message in msgs
+        if isinstance(message, HumanMessage)
+    ]
+    assert any(
+        message.content == "q1" for message in humans
+    )

@@ -54,8 +54,8 @@
 
 | 检查项 | 结果 | 备注 |
 |---|---|---|
-| 单元测试 `pytest -q -m "not integration"` | **413 passed, 32 deselected** | 2026-10-27 |
-| 全量测试 `pytest -q`（含集成） | **445 passed** | 需 MySQL + ch07 DDL |
+| 单元测试 `pytest -q -m "not integration"` | **417 passed, 32 deselected** | 2026-10-27，含 review 修复后的边界测试 |
+| 全量测试 `pytest -q`（含集成） | **449 passed** | 需 MySQL + ch07 DDL |
 | `node --check app/static/chat.js` | 通过 | 前端语法 |
 | 摘要 prompt 评估 `make eval-ch07` | **4/4 通过** | 事实保留、无编造、寒暄不留、长度 67–102 字 |
 | 演示配置 30 轮长消息冒烟 | **RESULT PASS** | 启动预算 5650/3954/1695；`layer1 degrade` 多次；`summary trigger 层2 约 1742 > 1695`；`summary done 第1段`；最终答案含订单 1001 |

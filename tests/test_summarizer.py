@@ -172,6 +172,18 @@ async def test_run_skips_when_summary_upto_moved():
     assert repo.updated is None
 
 
+async def test_run_uses_smaller_current_layer1_boundary():
+    repo = FakeRepo(summary_upto=1, layer1_from=7)
+    service = summarizer.SummaryService(
+        _settings(), FakeModel("x"), _scope(repo)
+    )
+
+    await service.run(7, _rows(5), 1, 9)
+
+    assert repo.inserted == [(1, 3, 5, "x")]
+    assert repo.updated == ("x", 5)
+
+
 async def test_maybe_schedule_below_budget_noop():
     repo = FakeRepo()
     service = summarizer.SummaryService(

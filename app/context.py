@@ -631,26 +631,49 @@ def cap_tool_content(
     )
     if tokens <= max_tokens:
         return content
+    budget_chars = max(1, int(max_tokens * chars_per_token))
     try:
         json.loads(content)
     except (TypeError, ValueError):
         pass
     else:
-        return json.dumps(
+        preview = content[: max(0, budget_chars - 120)]
+        out = json.dumps(
             {
                 "truncated": True,
                 "tool": name,
                 "approx_tokens": tokens,
-                "preview": content[:800],
+                "preview": preview,
             },
             ensure_ascii=False,
         )
-    limit = int(max_tokens * chars_per_token)
+        if (
+            estimate_tokens([("human", out)], chars_per_token)
+            > max_tokens
+        ):
+            out = json.dumps(
+                {"truncated": True, "tool": name},
+                ensure_ascii=False,
+            )
+        if (
+            estimate_tokens([("human", out)], chars_per_token)
+            > max_tokens
+        ):
+            out = "[工具结果已截断]"
+        return out
+    marker = "\n[工具结果已截断]"
+    limit = max(0, budget_chars - len(marker))
     cut = content[:limit]
     newline = cut.rfind("\n")
     if newline > 0:
         cut = cut[:newline]
-    return cut + "\n[工具结果已截断]"
+    out = cut + marker
+    if (
+        estimate_tokens([("human", out)], chars_per_token)
+        > max_tokens
+    ):
+        out = "[工具结果已截断]"
+    return out
 
 
 def cap_evidence_block(
