@@ -9,6 +9,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+from app.context import cap_evidence_block, cap_tool_content
 from app.graph.refund import RefundVerdict, request_type_for
 from app.graph.routing import (
     classify_refund_scope,
@@ -317,6 +318,14 @@ async def _evidence_update(
     return {
         "evidence_strong": True,
         "evidence": render_evidence_block(full_items),
+        "evidence_prompt": cap_evidence_block(
+            full_items,
+            getattr(deps.settings, "rerank_top_k", len(full_items)),
+            getattr(
+                deps.settings, "evidence_tokens_per_item", 300
+            ),
+            getattr(deps.settings, "token_chars_per_token", 1.5),
+        ),
         "citations": light_items,
         "trace": merge_trace(
             state,
@@ -813,6 +822,12 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
         content = result.content
         if name == "query_faq" and result.ok:
             content = _faq_evidence(result.content)
+        content = cap_tool_content(
+            name,
+            content,
+            getattr(deps.settings, "tool_result_max_tokens", 1200),
+            getattr(deps.settings, "token_chars_per_token", 1.5),
+        )
         tool_messages.append(
             ToolMessage(
                 content=content,

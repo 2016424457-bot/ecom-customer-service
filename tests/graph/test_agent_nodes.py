@@ -51,6 +51,10 @@ def _deps(*, model=None, registry=None):
             render_system_text=lambda: "SYSTEM"
         ),
         agent_prompt="AGENT",
+        settings=SimpleNamespace(
+            tool_result_max_tokens=1200,
+            token_chars_per_token=1.5,
+        ),
     )
 
 
@@ -295,3 +299,83 @@ async def test_agent_tools_renders_query_faq_evidence():
 
 def test_tool_registry_is_still_used():
     assert ToolRegistry is not None
+
+
+@pytest.mark.asyncio
+async def test_agent_tools_caps_big_json_result_to_valid_json():
+    class BigRegistry:
+        async def execute(self, name, arguments):
+            return ToolResult(
+                name=name,
+                ok=True,
+                content=json.dumps(
+                    {"items": ["x" * 5000]},
+                    ensure_ascii=False,
+                ),
+                error_code=None,
+                duration_ms=1.0,
+                attempts=1,
+            )
+
+    ai = AIMessage(
+        "",
+        tool_calls=[
+            {"name": "query_logistics", "args": {}, "id": "1"}
+        ],
+    )
+
+    out = await nodes.agent_tools(
+        {"messages": [ai], "conversation_id": 5},
+        deps=_deps(registry=BigRegistry()),
+    )
+
+    payload = json.loads(out["messages"][0].content)
+    assert payload["truncated"] is True
+    assert payload["tool"] == "query_logistics"
+
+
+@pytest.mark.asyncio
+async def test_agent_tools_parses_query_faq_before_capping():
+    class BigFaqRegistry:
+        async def execute(self, name, arguments):
+            return ToolResult(
+                name=name,
+                ok=True,
+                content=json.dumps(
+                    {
+                        "items": [
+                            {
+                                "n": 1,
+                                "chunk_id": 11,
+                                "section_path": "政策/退货",
+                                "question": "退货政策",
+                                "answer": "a" * 5000,
+                                "category": "退货",
+                                "source_doc": "returns.md",
+                                "score": 0.9,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                error_code=None,
+                duration_ms=1.0,
+                attempts=1,
+            )
+
+    ai = AIMessage(
+        "",
+        tool_calls=[
+            {"name": "query_faq", "args": {"keyword": "退货"}, "id": "1"}
+        ],
+    )
+
+    out = await nodes.agent_tools(
+        {"messages": [ai], "conversation_id": 5},
+        deps=_deps(registry=BigFaqRegistry()),
+    )
+
+    content = out["messages"][0].content
+    assert "[1]" in content
+    assert "[工具结果已截断]" in content
+    assert '"items"' not in content

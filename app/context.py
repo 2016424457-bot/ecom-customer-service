@@ -25,6 +25,7 @@ from langchain_core.messages.utils import (
 
 from app.config import Settings
 from app.errors import AppError
+from app.knowledge.evidence import render_evidence_block
 
 
 @dataclass(frozen=True)
@@ -594,3 +595,58 @@ def format_model_ctx(
             text = _tool_call_line(message)
         lines.append(f"[{role}] {text[:40]!r}")
     return "\n".join(lines)
+
+
+def cap_tool_content(
+    name: str,
+    content: str,
+    max_tokens: int,
+    chars_per_token: float,
+) -> str:
+    tokens = estimate_tokens(
+        [("human", content)], chars_per_token
+    )
+    if tokens <= max_tokens:
+        return content
+    try:
+        json.loads(content)
+    except (TypeError, ValueError):
+        pass
+    else:
+        return json.dumps(
+            {
+                "truncated": True,
+                "tool": name,
+                "approx_tokens": tokens,
+                "preview": content[:800],
+            },
+            ensure_ascii=False,
+        )
+    limit = int(max_tokens * chars_per_token)
+    cut = content[:limit]
+    newline = cut.rfind("\n")
+    if newline > 0:
+        cut = cut[:newline]
+    return cut + "\n[工具结果已截断]"
+
+
+def cap_evidence_block(
+    items: list[dict],
+    top_k: int,
+    tokens_per_item: int,
+    chars_per_token: float,
+) -> str:
+    limit = int(tokens_per_item * chars_per_token)
+    selected: list[dict] = []
+    for item in items:
+        try:
+            number = int(item.get("n", 0))
+        except (TypeError, ValueError):
+            continue
+        if number <= 0 or number > top_k:
+            continue
+        answer = item.get("answer") or ""
+        if limit > 0 and len(answer) > limit:
+            answer = answer[:limit] + "…"
+        selected.append({**item, "answer": answer})
+    return render_evidence_block(selected)
