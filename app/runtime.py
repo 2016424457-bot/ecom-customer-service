@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.config import Settings
+from app.context import compute_context_budget
 from app.db.repositories import (
     ChatRepository,
     FaithCaseRepository,
@@ -26,9 +27,11 @@ from app.llm import (
     build_intent_fast_model,
     build_intent_model,
     build_refund_judge_model,
+    build_summary_model,
 )
 from app.prompt_builder import PromptBuilder
 from app.sessions import ConversationLocks
+from app.summarizer import SummaryService
 
 
 @dataclass
@@ -52,6 +55,8 @@ class Runtime:
     evidence_checker: Any = None
     knowledge_repository: Any = None
     faith_repository: Any = None
+    context_budget: Any = None
+    summary_service: Any = None
 
     @asynccontextmanager
     async def repository_scope(self) -> AsyncIterator[Any]:
@@ -94,7 +99,7 @@ class Runtime:
 def build_runtime(settings: Settings) -> Runtime:
     """Assemble the runtime from settings; performs no network calls."""
     engine, session_factory = create_engine_and_session(settings)
-    return Runtime(
+    runtime = Runtime(
         settings=settings,
         prompt_builder=PromptBuilder(
             system_prompt_path=settings.system_prompt_path,
@@ -117,6 +122,13 @@ def build_runtime(settings: Settings) -> Runtime:
         session_factory=session_factory,
         engine=engine,
     )
+    runtime.context_budget = compute_context_budget(settings)
+    runtime.summary_service = SummaryService(
+        settings,
+        build_summary_model(settings),
+        runtime.repository_scope,
+    )
+    return runtime
 
 
 def get_runtime(request: Request) -> Runtime:

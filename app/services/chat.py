@@ -64,6 +64,8 @@ async def stream_chat(
     expansion_model: Any = None,
     refund_judge_model: Any = None,
     intent_fast_model: Any = None,
+    context_budget: Any = None,
+    summary_service: Any = None,
 ) -> AsyncIterator[Event]:
     """Run one graph turn and map its events to the existing SSE contract."""
     lock = locks.lock_for(_lock_key(session_id))
@@ -93,6 +95,8 @@ async def stream_chat(
                 expansion_model=expansion_model,
                 refund_judge_model=refund_judge_model,
                 intent_fast_model=intent_fast_model,
+                context_budget=context_budget,
+                summary_service=summary_service,
             )
             async for event, data in graph_runtime.stream_turn(
                 deps,

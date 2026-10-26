@@ -117,6 +117,12 @@ async def agent_endpoint(
                 intent_fast_model=getattr(
                     runtime, "intent_fast_model", None
                 ),
+                context_budget=getattr(
+                    runtime, "context_budget", None
+                ),
+                summary_service=getattr(
+                    runtime, "summary_service", None
+                ),
             )
             lock = runtime.locks.lock_for(str(conversation.id))
             async with lock:
@@ -178,6 +184,10 @@ async def chat_stream_endpoint(
                 runtime, "refund_judge_model", None
             ),
             intent_fast_model=getattr(runtime, "intent_fast_model", None),
+            context_budget=getattr(runtime, "context_budget", None),
+            summary_service=getattr(
+                runtime, "summary_service", None
+            ),
         ):
             yield ServerSentEvent(event=event, data=data)
 

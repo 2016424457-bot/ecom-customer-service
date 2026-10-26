@@ -19,6 +19,7 @@ class FakeRepository:
     def __init__(self) -> None:
         self.rows: list[tuple] = []
         self.low_confidence: list[dict] = []
+        self._next_id = 1
 
     async def get_conversation(self, conversation_id):
         return SimpleNamespace(id=conversation_id, user_id="u1")
@@ -27,7 +28,9 @@ class FakeRepository:
         self, conversation_id, role, content=None, **kwargs
     ):
         self.rows.append((conversation_id, role, content))
-        return 1
+        message_id = self._next_id
+        self._next_id += 1
+        return message_id
 
     async def insert_low_confidence_question(
         self, conversation_id, raw_question, source, reason
@@ -210,6 +213,9 @@ def _deps(
         refund_judge_model=judge or FakeJudgeModel(),
         refund_judge_prompt="JUDGE PROMPT",
         order_provider=_order_provider,
+        context_budget=SimpleNamespace(
+            layer1=100000, layer2=100000
+        ),
     )
 
 
@@ -294,7 +300,12 @@ async def test_knowledge_route_forces_retrieval_and_injects_evidence(
     assert done["route"] == "knowledge"
     assert done["citations"][0]["n"] == 1
     assert done["trace"]["forced_rag"] is True
-    assert "[1]" in model.calls[0][0].content
+    assert any(
+        getattr(message, "id", None) == "turn-ctx"
+        and "[1]" in message.content
+        for message in model.calls[0]
+    )
+    assert "[1]" not in model.calls[0][0].content
 
 
 @pytest.mark.asyncio

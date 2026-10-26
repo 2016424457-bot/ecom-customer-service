@@ -11,6 +11,7 @@ class FakeRepository:
     def __init__(self) -> None:
         self.rows: list[dict] = []
         self.commits = 0
+        self.layer1_updates: list[tuple] = []
 
     async def add_message(
         self, conversation_id, role, content=None, **kwargs
@@ -23,6 +24,11 @@ class FakeRepository:
             }
         )
         return 1
+
+    async def update_layer1_from(
+        self, conversation_id, msg_id
+    ) -> None:
+        self.layer1_updates.append((conversation_id, msg_id))
 
     async def commit(self) -> None:
         self.commits += 1
@@ -112,3 +118,20 @@ async def test_log_node_does_not_duplicate_agent_answer():
 
     assert "messages" not in out
     assert repository.rows[0]["content"] == "Agent 答复"
+
+
+@pytest.mark.asyncio
+async def test_log_node_persists_layer1_from():
+    repository = FakeRepository()
+    state = {
+        "conversation_id": 8,
+        "layer1_from_msg_id": 12,
+        "messages": [HumanMessage("hi"), AIMessage("答")],
+        "trace": {},
+    }
+
+    await nodes.log_node(
+        state, deps=SimpleNamespace(repository=repository)
+    )
+
+    assert repository.layer1_updates == [(8, 12)]

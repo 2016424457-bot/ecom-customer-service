@@ -1,4 +1,5 @@
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -54,6 +55,12 @@ def _deps(*, model=None, registry=None):
         settings=SimpleNamespace(
             tool_result_max_tokens=1200,
             token_chars_per_token=1.5,
+            layer2_assistant_chars=60,
+            layer2_tool_result_keep_tokens=120,
+            max_user_input_tokens=2000,
+        ),
+        context_budget=SimpleNamespace(
+            layer1=100000, layer2=100000
         ),
     )
 
@@ -68,8 +75,12 @@ def test_agent_messages_injects_evidence_on_knowledge():
     messages = nodes._agent_messages(state, _deps())
 
     assert isinstance(messages[0], SystemMessage)
-    assert "[1] 退货: 7天" in messages[0].content
-    assert "query_faq" in messages[0].content
+    assert messages[0].content == "SYSTEM\n\nAGENT"
+    assert any(
+        getattr(message, "id", None) == "turn-ctx"
+        and "[1] 退货: 7天" in message.content
+        for message in messages
+    )
 
 
 def test_agent_messages_omits_evidence_on_business():
@@ -79,7 +90,11 @@ def test_agent_messages_omits_evidence_on_business():
     )
 
     assert isinstance(messages[0], SystemMessage)
-    assert "已检索到的知识证据" not in messages[0].content
+    assert messages[0].content == "SYSTEM\n\nAGENT"
+    assert not any(
+        getattr(message, "id", None) == "turn-ctx"
+        for message in messages
+    )
 
 
 @pytest.mark.asyncio
@@ -379,3 +394,24 @@ async def test_agent_tools_parses_query_faq_before_capping():
     assert "[1]" in content
     assert "[工具结果已截断]" in content
     assert '"items"' not in content
+
+
+@pytest.mark.asyncio
+async def test_agent_llm_logs_model_ctx(caplog):
+    model = FakeModel(AIMessage("好的"))
+
+    with caplog.at_level(
+        logging.INFO, logger="app.graph.nodes"
+    ):
+        await nodes.agent_llm(
+            {
+                "messages": [HumanMessage("hi", id="db-1")],
+                "conversation_id": 7,
+                "steps": 0,
+                "tokens_used": 0,
+            },
+            deps=_deps(model=model),
+        )
+
+    assert "model_ctx" in caplog.text
+    assert "[human] 'hi'" in caplog.text

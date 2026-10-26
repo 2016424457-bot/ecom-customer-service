@@ -7,6 +7,10 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.config import Settings
+from app.context import (
+    compute_context_budget,
+    truncate_user_input,
+)
 from app.db.repositories import KnowledgeRepository
 from app.graph.build import build_graph
 from app.graph.coref import CorefRewriter
@@ -103,17 +107,22 @@ def _content_text(content: Any) -> str:
 
 async def _ensure_conversation(
     deps: GraphDeps, user_id: str, conversation_id: int | None
-) -> int:
+) -> tuple[int, str, int, int]:
     if conversation_id is None:
         conversation = await deps.repository.get_or_create_conversation(
             None, user_id
         )
         await deps.repository.commit()
-        return conversation.id
+        return conversation.id, "", 0, 0
     conversation = await deps.repository.get_conversation(conversation_id)
     if conversation is None:
         raise ConversationNotFound(conversation_id)
-    return conversation_id
+    return (
+        conversation_id,
+        getattr(conversation, "summary", None) or "",
+        getattr(conversation, "summary_upto_msg_id", 0) or 0,
+        getattr(conversation, "layer1_from_msg_id", 0) or 0,
+    )
 
 
 def build_deps(
@@ -131,6 +140,8 @@ def build_deps(
     expansion_model: Any = None,
     refund_judge_model: Any = None,
     intent_fast_model: Any = None,
+    context_budget: Any = None,
+    summary_service: Any = None,
 ) -> GraphDeps:
     """Assemble the per-turn dependency bag for the graph."""
     knowledge_repository = repository
@@ -199,14 +210,27 @@ def build_deps(
         refund_judge_model=refund_judge_model,
         refund_judge_prompt=refund_judge_prompt,
         order_provider=list_user_orders,
+        context_budget=context_budget
+        or compute_context_budget(settings),
+        summary_service=summary_service,
     )
 
 
 def _graph_input(
-    user_id: str, message: str, conversation_id: int
+    user_id: str,
+    message: str,
+    conversation_id: int,
+    msg_id: int,
+    summary: str,
+    summary_upto: int,
+    layer1_from: int,
 ) -> ConversationState:
     return {
-        "messages": [HumanMessage(content=message)],
+        "messages": [
+            HumanMessage(
+                content=message, id=f"db-{msg_id}"
+            )
+        ],
         "user_id": user_id,
         "conversation_id": conversation_id,
         "intent": "",
@@ -228,6 +252,11 @@ def _graph_input(
         "refund_mode": "",
         "refund_eligible": None,
         "pending_resume": False,
+        "summary": summary,
+        "summary_upto_msg_id": summary_upto,
+        "layer1_from_msg_id": layer1_from,
+        "history_ctx": "",
+        "evidence_prompt": "",
     }
 
 
@@ -250,6 +279,31 @@ def _tool_events(update: dict) -> list[dict]:
     return events
 
 
+def _message_id(row: Any) -> int:
+    if isinstance(row, int):
+        return row
+    return int(getattr(row, "id", 0) or 0)
+
+
+async def _maybe_schedule_summary(
+    deps: GraphDeps, conversation_id: int, values: dict
+) -> None:
+    service = getattr(deps, "summary_service", None)
+    if service is None:
+        return
+    try:
+        await service.maybe_schedule(
+            conversation_id,
+            values.get("messages", []) or [],
+            values.get("summary_upto_msg_id", 0) or 0,
+            values.get("layer1_from_msg_id", 0) or 0,
+        )
+    except Exception:
+        logger.exception(
+            "summary schedule failed conv=%s", conversation_id
+        )
+
+
 async def stream_turn(
     deps: GraphDeps,
     *,
@@ -258,9 +312,29 @@ async def stream_turn(
     message: str,
 ) -> AsyncIterator[tuple[str, dict]]:
     """Run one graph turn and map LangGraph streams to SSE-friendly events."""
-    cid = await _ensure_conversation(deps, user_id, conversation_id)
-    await deps.repository.add_message(cid, "user", content=message)
+    cid, summary, summary_upto, layer1_from = (
+        await _ensure_conversation(
+            deps, user_id, conversation_id
+        )
+    )
+    original_len = len(message)
+    message, truncated = truncate_user_input(
+        message,
+        getattr(deps.settings, "max_user_input_tokens", 2000),
+        getattr(deps.settings, "token_chars_per_token", 1.5),
+    )
+    if truncated:
+        logger.warning(
+            "user_input_truncated conv=%s from=%s to=%s",
+            cid,
+            original_len,
+            len(message),
+        )
+    row = await deps.repository.add_message(
+        cid, "user", content=message
+    )
     await deps.repository.commit()
+    msg_id = _message_id(row)
     yield ("session", {"session_id": str(cid)})
 
     graph = build_graph(get_checkpointer(), deps)
@@ -268,7 +342,15 @@ async def stream_turn(
     actions: list[dict] = []
 
     async for mode, chunk in graph.astream(
-        _graph_input(user_id, message, cid),
+        _graph_input(
+            user_id,
+            message,
+            cid,
+            msg_id,
+            summary,
+            summary_upto,
+            layer1_from,
+        ),
         config,
         stream_mode=["messages", "updates"],
     ):
@@ -321,6 +403,7 @@ async def stream_turn(
             or item.get("name") == "create_ticket"
         )
     ]
+    await _maybe_schedule_summary(deps, cid, values)
     yield (
         "done",
         {
@@ -355,11 +438,43 @@ async def run_turn(
     message: str,
 ) -> dict:
     """Non-streaming turn used by /api/agent and evaluations."""
-    cid = await _ensure_conversation(deps, user_id, conversation_id)
-    await deps.repository.add_message(cid, "user", content=message)
+    cid, summary, summary_upto, layer1_from = (
+        await _ensure_conversation(
+            deps, user_id, conversation_id
+        )
+    )
+    original_len = len(message)
+    message, truncated = truncate_user_input(
+        message,
+        getattr(deps.settings, "max_user_input_tokens", 2000),
+        getattr(deps.settings, "token_chars_per_token", 1.5),
+    )
+    if truncated:
+        logger.warning(
+            "user_input_truncated conv=%s from=%s to=%s",
+            cid,
+            original_len,
+            len(message),
+        )
+    row = await deps.repository.add_message(
+        cid, "user", content=message
+    )
     await deps.repository.commit()
+    msg_id = _message_id(row)
 
     graph = build_graph(get_checkpointer(), deps)
     config = {"configurable": {"thread_id": str(cid)}}
-    final = await graph.ainvoke(_graph_input(user_id, message, cid), config)
+    final = await graph.ainvoke(
+        _graph_input(
+            user_id,
+            message,
+            cid,
+            msg_id,
+            summary,
+            summary_upto,
+            layer1_from,
+        ),
+        config,
+    )
+    await _maybe_schedule_summary(deps, cid, final)
     return {"conversation_id": cid, "state": final}

@@ -29,3 +29,5 @@ class GraphDeps:
     refund_judge_model: Any
     refund_judge_prompt: str
     order_provider: Any
+    context_budget: Any
+    summary_service: Any | None = None

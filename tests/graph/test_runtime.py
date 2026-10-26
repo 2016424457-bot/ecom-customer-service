@@ -342,3 +342,61 @@ async def test_run_turn_raises_when_conversation_missing(monkeypatch):
             user_id="u1",
             message="hi",
         )
+
+
+@pytest.mark.asyncio
+async def test_graph_input_has_anchor_and_summary_fields(monkeypatch):
+    repository = FakeRepository()
+    graph = FakeGraph()
+    monkeypatch.setattr(runtime, "build_graph", lambda *a, **k: graph)
+
+    async for _ in runtime.stream_turn(
+        _deps(repository),
+        conversation_id=7,
+        user_id="u1",
+        message="hi",
+    ):
+        pass
+
+    inp = graph.received[0]
+    assert inp["messages"][0].id == "db-1"
+    assert inp["summary"] == ""
+    assert inp["summary_upto_msg_id"] == 0
+    assert inp["layer1_from_msg_id"] == 0
+    assert inp["history_ctx"] == ""
+    assert inp["evidence_prompt"] == ""
+
+
+def test_truncate_user_input_caps_tokens():
+    from app.context import truncate_user_input
+
+    text, changed = truncate_user_input(
+        "啊" * 5000, max_tokens=2000, chars_per_token=1.5
+    )
+
+    assert changed is True
+    assert len(text) < 5000
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_schedules_summary_after_reply(monkeypatch):
+    calls = []
+
+    class Svc:
+        async def maybe_schedule(
+            self, cid, messages, upto, layer1_from
+        ):
+            calls.append((cid, upto, layer1_from))
+
+    deps = _deps(FakeRepository())
+    deps.summary_service = Svc()
+    monkeypatch.setattr(
+        runtime, "build_graph", lambda *a, **k: FakeGraph()
+    )
+
+    async for _ in runtime.stream_turn(
+        deps, conversation_id=7, user_id="u1", message="hi"
+    ):
+        pass
+
+    assert calls and calls[0][0] == 7

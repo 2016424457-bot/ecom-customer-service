@@ -457,7 +457,22 @@ def _tail_lines(
 
 def build_agent_messages(state: dict, deps) -> list[BaseMessage]:
     settings = deps.settings
-    budget = deps.context_budget
+    chars_per_token = getattr(
+        settings, "token_chars_per_token", 1.5
+    )
+    assistant_chars = getattr(
+        settings, "layer2_assistant_chars", 60
+    )
+    tool_keep_tokens = getattr(
+        settings, "layer2_tool_result_keep_tokens", 120
+    )
+    budget = getattr(deps, "context_budget", None)
+    layer1_budget = (
+        getattr(budget, "layer1", 10**9) if budget else 10**9
+    )
+    layer2_budget = (
+        getattr(budget, "layer2", 10**9) if budget else 10**9
+    )
     layers = slice_layers(
         state.get("messages", []),
         state.get("summary_upto_msg_id") or 0,
@@ -465,24 +480,24 @@ def build_agent_messages(state: dict, deps) -> list[BaseMessage]:
     )
     middle = render_layer2(
         layers.middle,
-        assistant_chars=settings.layer2_assistant_chars,
-        tool_keep_tokens=settings.layer2_tool_result_keep_tokens,
-        chars_per_token=settings.token_chars_per_token,
+        assistant_chars=assistant_chars,
+        tool_keep_tokens=tool_keep_tokens,
+        chars_per_token=chars_per_token,
     )
     middle = _trim_turns_to_budget(
-        middle, budget.layer2, settings.token_chars_per_token
+        middle, layer2_budget, chars_per_token
     )
 
     recent = layers.recent
     if recent:
         recent = trim_messages(
             recent,
-            max_tokens=budget.layer1,
+            max_tokens=layer1_budget,
             strategy="last",
             start_on="human",
             token_counter=partial(
                 count_tokens_approximately,
-                chars_per_token=settings.token_chars_per_token,
+                chars_per_token=chars_per_token,
             ),
         )
     if not recent:
@@ -528,6 +543,9 @@ def build_agent_messages(state: dict, deps) -> list[BaseMessage]:
 
 def build_history_ctx(state: dict, deps) -> str:
     settings = deps.settings
+    chars_per_token = getattr(
+        settings, "token_chars_per_token", 1.5
+    )
     layers = slice_layers(
         state.get("messages", []),
         state.get("summary_upto_msg_id") or 0,
@@ -535,9 +553,13 @@ def build_history_ctx(state: dict, deps) -> str:
     )
     lines = render_layer2_text(
         layers.middle,
-        assistant_chars=settings.layer2_assistant_chars,
-        tool_keep_tokens=settings.layer2_tool_result_keep_tokens,
-        chars_per_token=settings.token_chars_per_token,
+        assistant_chars=getattr(
+            settings, "layer2_assistant_chars", 60
+        ),
+        tool_keep_tokens=getattr(
+            settings, "layer2_tool_result_keep_tokens", 120
+        ),
+        chars_per_token=chars_per_token,
     )
     for message in layers.recent_before_current:
         if isinstance(message, HumanMessage):
@@ -550,8 +572,8 @@ def build_history_ctx(state: dict, deps) -> str:
                 lines.append(("客服", text))
     trimmed = _tail_lines(
         lines,
-        settings.coref_history_messages,
-        settings.coref_max_history_chars,
+        getattr(settings, "coref_history_messages", 6),
+        getattr(settings, "coref_max_history_chars", 2000),
     )
     body = "\n".join(
         f"{label}: {text}" for label, text in trimmed
@@ -650,3 +672,17 @@ def cap_evidence_block(
             answer = answer[:limit] + "…"
         selected.append({**item, "answer": answer})
     return render_evidence_block(selected)
+
+
+def truncate_user_input(
+    text: str,
+    max_tokens: int,
+    chars_per_token: float,
+) -> tuple[str, bool]:
+    if not text:
+        return text, False
+    tokens = estimate_tokens([("human", text)], chars_per_token)
+    if tokens <= max_tokens:
+        return text, False
+    limit = max(1, int(max_tokens * chars_per_token))
+    return text[:limit], True

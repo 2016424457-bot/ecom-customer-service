@@ -10,11 +10,13 @@ from langchain_core.messages import (
 )
 
 from app.context import (
+    build_agent_messages,
     build_history_ctx,
     cap_evidence_block,
     cap_tool_content,
     degrade_layer1,
     estimate_tokens,
+    format_model_ctx,
     slice_layers,
 )
 from app.graph.refund import RefundVerdict, request_type_for
@@ -755,14 +757,7 @@ _KNOWLEDGE_EVIDENCE_HINT = (
 
 
 def _agent_messages(state: dict, deps: Any) -> list:
-    system = (
-        deps.prompt_builder.render_system_text()
-        + "\n\n"
-        + deps.agent_prompt
-    )
-    if state.get("route") == "knowledge" and state.get("evidence"):
-        system += _KNOWLEDGE_EVIDENCE_HINT + state["evidence"]
-    return [SystemMessage(content=system), *state.get("messages", [])]
+    return build_agent_messages(state, deps)
 
 
 def _total_tokens(message: AIMessage) -> int:
@@ -778,7 +773,17 @@ def _total_tokens(message: AIMessage) -> int:
 async def agent_llm(state: dict, *, deps: Any) -> dict:
     """ReAct reasoning step: one model call with tools bound."""
     model = deps.chat_model.bind_tools(deps.tools)
-    ai: AIMessage = await model.ainvoke(_agent_messages(state, deps))
+    messages = _agent_messages(state, deps)
+    logger.info(
+        format_model_ctx(
+            state,
+            messages,
+            getattr(
+                deps.settings, "token_chars_per_token", 1.5
+            ),
+        )
+    )
+    ai: AIMessage = await model.ainvoke(messages)
     steps = state.get("steps", 0) + 1
     tokens = state.get("tokens_used", 0) + _total_tokens(ai)
     if not ai.tool_calls and not _content_text(ai.content):
@@ -952,6 +957,11 @@ async def log_node(state: dict, *, deps: Any) -> dict:
         updates["messages"] = [AIMessage(content=answer)]
 
     if state.get("conversation_id"):
+        if state.get("layer1_from_msg_id"):
+            await deps.repository.update_layer1_from(
+                state["conversation_id"],
+                state["layer1_from_msg_id"],
+            )
         await deps.repository.add_message(
             state["conversation_id"], "assistant", content=answer or None
         )
