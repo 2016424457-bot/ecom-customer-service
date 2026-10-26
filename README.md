@@ -1,6 +1,12 @@
-# 电商智能客服（CH06：分流器正式版）
+# 电商智能客服（CH07：三层会话上下文管理）
 
-基于 FastAPI + LangChain + LangGraph + SQLAlchemy + MySQL + Milvus 的电商售后客服后端。CH06 把 CH05 里占位的分流环节做成正式版：一条确定性骨架里嵌入「指代消解 + 八类意图 + 退款/售后子流程 + 主力 Agent」：
+基于 FastAPI + LangChain + LangGraph + SQLAlchemy + MySQL + Milvus 的电商售后客服后端。CH07 在 CH06 分流骨架上加入三层会话上下文：最近轮次原文、中间轮次规则半压、更早轮次后台分段摘要；两个 DB 锚点只挪 id 不搬数据，调模型前现拼精简版，State/checkpoint 仍保存全量历史。
+
+- `app/context.py`：从模型窗口倒推 token 预算；层1 原文 + 层2 半压 + 层3 分段摘要；`layer1_from_msg_id` 降级只挪锚点；固定拼装顺序，梗概/证据合并挂在当前用户消息之后，绝不单独占 system。
+- `app/summarizer.py`：轮结束后按层2 token 用量触发后台摘要；`conversation_summaries` 一段一行只追加，`conversations.summary` 只是最近几段投影；任务失败只 log，不阻塞当轮回复。
+- `model_ctx` / `history_ctx` 写入 `log/app.log`：每次调模型前的摘要全文 + 滑窗逐条 + token 估算，coref/意图每轮共用同一份历史。
+- 会话侧栏：`GET /api/conversations`、`GET /api/conversations/{id}/messages`；前端支持多会话切换、历史回载、新对话保留旧会话。
+- 默认窗口下 20 轮不压缩；演示配置（窗口 18000）会看到 `layer1 degrade` → `summary trigger` → `summary done 第N段` 的完整级联。
 
 - `POST /api/chat/stream` / `POST /api/chat`：SSE 流式对话；骨架依次走 coref（指代消解 + Query 改写）→ 八类意图识别（含置信度）→ 8→6 分流 → 知识类强制检索/证据闸、退款/售后确定性子流程或主力 ReAct Agent → 日志。
 - `POST /api/agent`：非流式图入口，返回 answer、tool_calls、tool_results、suggested_actions，供评估。
@@ -11,6 +17,15 @@
 - `POST /api/chat/extract`：保留 CH01 的售后结构化抽取。
 - 聊天页在 assistant 气泡内显示工具轨迹徽章、引用角标、订单卡片、退款表单、转人工/建工单按钮。
 - 应用侧统一使用 OpenAI 兼容协议，可切换 DeepSeek / OpenAI / Ollama / Claude 兼容代理。
+
+## CH07 新增能力
+
+- **三层上下文**：层1 最近轮次原文；层2 用户原话不动、客服答复截 60 字、大块工具结果折叠成一行；层3 更早轮次的分段摘要。`summary_upto_msg_id` / `layer1_from_msg_id` 都是用户消息锚点，降级只挪 `layer1_from`。
+- **窗口倒推预算**：固定开销（system+工具、证据、摘要投影、输出预留、用户输入、安全余量）与 ReAct 峰值之后，历史预算 = min(想留轮数 × 稳态占用, 窗口匀出量)；层1 70%、层2 30%。演示配置精确得到 5650 / 3954 / 1695。
+- **后台分段摘要**：触发看层2 渲染后的 token，不数条数；`conversation_summaries` 只追加，旧段不合并；`conversations.summary` 是最近 3 段投影；任务重读锚点、失败不写坏。
+- **当前用户只出现一次**：拼装顺序是静态 system → 层2 → 层1 当前轮之前 → 当前用户 → `turn-ctx`（梗概+证据）→ 当前轮 AI/Tool；ReAct 第2步以第1步为严格前缀。
+- **可观测**：`model_ctx` 打摘要全文 + 滑窗逐条 + tokens；`history_ctx` 每轮打摘要行 + 滑窗；摘要任务 trigger/start/done/skip/failed 全留痕。
+- **多会话页面**：两个只读接口 + 聊天页侧栏；首问预览、`已摘要` 徽标、切换回载、窄屏隐藏；侧栏失败静默降级。
 
 ## CH06 新增能力
 
@@ -198,6 +213,44 @@ REFUND_JUDGE_TEMPERATURE=0.0
 REFUND_JUDGE_MAX_TOKENS=512
 ```
 
+CH07 还需要（默认窗口 128000；演示配置见 DDL 后）：
+
+```ini
+# CH07 上下文预算 / 摘要
+MODEL_CONTEXT_WINDOW=128000
+MAX_OUTPUT_TOKENS=2000
+MAX_USER_INPUT_TOKENS=2000
+TOOL_RESULT_MAX_TOKENS=1200
+# 喂给模型的证据条数预算；不改变 RERANK_TOP_N / RAG_TOP_K 的检索候选数
+RERANK_TOP_K=5
+SYSTEM_OVERHEAD_TOKENS=2000
+EVIDENCE_TOKENS_PER_ITEM=300
+SUMMARY_PROJECTION_TOKENS=650
+CONTEXT_SAFETY_RATIO=0.10
+CONTEXT_DESIRED_TURNS=40
+CONTEXT_TURN_STEADY_TOKENS=600
+TOKEN_CHARS_PER_TOKEN=1.5
+LAYER2_ASSISTANT_CHARS=60
+LAYER2_TOOL_RESULT_KEEP_TOKENS=120
+SUMMARY_MODEL=
+SUMMARY_PROMPT_PATH=app/prompts/summary_prompt.txt
+SUMMARY_TEMPERATURE=0.0
+SUMMARY_MAX_TOKENS=512
+SUMMARY_PROJECTION_SEGMENTS=3
+SUMMARY_TIMEOUT_SECONDS=30
+SUMMARY_MAX_RETRIES=0
+LOG_FILE=log/app.log
+```
+
+CH07 新增 `conversations` 三列与 `conversation_summaries` 表，两个 DDL 都要 apply：
+
+```bash
+mysql -h 127.0.0.1 -u root -p ecom_customer_service < sql/ch07-ddl.sql
+mysql -h 127.0.0.1 -u root -p ecom_customer_service < sql/ch07-layers.sql
+```
+
+`conversations.summary` 是投影，`conversation_summaries` 才是分段事实源；降级只改 `layer1_from_msg_id`，不搬消息。`log/app.log` 的父目录会自动创建。
+
 新增 `refund_requests` 表，已有数据库需再执行一次 CH06 迁移（可重复执行）：
 
 ```bash
@@ -317,6 +370,18 @@ curl -s -X POST http://127.0.0.1:8000/api/agent \
 ```
 
 返回 `conversation_id`、`answer`、`tool_calls`、`tool_results`、`suggested_actions`；适合评估脚本读取工具轨迹。
+
+### 会话侧栏（只读）
+
+```bash
+# 某用户的会话列表：新在前，带首问预览、已摘要标记、最后消息时间
+curl -s "http://127.0.0.1:8000/api/conversations?user_id=anonymous"
+
+# 某会话的 user/assistant 历史原文（404 表示会话不存在）
+curl -s "http://127.0.0.1:8000/api/conversations/7/messages"
+```
+
+`last_message_at` 取 `MAX(messages.created_at)`，后台摘要写 `conversations.summary` 不会把会话顶到前面。
 
 ### 建工单按钮
 
@@ -468,6 +533,25 @@ make eval-ch06
 - `eval-ch06-prompts`（`python -m scripts.eval_ch06 --prompts`）：回放 `evals/ch06_router_cases.jsonl` 的 22 个多轮用例（26 轮），逐轮打印 `PASS/FAIL`、`standalone`、`intent(confidence)`、`route`、`order_id`，汇总 coref 补全、意图、路由、订单号准确率。模型非确定性，脚本只测量不硬断言。
 - `eval-ch06`（`python -m scripts.eval_ch06 --e2e`）：验收 1 物流→退款→物流的指代补全与退款路由；验收 2 怪问题归「其他」且零工具；验收 3 退款轮的 standalone / 订单摘要 / 多路查询 / 证据诊断；验收 4 订单选择器→退款表单→真实提交并查 `refund_requests` 行；全部通过打印 `CH06 E2E ACCEPTANCE PASS`。验收 4 会真实写库。
 
+CH07 的上下文评估与验收：
+
+```bash
+# 摘要 prompt 标注样例（需上游 key；事实/无编造/寒暄/长度）
+make eval-ch07
+
+# 20+ 轮长对话冒烟（需服务运行；--long 用长消息触发演示预算级联）
+uv run python -m scripts.ch07_smoke --turns 30 --long
+
+# 演示配置起服务（窗口 18000：history=5650 / layer1=3954 / layer2=1695）
+MODEL_CONTEXT_WINDOW=18000 MAX_OUTPUT_TOKENS=2000 MAX_USER_INPUT_TOKENS=2000 \
+MAX_AGENT_STEPS=3 TOOL_RESULT_MAX_TOKENS=1200 RERANK_TOP_K=5 \
+uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
+```
+
+- `ch07_smoke.py` 前 3 轮埋订单 1001（猫爬架）、手机 13800138000、诉求「物流太慢/派送前电话」，最后问「最开始那个订单后来怎么说？」；`RESULT PASS` 要求答案含 `1001` 和物流/发货/电话类词。
+- 演示配置下 `log/app.log` 应出现 `layer1 degrade`、`summary trigger 层2 约 N token > 预算 M`、`summary start`、`summary done 第N段`；默认窗口 30 轮不应出现这三类压缩日志。
+- `grep model_ctx log/app.log`、`grep history_ctx log/app.log` 可直接看每轮实际发给模型的摘要、滑窗和 token 估算。
+
 脚本默认访问 `http://127.0.0.1:8000`，可用 `ECOM_BASE_URL` 环境变量覆盖。
 
 ## 已知限制
@@ -500,3 +584,10 @@ make eval-ch06
 - Prompt 中的业务信息（品牌名、服务时间）来自 `.env`，本章不接入订单/物流 API，无法核实真实订单状态。
 - `LOG_CONTENT=false` 默认不记录用户消息与模型回复全文；改为 `true` 会把全文写入日志，存在隐私风险。
 - 模型输出具有不确定性；评估脚本中的关键词检查只是底线，不能替代人工复核。
+- CH07 的摘要任务在应用进程内 `asyncio.create_task`：服务重启会丢在跑任务，但触发条件仍在，下一轮会重触发；`--workers 1` 约束不变。
+- 摘要输入是轮结束时的 State 快照（含工具消息），不是 MySQL `messages` 表；工具结果本来就不落库。
+- 锚点是用户消息 id；CH07 上线前的旧消息没有 `db-` 锚点，会全部落层1并靠 `trim_messages` 兜底，不会崩但也不参与摘要。
+- 本章不做语义检索捞历史、主题重要度留关键事实、跨会话长期记忆或用户画像；层2半压 + 分段摘要就是本章的完整方案。
+- `SUMMARY_MODEL` 留空复用主聊天模型；摘要 prompt 评估是 4 条标注样例，模型非确定性，数字是底线不是线上承诺。
+- `log/app.log` 会记录摘要全文与滑窗消息前 40 字；生产环境需按隐私要求控制访问与轮转。
+- 演示配置（`MODEL_CONTEXT_WINDOW=18000`）会主动触发降级/摘要；默认窗口 20+ 轮不应出现压缩日志。两者用途不同，不要拿演示配置当生产默认。
