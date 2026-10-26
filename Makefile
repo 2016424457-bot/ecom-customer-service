@@ -1,4 +1,4 @@
-.PHONY: kb-build kb-reset kb-recreate kb-mine smoke-rerank ch04-eval ch04-accept eval-ch05 eval-ch06-prompts eval-ch06
+.PHONY: kb-build kb-reset kb-recreate kb-mine smoke-rerank ch04-eval ch04-accept eval-ch05 eval-ch06-prompts eval-ch06 eval-ch07
 
 kb-build:
 	uv run python scripts/build_knowledge.py
@@ -31,3 +31,6 @@ eval-ch06-prompts:
 
 eval-ch06:
 	uv run python -m scripts.eval_ch06 --e2e
+
+eval-ch07:
+	uv run python -m scripts.eval_ch07
