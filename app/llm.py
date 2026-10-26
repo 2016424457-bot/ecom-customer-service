@@ -13,6 +13,7 @@ from app.knowledge.query_understanding import QueryRewrite
 from app.knowledge.schemas import QaExtraction
 from app.knowledge.self_check import EvidenceAssessment
 from app.schemas import AfterSalesExtraction
+from app.summarizer import SummaryResult
 
 
 def build_model_kwargs(
@@ -186,5 +187,22 @@ def build_judge_model(settings: Settings) -> Runnable:
     chat_model = ChatOpenAI(**kwargs)
     return chat_model.with_structured_output(
         FaithfulnessVerdict,
+        method=settings.structured_output_method,
+    )
+
+
+def build_summary_model(settings: Settings) -> Runnable:
+    """Create the structured-output runnable used by the summary task."""
+    kwargs = build_model_kwargs(
+        settings,
+        temperature=settings.summary_temperature,
+        max_tokens=settings.summary_max_tokens,
+    )
+    kwargs["model"] = settings.summary_model or settings.openai_model
+    kwargs["timeout"] = settings.summary_timeout_seconds
+    kwargs["max_retries"] = settings.summary_max_retries
+    chat_model = ChatOpenAI(**kwargs)
+    return chat_model.with_structured_output(
+        SummaryResult,
         method=settings.structured_output_method,
     )
