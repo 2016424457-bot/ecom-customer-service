@@ -5,8 +5,18 @@ network. Callers pass messages and settings in, and persist anchors
 themselves.
 """
 
+import json
 from dataclasses import dataclass
 from math import ceil
+from typing import Iterable
+
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+)
+from langchain_core.messages.utils import count_tokens_approximately
 
 from app.config import Settings
 from app.errors import AppError
@@ -147,3 +157,216 @@ def format_context_budget(budget: ContextBudget) -> str:
     if budget.warning:
         line += f" warning={budget.warning!r}"
     return line
+
+
+DB_ID_PREFIX = "db-"
+
+
+@dataclass(frozen=True)
+class LayerSlice:
+    summary: list[BaseMessage]
+    middle: list[BaseMessage]
+    recent: list[BaseMessage]
+    recent_before_current: list[BaseMessage]
+    current_turn: list[BaseMessage]
+
+
+def db_message_id(message: BaseMessage) -> int | None:
+    raw = getattr(message, "id", None)
+    if not isinstance(raw, str) or not raw.startswith(DB_ID_PREFIX):
+        return None
+    try:
+        return int(raw[len(DB_ID_PREFIX):])
+    except ValueError:
+        return None
+
+
+def estimate_tokens(
+    messages: Iterable[BaseMessage | tuple[str, str]],
+    chars_per_token: float,
+) -> int:
+    return int(
+        count_tokens_approximately(
+            messages,
+            chars_per_token=chars_per_token,
+            extra_tokens_per_message=0,
+        )
+    )
+
+
+def slice_layers(
+    messages: list[BaseMessage],
+    summary_upto_msg_id: int,
+    layer1_from_msg_id: int,
+) -> LayerSlice:
+    summary: list[BaseMessage] = []
+    middle: list[BaseMessage] = []
+    recent: list[BaseMessage] = []
+    anchor = 0
+    for message in messages:
+        message_id = db_message_id(message)
+        if isinstance(message, HumanMessage) and message_id is not None:
+            anchor = message_id
+        if anchor == 0:
+            recent.append(message)
+        elif anchor <= summary_upto_msg_id:
+            summary.append(message)
+        elif layer1_from_msg_id and anchor < layer1_from_msg_id:
+            middle.append(message)
+        else:
+            recent.append(message)
+
+    current_index = None
+    for index in range(len(recent) - 1, -1, -1):
+        if isinstance(recent[index], HumanMessage):
+            current_index = index
+            break
+    if current_index is None:
+        before_current = list(recent)
+        current_turn: list[BaseMessage] = []
+    else:
+        before_current = recent[:current_index]
+        current_turn = recent[current_index:]
+    return LayerSlice(
+        summary=summary,
+        middle=middle,
+        recent=recent,
+        recent_before_current=before_current,
+        current_turn=current_turn,
+    )
+
+
+def _content_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+        )
+    return ""
+
+
+def _truncate(text: str, limit: int) -> str:
+    if limit > 0 and len(text) > limit:
+        return text[:limit] + "…"
+    return text
+
+
+def _tool_call_line(message: AIMessage) -> str:
+    parts: list[str] = []
+    for call in message.tool_calls or []:
+        name = call.get("name") or "tool"
+        raw = json.dumps(
+            call.get("args") or {},
+            ensure_ascii=False,
+            default=str,
+        )
+        if len(raw) > 80:
+            raw = raw[:80] + "…"
+        parts.append(f"{name}({raw})")
+    return "[调用工具 " + ", ".join(parts) + "]"
+
+
+def render_layer2(
+    messages: list[BaseMessage],
+    *,
+    assistant_chars: int,
+    tool_keep_tokens: int,
+    chars_per_token: float,
+) -> list[BaseMessage]:
+    """Compress layer-2 content without breaking tool_call/tool pairs."""
+    rendered: list[BaseMessage] = []
+    for message in messages:
+        if isinstance(message, HumanMessage):
+            rendered.append(message)
+        elif isinstance(message, AIMessage):
+            if message.tool_calls:
+                update = {"content": _tool_call_line(message)}
+            else:
+                update = {
+                    "content": _truncate(
+                        _content_text(message.content),
+                        assistant_chars,
+                    )
+                }
+            rendered.append(message.model_copy(update=update))
+        elif isinstance(message, ToolMessage):
+            text = _content_text(message.content)
+            tokens = estimate_tokens(
+                [("human", text)], chars_per_token
+            )
+            if tokens > tool_keep_tokens:
+                name = getattr(message, "name", "") or "tool"
+                text = (
+                    f"[工具结果 {name}：约 {tokens} tokens，已折叠]"
+                )
+            rendered.append(
+                message.model_copy(update={"content": text})
+            )
+        else:
+            rendered.append(message)
+    return rendered
+
+
+def render_layer2_text(
+    messages: list[BaseMessage],
+    *,
+    assistant_chars: int,
+    tool_keep_tokens: int,
+    chars_per_token: float,
+) -> list[tuple[str, str]]:
+    lines: list[tuple[str, str]] = []
+    for message in messages:
+        if isinstance(message, HumanMessage):
+            lines.append(("用户", _content_text(message.content)))
+        elif isinstance(message, AIMessage):
+            if message.tool_calls:
+                lines.append(("客服", _tool_call_line(message)))
+            else:
+                lines.append(
+                    (
+                        "客服",
+                        _truncate(
+                            _content_text(message.content),
+                            assistant_chars,
+                        ),
+                    )
+                )
+    return lines
+
+
+def degrade_layer1(
+    messages: list[BaseMessage],
+    summary_upto: int,
+    layer1_from: int,
+    layer1_budget: int,
+    chars_per_token: float,
+) -> tuple[int, int]:
+    """Move ``layer1_from`` back one turn at a time until layer 1 fits.
+
+    Returns ``(new_anchor, old_anchor)``. The current turn is never
+    demoted: if only one turn is left, the loop stops.
+    """
+    old = layer1_from
+    current = layer1_from
+    while True:
+        sliced = slice_layers(messages, summary_upto, current)
+        if (
+            estimate_tokens(sliced.recent, chars_per_token)
+            <= layer1_budget
+        ):
+            break
+        anchors = [
+            message_id
+            for message in sliced.recent
+            if isinstance(message, HumanMessage)
+            for message_id in [db_message_id(message)]
+            if message_id is not None
+        ]
+        if len(anchors) <= 1:
+            break
+        current = anchors[1]
+    return current, old
