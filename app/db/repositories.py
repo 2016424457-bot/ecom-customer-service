@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
     Conversation,
+    ConversationSummary,
     Faq,
     FaithCase,
     KnowledgeChunk,
@@ -198,6 +199,140 @@ class ChatRepository:
         self.session.add(row)
         await self.session.flush()
         return row
+
+    async def get_context_anchors(
+        self, conversation_id: int
+    ) -> tuple[str | None, int | None, int | None]:
+        conversation = await self.session.get(
+            Conversation, conversation_id
+        )
+        if conversation is None:
+            return None, None, None
+        return (
+            conversation.summary,
+            conversation.summary_upto_msg_id,
+            conversation.layer1_from_msg_id,
+        )
+
+    async def update_layer1_from(
+        self, conversation_id: int, msg_id: int
+    ) -> None:
+        await self.session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(
+                layer1_from_msg_id=msg_id,
+                updated_at=Conversation.updated_at,
+            )
+        )
+        await self.session.flush()
+
+    async def next_summary_seq(self, conversation_id: int) -> int:
+        stmt = select(
+            func.coalesce(func.max(ConversationSummary.seq), 0) + 1
+        ).where(
+            ConversationSummary.conversation_id == conversation_id
+        )
+        return int((await self.session.execute(stmt)).scalar_one())
+
+    async def insert_summary(
+        self,
+        conversation_id: int,
+        seq: int,
+        from_msg_id: int,
+        upto_msg_id: int,
+        content: str,
+    ) -> ConversationSummary:
+        row = ConversationSummary(
+            conversation_id=conversation_id,
+            seq=seq,
+            from_msg_id=from_msg_id,
+            upto_msg_id=upto_msg_id,
+            content=content,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def list_recent_summaries(
+        self, conversation_id: int, limit: int
+    ) -> list[ConversationSummary]:
+        rows = await self.session.scalars(
+            select(ConversationSummary)
+            .where(
+                ConversationSummary.conversation_id
+                == conversation_id
+            )
+            .order_by(ConversationSummary.seq.desc())
+            .limit(limit)
+        )
+        return list(reversed(list(rows)))
+
+    async def update_conversation_summary(
+        self,
+        conversation_id: int,
+        projection: str,
+        upto_msg_id: int,
+    ) -> None:
+        await self.session.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(
+                summary=projection,
+                summary_upto_msg_id=upto_msg_id,
+                updated_at=Conversation.updated_at,
+            )
+        )
+        await self.session.flush()
+
+    async def list_conversations(
+        self, user_id: str, limit: int = 50
+    ) -> list[dict]:
+        first_user = (
+            select(Message.content)
+            .where(
+                Message.conversation_id == Conversation.id,
+                Message.role == "user",
+            )
+            .order_by(Message.id)
+            .limit(1)
+            .correlate(Conversation)
+            .scalar_subquery()
+        )
+        last_at = func.max(Message.created_at).label(
+            "last_message_at"
+        )
+        stmt = (
+            select(
+                Conversation,
+                first_user.label("preview"),
+                last_at,
+            )
+            .outerjoin(
+                Message,
+                Message.conversation_id == Conversation.id,
+            )
+            .where(Conversation.user_id == user_id)
+            .group_by(Conversation.id)
+            .order_by(
+                last_at.desc(), Conversation.id.desc()
+            )
+            .limit(limit)
+        )
+        rows = (await self.session.execute(stmt)).all()
+        return [
+            {
+                "id": conversation.id,
+                "status": conversation.status,
+                "preview": (preview or "")[:40],
+                "has_summary": bool(
+                    conversation.summary
+                    and conversation.summary.strip()
+                ),
+                "last_message_at": last_message_at,
+            }
+            for conversation, preview, last_message_at in rows
+        ]
 
 
 class KnowledgeRepository:

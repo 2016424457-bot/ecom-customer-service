@@ -13,11 +13,15 @@ def test_table_and_column_names_match_schema():
         "low_confidence_questions",
         "faith_cases",
         "refund_requests",
+        "conversation_summaries",
     }
     assert [c.name for c in Base.metadata.tables["conversations"].columns] == [
         "id",
         "user_id",
         "status",
+        "summary",
+        "summary_upto_msg_id",
+        "layer1_from_msg_id",
         "created_at",
         "updated_at",
     ]
@@ -128,5 +132,21 @@ def test_ch06_refund_requests_columns():
         "reason_label",
         "note",
         "status",
+        "created_at",
+    ]
+
+
+def test_ch07_conversation_summaries_columns():
+    assert "conversation_summaries" in Base.metadata.tables
+    assert [
+        c.name
+        for c in Base.metadata.tables["conversation_summaries"].columns
+    ] == [
+        "id",
+        "conversation_id",
+        "seq",
+        "from_msg_id",
+        "upto_msg_id",
+        "content",
         "created_at",
     ]

@@ -6,10 +6,12 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -35,6 +37,13 @@ class Conversation(Base):
         ),
         nullable=False,
         server_default="进行中",
+    )
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_upto_msg_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    layer1_from_msg_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
@@ -67,6 +76,30 @@ class Message(Base):
     tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class ConversationSummary(Base):
+    __tablename__ = "conversation_summaries"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    conversation_id: Mapped[int] = mapped_column(
+        BigInteger, nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    from_msg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    upto_msg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "seq", name="uk_conv_seq"),
+        Index(
+            "idx_conv_upto", "conversation_id", "upto_msg_id"
+        ),
     )
 
 

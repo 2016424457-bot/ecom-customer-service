@@ -232,3 +232,46 @@ async def test_duplicate_refund_number_leaves_session_usable(session):
 
     next_no = await repo.next_refund_no(date(2026, 10, 21))
     assert next_no != refund_no
+
+
+async def test_ch07_anchors_and_summary_round_trip(session):
+    repo = ChatRepository(session)
+    cid = (await repo.get_or_create_conversation(None, "u1")).id
+    assert await repo.get_context_anchors(cid) == (None, None, None)
+
+    await repo.update_layer1_from(cid, 12)
+    await repo.update_conversation_summary(cid, "用户问过订单1001", 8)
+    assert await repo.get_context_anchors(cid) == (
+        "用户问过订单1001",
+        8,
+        12,
+    )
+
+
+async def test_next_seq_and_recent_summaries(session):
+    repo = ChatRepository(session)
+    cid = (await repo.get_or_create_conversation(None, "u1")).id
+    assert await repo.next_summary_seq(cid) == 1
+    await repo.insert_summary(cid, 1, 1, 4, "第一段")
+    await repo.insert_summary(cid, 2, 5, 8, "第二段")
+    rows = await repo.list_recent_summaries(cid, 1)
+    assert [row.seq for row in rows] == [2]
+    assert await repo.next_summary_seq(cid) == 3
+
+
+async def test_list_conversations_preview_order_and_isolation(session):
+    repo = ChatRepository(session)
+    c1 = await repo.get_or_create_conversation(None, "u1")
+    c2 = await repo.get_or_create_conversation(None, "u1")
+    other = await repo.get_or_create_conversation(None, "u2")
+    await repo.add_message(c1.id, "user", content="第一个会话的首问")
+    await repo.add_message(c1.id, "assistant", content="答")
+    await repo.add_message(c2.id, "user", content="第二个会话的首问")
+    await repo.update_conversation_summary(c2.id, "有摘要", 1)
+
+    items = await repo.list_conversations("u1", limit=10)
+    assert [item["id"] for item in items] == [c2.id, c1.id]
+    assert items[0]["preview"] == "第二个会话的首问"
+    assert items[0]["has_summary"] is True
+    assert items[1]["has_summary"] is False
+    assert all(item["id"] != other.id for item in items)
