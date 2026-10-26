@@ -24,6 +24,9 @@ def _builder(deps: GraphDeps) -> StateGraph:
     builder = StateGraph(ConversationState)
 
     builder.add_node(
+        "prepare_context", partial(nodes.prepare_context, deps=deps)
+    )
+    builder.add_node(
         "coref_rewrite", partial(nodes.coref_rewrite, deps=deps)
     )
     builder.add_node("pending_check", partial(nodes.pending_check, deps=deps))
@@ -62,7 +65,8 @@ def _builder(deps: GraphDeps) -> StateGraph:
     )
     builder.add_node("log", partial(nodes.log_node, deps=deps))
 
-    builder.add_edge(START, "coref_rewrite")
+    builder.add_edge(START, "prepare_context")
+    builder.add_edge("prepare_context", "coref_rewrite")
     builder.add_edge("coref_rewrite", "pending_check")
     builder.add_conditional_edges(
         "pending_check",

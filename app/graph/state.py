@@ -39,3 +39,5 @@ class ConversationState(TypedDict, total=False):
     refund_eligible: bool | None
     pending: dict | None
     pending_resume: bool
+    history_ctx: str
+    evidence_prompt: str

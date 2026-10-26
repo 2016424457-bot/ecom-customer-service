@@ -12,6 +12,7 @@ def _deps():
 
 
 EXPECTED_NODES = {
+    "prepare_context",
     "coref_rewrite",
     "pending_check",
     "classify_intent",
@@ -71,7 +72,8 @@ def test_router_edges_are_wired():
     graph = builder.compile().get_graph()
     pairs = {(edge.source, edge.target) for edge in graph.edges}
 
-    assert ("__start__", "coref_rewrite") in pairs
+    assert ("__start__", "prepare_context") in pairs
+    assert ("prepare_context", "coref_rewrite") in pairs
     assert ("coref_rewrite", "pending_check") in pairs
     for pair in (
         ("pending_check", "refund_order_lookup"),

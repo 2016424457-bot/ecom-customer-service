@@ -9,7 +9,14 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
-from app.context import cap_evidence_block, cap_tool_content
+from app.context import (
+    build_history_ctx,
+    cap_evidence_block,
+    cap_tool_content,
+    degrade_layer1,
+    estimate_tokens,
+    slice_layers,
+)
 from app.graph.refund import RefundVerdict, request_type_for
 from app.graph.routing import (
     classify_refund_scope,
@@ -172,6 +179,59 @@ async def coref(state: dict, *, deps: Any) -> dict:
     return {"trace": merge_trace(state, coref="passthrough")}
 
 
+def prepare_context(state: dict, *, deps: Any) -> dict:
+    """Degrade layer 1 once per turn and build the shared history text."""
+    messages = state.get("messages", [])
+    old = state.get("layer1_from_msg_id") or 0
+    chars = getattr(
+        deps.settings, "token_chars_per_token", 1.5
+    )
+    summary_upto = state.get("summary_upto_msg_id") or 0
+    new = old
+    budget = getattr(deps, "context_budget", None)
+    if budget is not None:
+        before = estimate_tokens(
+            slice_layers(messages, summary_upto, old).recent,
+            chars,
+        )
+        new, _ = degrade_layer1(
+            messages,
+            summary_upto,
+            old,
+            budget.layer1,
+            chars,
+        )
+        if new != old:
+            logger.info(
+                "layer1 degrade conv=%s from=%s to=%s "
+                "layer1_tokens=%s budget=%s",
+                state.get("conversation_id"),
+                old,
+                new,
+                before,
+                budget.layer1,
+            )
+    history_ctx = build_history_ctx(
+        {**state, "layer1_from_msg_id": new}, deps
+    )
+    layers = slice_layers(messages, summary_upto, new)
+    logger.info(
+        "history_ctx conv=%s summary_upto=%s layer1_from=%s "
+        "messages=%s tokens=%s\nsummary=%r\n%s",
+        state.get("conversation_id"),
+        summary_upto,
+        new,
+        len(layers.middle) + len(layers.recent_before_current),
+        estimate_tokens([("human", history_ctx)], chars),
+        state.get("summary") or "",
+        history_ctx,
+    )
+    return {
+        "layer1_from_msg_id": new,
+        "history_ctx": history_ctx,
+    }
+
+
 async def coref_rewrite(state: dict, *, deps: Any) -> dict:
     """Resolve references and normalize the user message before routing.
 
@@ -180,8 +240,17 @@ async def coref_rewrite(state: dict, *, deps: Any) -> dict:
     the current question) so the prompt never shows it twice.
     """
     query = _user_text(state)
-    history = state.get("messages", [])[:-1]
-    result = await deps.coref_rewriter.resolve(query, history)
+    history_text = state.get("history_ctx") or ""
+    if history_text or not hasattr(
+        deps.coref_rewriter, "resolve"
+    ):
+        result = await deps.coref_rewriter.resolve_text(
+            query, history_text
+        )
+    else:
+        result = await deps.coref_rewriter.resolve(
+            query, state.get("messages", [])[:-1]
+        )
     return {
         "standalone_query": result.standalone_query,
         "order_id": result.order_id,

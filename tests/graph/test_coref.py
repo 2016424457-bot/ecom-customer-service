@@ -76,3 +76,33 @@ async def test_resolve_skips_model_for_pure_greeting(tmp_path):
     result = await rewriter.resolve("你好", [])
     assert result.standalone_query == "你好"
     assert model.calls == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_text_sends_history_text_and_current_query(
+    tmp_path,
+):
+    model = FakeModel(
+        CorefResult(standalone_query="订单1001能退吗", order_id="1001")
+    )
+    rewriter = _rewriter(model, tmp_path)
+
+    result = await rewriter.resolve_text(
+        "这个能退吗", "用户:订单1001的物流\n客服:已签收"
+    )
+
+    assert result.order_id == "1001"
+    human = model.calls[0][-1].content
+    assert "用户:订单1001的物流" in human
+    assert "当前用户消息：这个能退吗" in human
+
+
+@pytest.mark.asyncio
+async def test_resolve_text_skips_model_for_greeting(tmp_path):
+    model = FakeModel(error=AssertionError("must not call"))
+    rewriter = _rewriter(model, tmp_path)
+
+    result = await rewriter.resolve_text("你好", "")
+
+    assert result.standalone_query == "你好"
+    assert model.calls == []

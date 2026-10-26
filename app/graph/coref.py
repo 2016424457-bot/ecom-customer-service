@@ -82,7 +82,18 @@ class CorefRewriter:
     async def resolve(
         self, query: str, history: list[BaseMessage]
     ) -> CorefResult:
-        """Rewrite ``query`` into a standalone question using ``history``.
+        """Rewrite ``query`` using the recent ``history`` messages."""
+        return await self.resolve_text(
+            query,
+            format_history(
+                history, self._max_messages, self._max_chars
+            ),
+        )
+
+    async def resolve_text(
+        self, query: str, history_text: str
+    ) -> CorefResult:
+        """Rewrite ``query`` using already-rendered history text.
 
         Returns the original query on model errors or empty output, and
         skips the model entirely for pure greetings.
@@ -92,8 +103,11 @@ class CorefRewriter:
             return CorefResult(standalone_query="", order_id=None)
         if CHITCHAT_RE.match(text):
             return CorefResult(standalone_query=text, order_id=None)
-        human = format_history(history, self._max_messages, self._max_chars)
-        human += f"\n当前用户消息：{text}"
+        human = (history_text or "").strip()
+        if human:
+            human += f"\n当前用户消息：{text}"
+        else:
+            human = f"当前用户消息：{text}"
         try:
             result = await self._model.ainvoke(
                 [

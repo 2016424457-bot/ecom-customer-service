@@ -107,6 +107,13 @@ class FakeCoref:
             order_id=self.order_id,
         )
 
+    async def resolve_text(self, query, history_text):
+        self.calls.append((query, history_text))
+        return CorefResult(
+            standalone_query=self.standalone_query or query,
+            order_id=self.order_id,
+        )
+
 
 class FakeExpander:
     def __init__(self, queries=None) -> None:
