@@ -208,3 +208,28 @@ class FaithCaseUpdate(BaseModel):
 
     status: Literal["未解决", "已解决", "无需解决"]
     resolution: str | None = Field(default=None, max_length=300)
+
+
+class ConversationListItem(BaseModel):
+    id: int
+    status: str
+    preview: str
+    has_summary: bool
+    last_message_at: datetime | None = None
+
+
+class ConversationListResponse(BaseModel):
+    items: list[ConversationListItem] = Field(default_factory=list)
+
+
+class ConversationMessageItem(BaseModel):
+    id: int
+    role: str
+    content: str
+    created_at: datetime
+
+
+class ConversationMessagesResponse(BaseModel):
+    items: list[ConversationMessageItem] = Field(
+        default_factory=list
+    )
