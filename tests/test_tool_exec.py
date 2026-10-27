@@ -35,7 +35,7 @@ class FlakyTool:
         self.calls += 1
         await asyncio.sleep(0)
         if self.calls <= self.fail_times:
-            raise RuntimeError("transient")
+            raise ConnectionError("transient")
         return {"ok": True}
 
 
@@ -56,8 +56,9 @@ async def test_validation_error_not_retried():
     result = await registry.execute("needs_int", {"value": "not-an-int"})
 
     assert result.ok is False
-    assert result.error_code == "tool_validation_error"
-    assert result.attempts == 1
+    assert result.error_code == "invalid_arguments"
+    assert result.status == "校验拦下"
+    assert result.attempts == 0
 
 
 async def test_timeout_retries_then_fails():
@@ -67,7 +68,7 @@ async def test_timeout_retries_then_fails():
     result = await registry.execute("slow", {})
 
     assert result.ok is False
-    assert result.error_code == "tool_timeout"
+    assert result.error_code == "timeout"
     assert result.attempts == 2
 
 
@@ -94,7 +95,7 @@ async def test_retry_disabled_tool_attempts_once():
     result = await registry.execute("create_ticket", {})
 
     assert result.ok is False
-    assert result.error_code == "tool_timeout"
+    assert result.error_code == "timeout"
     assert result.attempts == 1
 
 
@@ -118,4 +119,4 @@ async def test_timeout_override_uses_per_tool_value():
     assert (await registry.execute("query_faq", {})).ok is True
     assert (
         await registry.execute("other", {})
-    ).error_code == "tool_timeout"
+    ).error_code == "timeout"
