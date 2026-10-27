@@ -1,4 +1,4 @@
-.PHONY: kb-build kb-reset kb-recreate kb-mine smoke-rerank ch04-eval ch04-accept eval-ch05 eval-ch06-prompts eval-ch06 eval-ch07
+.PHONY: kb-build kb-reset kb-recreate kb-mine smoke-rerank ch04-eval ch04-accept eval-ch05 eval-ch06-prompts eval-ch06 eval-ch07 mcp-logistics mcp-aftersales
 
 kb-build:
 	uv run python scripts/build_knowledge.py
@@ -34,3 +34,9 @@ eval-ch06:
 
 eval-ch07:
 	uv run python -m scripts.eval_ch07
+
+mcp-logistics:
+	uv run python -m mcp_servers.logistics_server
+
+mcp-aftersales:
+	uv run python -m mcp_servers.aftersales_server
