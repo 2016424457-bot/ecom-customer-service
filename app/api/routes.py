@@ -100,7 +100,7 @@ async def agent_endpoint(
                 )
                 await repository.commit()
 
-            deps = graph_runtime.build_deps(
+            deps = await graph_runtime.build_deps(
                 settings=runtime.settings,
                 chat_model=runtime.chat_model,
                 intent_model=runtime.intent_model,
@@ -123,6 +123,8 @@ async def agent_endpoint(
                 summary_service=getattr(
                     runtime, "summary_service", None
                 ),
+                mcp_provider=getattr(runtime, "mcp_provider", None),
+                audit_writer=getattr(runtime, "audit_writer", None),
             )
             lock = runtime.locks.lock_for(str(conversation.id))
             async with lock:
@@ -188,6 +190,8 @@ async def chat_stream_endpoint(
             summary_service=getattr(
                 runtime, "summary_service", None
             ),
+            mcp_provider=getattr(runtime, "mcp_provider", None),
+            audit_writer=getattr(runtime, "audit_writer", None),
         ):
             yield ServerSentEvent(event=event, data=data)
 

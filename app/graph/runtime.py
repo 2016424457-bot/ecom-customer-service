@@ -23,6 +23,7 @@ from app.knowledge.search import search_knowledge_result
 from app.services.orders import list_user_orders
 from app.services.tool_exec import ToolRegistry
 from app.tools import build_builtin_specs
+from app.tools.registry import ensure_plugins_loaded, merge_specs
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,7 @@ async def _ensure_conversation(
     )
 
 
-def build_deps(
+async def build_deps(
     *,
     settings: Settings,
     chat_model: Any,
@@ -142,8 +143,15 @@ def build_deps(
     intent_fast_model: Any = None,
     context_budget: Any = None,
     summary_service: Any = None,
+    mcp_provider: Any = None,
+    audit_writer: Any = None,
 ) -> GraphDeps:
     """Assemble the per-turn dependency bag for the graph."""
+    ensure_plugins_loaded(
+        getattr(
+            settings, "tool_plugin_dir", Path("app/tools/plugins")
+        )
+    )
     knowledge_repository = repository
     if not hasattr(repository, "get_chunks_by_ids"):
         session = getattr(repository, "session", None)
@@ -165,9 +173,12 @@ def build_deps(
             settings, "ticket_create_delay_seconds", 0.0
         ),
     )
+    if mcp_provider is not None:
+        specs = merge_specs(specs, await mcp_provider.get_specs())
     registry = ToolRegistry(
         specs,
         conversation_id=conversation_id,
+        audit_writer=audit_writer,
         timeout_seconds=settings.tool_timeout_seconds,
         max_retries=settings.tool_max_retries,
         retry_disabled=frozenset({"create_ticket", "query_faq"}),

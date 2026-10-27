@@ -30,8 +30,11 @@ from app.llm import (
     build_summary_model,
 )
 from app.prompt_builder import PromptBuilder
+from app.services.audit import ToolAuditWriter
+from app.services.mcp_tools import McpToolProvider
 from app.sessions import ConversationLocks
 from app.summarizer import SummaryService
+from app.tools.registry import ensure_plugins_loaded
 
 
 @dataclass
@@ -57,6 +60,8 @@ class Runtime:
     faith_repository: Any = None
     context_budget: Any = None
     summary_service: Any = None
+    mcp_provider: Any = None
+    audit_writer: Any = None
 
     @asynccontextmanager
     async def repository_scope(self) -> AsyncIterator[Any]:
@@ -92,13 +97,52 @@ class Runtime:
             yield FaithCaseRepository(session)
 
     async def aclose(self) -> None:
+        if self.mcp_provider is not None:
+            close = getattr(self.mcp_provider, "aclose", None)
+            if close is not None:
+                await close()
         if self.engine is not None:
             await self.engine.dispose()
 
 
+def _parse_csv(value: str) -> set[str]:
+    return {
+        item.strip()
+        for item in (value or "").split(",")
+        if item.strip()
+    }
+
+
+def build_mcp_connections(settings: Settings) -> dict[str, dict]:
+    """Connections for the two business MCP servers.
+
+    The HTTP timeout is intentionally higher than TOOL_TIMEOUT_SECONDS so the
+    execution engine's timeout wins and the audit status stays deterministic.
+    """
+    return {
+        "logistics": {
+            "transport": "streamable_http",
+            "url": settings.mcp_logistics_url,
+            "timeout": settings.mcp_request_timeout_seconds,
+        },
+        "aftersales": {
+            "transport": "streamable_http",
+            "url": settings.mcp_aftersales_url,
+            "timeout": settings.mcp_request_timeout_seconds,
+        },
+    }
+
+
 def build_runtime(settings: Settings) -> Runtime:
     """Assemble the runtime from settings; performs no network calls."""
+    ensure_plugins_loaded(settings.tool_plugin_dir)
     engine, session_factory = create_engine_and_session(settings)
+    mcp_provider = McpToolProvider(
+        build_mcp_connections(settings),
+        read_only_servers=_parse_csv(settings.mcp_read_only_servers),
+        write_tools=_parse_csv(settings.mcp_write_tools),
+        enabled=settings.mcp_enabled,
+    )
     runtime = Runtime(
         settings=settings,
         prompt_builder=PromptBuilder(
@@ -121,6 +165,11 @@ def build_runtime(settings: Settings) -> Runtime:
         locks=ConversationLocks(settings.max_sessions),
         session_factory=session_factory,
         engine=engine,
+        mcp_provider=mcp_provider,
+        audit_writer=ToolAuditWriter(
+            session_factory,
+            max_chars=settings.tool_audit_result_max_chars,
+        ),
     )
     runtime.context_budget = compute_context_budget(settings)
     runtime.summary_service = SummaryService(

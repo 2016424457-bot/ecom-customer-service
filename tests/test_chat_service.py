@@ -7,6 +7,10 @@ from app.config import Settings
 from app.graph import runtime as graph_runtime
 from app.prompt_builder import PromptBuilder
 from app.services.chat import stream_chat
+
+
+async def _fake_build_deps(**kwargs):
+    return object()
 from app.sessions import ConversationLocks
 
 
@@ -76,7 +80,7 @@ async def test_stream_chat_delegates_to_graph(
     repository = FakeRepository()
     captured: dict = {}
 
-    def fake_build_deps(**kwargs):
+    async def fake_build_deps(**kwargs):
         captured.update(kwargs)
         return object()
 
@@ -118,7 +122,7 @@ async def test_stream_chat_maps_upstream_error(
         raise RuntimeError("boom")
         yield  # pragma: no cover
 
-    monkeypatch.setattr(graph_runtime, "build_deps", lambda **k: object())
+    monkeypatch.setattr(graph_runtime, "build_deps", _fake_build_deps)
     monkeypatch.setattr(graph_runtime, "stream_turn", boom)
 
     events = await _collect(
@@ -141,7 +145,7 @@ async def test_stream_chat_maps_conversation_not_found(
         raise graph_runtime.ConversationNotFound(1)
         yield  # pragma: no cover
 
-    monkeypatch.setattr(graph_runtime, "build_deps", lambda **k: object())
+    monkeypatch.setattr(graph_runtime, "build_deps", _fake_build_deps)
     monkeypatch.setattr(graph_runtime, "stream_turn", missing)
 
     events = await _collect(
@@ -158,7 +162,7 @@ async def test_stream_chat_maps_conversation_not_found(
 async def test_stream_chat_yields_context_budget_error(monkeypatch):
     from app.context import ContextBudgetError
 
-    def boom(**kwargs):
+    async def boom(**kwargs):
         raise ContextBudgetError("上下文预算不足")
 
     monkeypatch.setattr(graph_runtime, "build_deps", boom)

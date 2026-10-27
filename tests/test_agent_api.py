@@ -11,6 +11,10 @@ from app.schemas import AgentRequest
 from app.sessions import ConversationLocks
 
 
+async def _fake_build_deps(**kwargs):
+    return object()
+
+
 class FakeRepository:
     def __init__(self, *, exists: bool = True) -> None:
         self.exists = exists
@@ -87,7 +91,7 @@ async def test_agent_endpoint_returns_tool_views(monkeypatch):
         }
 
     monkeypatch.setattr(
-        routes.graph_runtime, "build_deps", lambda **kwargs: object()
+        routes.graph_runtime, "build_deps", _fake_build_deps
     )
     monkeypatch.setattr(routes.graph_runtime, "run_turn", fake_run)
     locks = RecordingLocks()
@@ -126,7 +130,7 @@ async def test_agent_endpoint_upstream_error_502(monkeypatch):
         raise RuntimeError("upstream down")
 
     monkeypatch.setattr(
-        routes.graph_runtime, "build_deps", lambda **kwargs: object()
+        routes.graph_runtime, "build_deps", _fake_build_deps
     )
     monkeypatch.setattr(routes.graph_runtime, "run_turn", boom)
 
@@ -147,7 +151,7 @@ async def test_agent_endpoint_database_error_503(monkeypatch):
         raise SQLAlchemyError("db down")
 
     monkeypatch.setattr(
-        routes.graph_runtime, "build_deps", lambda **kwargs: object()
+        routes.graph_runtime, "build_deps", _fake_build_deps
     )
     monkeypatch.setattr(routes.graph_runtime, "run_turn", boom)
 
