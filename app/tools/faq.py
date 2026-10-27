@@ -1,6 +1,7 @@
-from typing import Awaitable, Callable
+from typing import Annotated, Awaitable, Callable
 
 from langchain_core.tools import BaseTool, tool
+from pydantic import Field
 
 from app.knowledge.evidence import prompt_order
 from app.knowledge.types import RetrievalResult
@@ -11,7 +12,7 @@ FaqSearch = Callable[..., Awaitable[RetrievalResult]]
 def build_faq_tool(search_fn: FaqSearch) -> BaseTool:
     @tool("query_faq", parse_docstring=True)
     async def query_faq(
-        keyword: str,
+        keyword: Annotated[str, Field(min_length=1)],
         category: str | None = None,
         content_type: str | None = None,
     ) -> dict:

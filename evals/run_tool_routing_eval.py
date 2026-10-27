@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.config import Settings
 from app.llm import build_chat_model
 from app.prompt_builder import PromptBuilder
-from app.tools import build_tools
+from app.tools import build_builtin_specs
 
 CASES_PATH = Path("evals/tool_routing_cases.json")
 MIN_PASSED = 5
@@ -80,11 +80,12 @@ async def main() -> int:
     async def fake_faq_search(keyword: str):
         return []
 
-    tools = build_tools(
-        DummyRepository(),
+    specs = build_builtin_specs(
+        repository=DummyRepository(),
         conversation_id=1,
         faq_search=fake_faq_search,
     )
+    tools = [spec.tool for spec in specs]
     model = build_chat_model(settings).bind_tools(tools)
     cases = json.loads(CASES_PATH.read_text(encoding="utf-8"))
 

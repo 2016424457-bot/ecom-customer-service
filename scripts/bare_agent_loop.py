@@ -25,7 +25,7 @@ from app.config import Settings
 from app.knowledge.types import RetrievalResult
 from app.llm import build_chat_model
 from app.services.tool_exec import ToolRegistry
-from app.tools import build_tools
+from app.tools import build_builtin_specs
 
 BARE_AGENT_SYSTEM = """你是电商售后客服。需要订单、物流、商品或政策信息时调用工具，不要猜。
 用户只给订单号问物流时，先查订单拿到 tracking_no，再查物流。
@@ -61,6 +61,9 @@ class DemoRepository:
     async def set_conversation_status(
         self, conversation_id: int, status: str
     ) -> None:
+        return None
+
+    async def commit(self) -> None:
         return None
 
 
@@ -132,13 +135,13 @@ async def main() -> int:
     settings = Settings()
     model = build_chat_model(settings)
     repository = DemoRepository()
-    tools = build_tools(
-        repository,
+    specs = build_builtin_specs(
+        repository=repository,
         conversation_id=0,
         faq_search=demo_faq_search,
     )
     registry = ToolRegistry(
-        tools,
+        specs,
         timeout_seconds=settings.tool_timeout_seconds,
         max_retries=settings.tool_max_retries,
         retry_disabled=frozenset({"create_ticket", "query_faq"}),
@@ -146,6 +149,7 @@ async def main() -> int:
             "query_faq": settings.faq_tool_timeout_seconds
         },
     )
+    tools = registry.tools
 
     print("问题:", query)
     answer = await run_bare_agent(

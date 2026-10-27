@@ -1,14 +1,21 @@
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
+from langchain_core.tools import tool
 from sqlalchemy.exc import IntegrityError
 
-from app.knowledge.types import KnowledgeHit
-from app.tools import build_tools
-from app.tools.faq import build_faq_tool
-from app.tools.logistics import query_logistics
+from app.knowledge.types import KnowledgeHit, RetrievalResult
+from app.services.tool_exec import ToolRegistry
+from app.tools import build_builtin_specs, build_core_specs
+from app.tools.formatters import FORMATTERS
 from app.tools.order import query_order
 from app.tools.product import query_product
+from app.tools.registry import (
+    register_builtin,
+    reset_builtin_plugins,
+    spec_from_tool,
+)
 from app.tools.ticket import build_ticket_tool
 
 
@@ -27,6 +34,7 @@ class FakeRepository:
         self.ticket_numbers = ["T20261021001", "T20261021002"]
         self.ticket_seq = 0
         self.fail_first_ticket = False
+        self.commits = 0
 
     async def next_ticket_no(self, day) -> str:
         index = min(self.ticket_seq, len(self.ticket_numbers) - 1)
@@ -43,6 +51,9 @@ class FakeRepository:
         self.tickets.append(ticket)
         return ticket
 
+    async def commit(self) -> None:
+        self.commits += 1
+
     async def set_conversation_status(
         self, conversation_id: int, status: str
     ) -> None:
@@ -54,24 +65,82 @@ def fake_repo() -> FakeRepository:
     return FakeRepository()
 
 
-async def test_build_tools_returns_five_expected_names(fake_repo):
-    async def fake_search(keyword: str):
-        return []
+async def fake_search(keyword, category=None, content_type=None):
+    return RetrievalResult(
+        strategy="hybrid_rerank",
+        rewritten_query=keyword,
+        reranked=False,
+        hits=[],
+    )
 
-    names = [
-        tool.name
-        for tool in build_tools(
-            fake_repo, conversation_id=1, faq_search=fake_search
-        )
-    ]
 
-    assert names == [
+@pytest.fixture(autouse=True)
+def _reset_plugins():
+    reset_builtin_plugins()
+    yield
+    reset_builtin_plugins()
+
+
+def test_build_core_specs_has_no_logistics(fake_repo):
+    specs = build_core_specs(
+        repository=fake_repo,
+        conversation_id=1,
+        faq_search=fake_search,
+    )
+
+    assert [spec.name for spec in specs] == [
         "query_order",
         "query_product",
-        "query_logistics",
         "query_faq",
         "create_ticket",
     ]
+
+
+def test_core_schemas_have_constraints(fake_repo):
+    specs = {
+        spec.name: spec
+        for spec in build_core_specs(
+            repository=fake_repo,
+            conversation_id=1,
+            faq_search=fake_search,
+        )
+    }
+
+    order_id = specs["query_order"].input_schema["properties"]["order_id"]
+    assert order_id["pattern"] == r"^[A-Za-z0-9-]{4,32}$"
+    assert specs["query_order"].read_only is True
+    assert specs["query_product"].read_only is True
+    assert specs["query_faq"].read_only is True
+    assert specs["create_ticket"].read_only is False
+    ticket = specs["create_ticket"].input_schema["properties"]
+    assert ticket["ticket_type"]["enum"] == ["售后", "投诉", "咨询"]
+    assert ticket["description"]["minLength"] == 2
+    assert ticket["description"]["maxLength"] == 1000
+
+
+def test_builtin_logistics_file_removed():
+    assert not Path("app/tools/logistics.py").exists()
+
+
+def test_plugin_tool_is_included(fake_repo):
+    @tool("plugin_demo")
+    def plugin_demo(city: str) -> dict:
+        """Demo plugin.
+
+        Args:
+            city: city name
+        """
+        return {"city": city}
+
+    register_builtin(plugin_demo)
+
+    specs = build_builtin_specs(
+        repository=fake_repo,
+        conversation_id=1,
+        faq_search=fake_search,
+    )
+
+    assert "plugin_demo" in [spec.name for spec in specs]
 
 
 async def test_query_order_shape():
@@ -86,12 +155,16 @@ async def test_query_order_shape():
     assert len(result["tracking_no"]) == 14
 
 
-async def test_query_order_invalid_id_returns_error():
-    result = await query_order.ainvoke({"order_id": "中文"})
+async def test_query_order_invalid_id_is_validation_error():
+    registry = ToolRegistry(
+        [spec_from_tool(query_order, source="builtin")],
+        timeout_seconds=1,
+    )
 
-    assert result["error"]["code"] == "order_not_found"
-    assert "中文" in result["error"]["message"]
-    assert "items" not in result
+    result = await registry.execute("query_order", {"order_id": "中文"})
+
+    assert result.error_code == "invalid_arguments"
+    assert result.status == "校验拦下"
 
 
 async def test_query_product_shape():
@@ -103,22 +176,7 @@ async def test_query_product_shape():
     assert isinstance(result["available"], bool)
 
 
-async def test_query_logistics_shape():
-    result = await query_logistics.ainvoke(
-        {"tracking_no": "SF123456789012"}
-    )
-
-    assert result["tracking_no"] == "SF123456789012"
-    assert result["status"] in {"运输中", "派送中", "已签收"}
-    assert result["latest_event"]
-    assert result == await query_logistics.ainvoke(
-        {"tracking_no": "SF123456789012"}
-    )
-
-
-async def test_query_faq_returns_ranked_items_and_retrieval_meta():
-    from app.knowledge.types import RetrievalResult
-
+async def test_query_faq_formatter_drops_internal_fields():
     hits = [
         KnowledgeHit(
             id=11,
@@ -129,20 +187,10 @@ async def test_query_faq_returns_ranked_items_and_retrieval_meta():
             section_path="退货与退款政策 / 退货运费与邮费",
             content_type="policy",
             source_doc="returns-policy.md",
-        ),
-        KnowledgeHit(
-            id=12,
-            category="运费",
-            questions="退货运费谁出？",
-            answer="质量问题商家承担。",
-            score=0.88,
-            section_path="退货与退款政策 / 退货运费与邮费",
-            content_type="policy",
-            source_doc="returns-policy.md",
-        ),
+        )
     ]
 
-    async def fake_search(keyword, category=None, content_type=None):
+    async def search(keyword, category=None, content_type=None):
         return RetrievalResult(
             strategy="hybrid_rerank",
             rewritten_query="退货运费",
@@ -150,51 +198,24 @@ async def test_query_faq_returns_ranked_items_and_retrieval_meta():
             hits=hits,
         )
 
-    result = await build_faq_tool(fake_search).ainvoke(
-        {"keyword": "运费谁出"}
+    from app.tools.faq import build_faq_tool
+
+    spec = spec_from_tool(
+        build_faq_tool(search),
+        source="builtin",
+        format_result=FORMATTERS["query_faq"],
     )
+    registry = ToolRegistry([spec], timeout_seconds=1)
 
-    assert result["count"] == 2
-    assert [item["n"] for item in result["items"]] == [1, 2]
-    assert result["items"][0]["chunk_id"] == 11
-    assert result["items"][0]["section_path"] == (
-        "退货与退款政策 / 退货运费与邮费"
-    )
-    assert result["retrieval"] == {
-        "strategy": "hybrid_rerank",
-        "reranked": True,
-        "rewritten_query": "退货运费",
-    }
+    result = await registry.execute("query_faq", {"keyword": "运费谁出"})
+
+    assert result.ok is True
+    assert "retrieval" not in result.content
+    assert '"count": 1' in result.content
+    assert '"n": 1' in result.content
 
 
-async def test_query_faq_empty_result_keeps_shape():
-    from app.knowledge.types import RetrievalResult
-
-    async def fake_search(keyword, category=None, content_type=None):
-        return RetrievalResult(
-            strategy="hybrid_rerank",
-            rewritten_query=keyword,
-            reranked=False,
-            hits=[],
-        )
-
-    result = await build_faq_tool(fake_search).ainvoke(
-        {"keyword": "邮费是多少"}
-    )
-
-    assert result == {
-        "keyword": "邮费是多少",
-        "count": 0,
-        "items": [],
-        "retrieval": {
-            "strategy": "hybrid_rerank",
-            "reranked": False,
-            "rewritten_query": "邮费是多少",
-        },
-    }
-
-
-async def test_create_ticket_writes_without_flipping_status(fake_repo):
+async def test_create_ticket_tool_commits(fake_repo):
     tool = build_ticket_tool(fake_repo, conversation_id=7)
 
     result = await tool.ainvoke(
@@ -205,6 +226,7 @@ async def test_create_ticket_writes_without_flipping_status(fake_repo):
     assert result["status"] == "待处理"
     assert fake_repo.status_updates == []
     assert fake_repo.tickets[0].description == "耳机有杂音"
+    assert fake_repo.commits == 1
 
 
 async def test_create_ticket_retries_on_ticket_no_collision(fake_repo):
@@ -217,3 +239,4 @@ async def test_create_ticket_retries_on_ticket_no_collision(fake_repo):
 
     assert result["ticket_no"] == "T20261021002"
     assert len(fake_repo.tickets) == 1
+    assert fake_repo.commits == 1

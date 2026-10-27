@@ -22,7 +22,7 @@ from app.knowledge.expansion import QueryExpander
 from app.knowledge.search import search_knowledge_result
 from app.services.orders import list_user_orders
 from app.services.tool_exec import ToolRegistry
-from app.tools import build_tools
+from app.tools import build_builtin_specs
 
 logger = logging.getLogger(__name__)
 
@@ -157,11 +157,17 @@ def build_deps(
             settings=settings,
         )
 
-    tools = build_tools(
-        repository, conversation_id, faq_search=faq_search
+    specs = build_builtin_specs(
+        repository=repository,
+        conversation_id=conversation_id,
+        faq_search=faq_search,
+        ticket_create_delay_seconds=getattr(
+            settings, "ticket_create_delay_seconds", 0.0
+        ),
     )
     registry = ToolRegistry(
-        tools,
+        specs,
+        conversation_id=conversation_id,
         timeout_seconds=settings.tool_timeout_seconds,
         max_retries=settings.tool_max_retries,
         retry_disabled=frozenset({"create_ticket", "query_faq"}),
@@ -169,6 +175,7 @@ def build_deps(
             "query_faq": settings.faq_tool_timeout_seconds
         },
     )
+    tools = registry.tools
 
     if agent_prompt is None:
         agent_prompt = settings.agent_prompt_path.read_text(
