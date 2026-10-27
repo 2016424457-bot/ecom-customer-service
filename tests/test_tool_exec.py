@@ -1,5 +1,7 @@
 import asyncio
 
+import httpx
+import pytest
 from langchain_core.tools import StructuredTool, tool
 
 from app.services.tool_exec import ToolRegistry
@@ -120,3 +122,163 @@ async def test_timeout_override_uses_per_tool_value():
     assert (
         await registry.execute("other", {})
     ).error_code == "timeout"
+
+
+from app.tools.formatters import classify_aftersales
+from app.tools.registry import spec_from_tool
+
+
+class RecordingAudit:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.calls: list = []
+        self.fail = fail
+
+    async def write(self, record) -> None:
+        if self.fail:
+            raise RuntimeError("audit unavailable")
+        self.calls.append(record)
+
+
+@tool("slow_read", description="slow read tool")
+async def slow_read() -> str:
+    await asyncio.sleep(0.2)
+    return "slow"
+
+
+@tool("slow_write", description="slow write tool")
+async def slow_write() -> str:
+    await asyncio.sleep(0.2)
+    return "slow"
+
+
+@tool("http_timeout", description="http timeout tool")
+async def http_timeout() -> dict:
+    raise httpx.ReadTimeout("timed out")
+
+
+@tool("empty_lookup", description="empty lookup tool")
+async def empty_lookup() -> dict:
+    return {"found": False}
+
+
+@pytest.mark.asyncio
+async def test_read_timeout_retries_and_audits():
+    audit = RecordingAudit()
+    registry = ToolRegistry(
+        [slow_read],
+        timeout_seconds=0.01,
+        max_retries=2,
+        audit_writer=audit,
+    )
+
+    result = await registry.execute("slow_read", {}, tool_call_id="c1")
+
+    assert result.ok is False
+    assert result.error_code == "timeout"
+    assert result.status == "超时"
+    assert result.attempts == 3
+    record = audit.calls[-1]
+    assert record.status == "超时"
+    assert record.retry_count == 2
+    assert record.duration_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_write_timeout_is_not_retried():
+    audit = RecordingAudit()
+    spec = spec_from_tool(slow_write, source="builtin", read_only=False)
+    registry = ToolRegistry(
+        [spec],
+        timeout_seconds=0.01,
+        max_retries=5,
+        audit_writer=audit,
+    )
+
+    result = await registry.execute(
+        "slow_write", {}, tool_call_id="c1", confirmed=True
+    )
+
+    assert result.ok is False
+    assert result.status == "超时"
+    assert result.attempts == 1
+    assert audit.calls[-1].retry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_http_timeout_is_classified_as_timeout():
+    registry = ToolRegistry(
+        [http_timeout], timeout_seconds=1, max_retries=1
+    )
+
+    result = await registry.execute("http_timeout", {})
+
+    assert result.ok is False
+    assert result.error_code == "timeout"
+    assert result.status == "超时"
+    assert result.attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_result_is_not_retried():
+    audit = RecordingAudit()
+    spec = spec_from_tool(
+        empty_lookup,
+        source="builtin",
+        classify_result=classify_aftersales,
+    )
+    registry = ToolRegistry(
+        [spec], timeout_seconds=1, max_retries=3, audit_writer=audit
+    )
+
+    result = await registry.execute("empty_lookup", {})
+
+    assert result.ok is False
+    assert result.error_code == "empty_result"
+    assert result.status == "失败"
+    assert result.attempts == 1
+    assert audit.calls[-1].retry_count == 0
+
+
+@pytest.mark.asyncio
+async def test_audit_failure_does_not_block_tool():
+    registry = ToolRegistry(
+        [query_order_tool()],
+        timeout_seconds=1,
+        max_retries=0,
+        audit_writer=RecordingAudit(fail=True),
+    )
+
+    result = await registry.execute(
+        "query_order", {"order_id": "1001"}
+    )
+
+    assert result.ok is True
+
+
+@pytest.mark.asyncio
+async def test_audit_records_source_and_server():
+    audit = RecordingAudit()
+    spec = spec_from_tool(
+        query_order_tool(), source="mcp", mcp_server="logistics"
+    )
+    registry = ToolRegistry(
+        [spec], timeout_seconds=1, max_retries=0, audit_writer=audit
+    )
+
+    await registry.execute(
+        "query_order", {"order_id": "1001"}, tool_call_id="c2"
+    )
+
+    record = audit.calls[-1]
+    assert record.tool_source == "mcp"
+    assert record.mcp_server == "logistics"
+    assert record.tool_call_id == "c2"
+    assert record.conversation_id is None
+
+
+def query_order_tool():
+    @tool("query_order", description="query order")
+    def inner(order_id: str) -> dict:
+        return {"order_id": order_id, "status": "已签收"}
+
+    return inner
