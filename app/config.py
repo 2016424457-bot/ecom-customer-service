@@ -168,6 +168,17 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_content: bool = False
 
+    # ch08 tool system
+    mcp_enabled: bool = True
+    mcp_logistics_url: str = "http://127.0.0.1:8765/mcp"
+    mcp_aftersales_url: str = "http://127.0.0.1:8766/mcp"
+    mcp_request_timeout_seconds: float = Field(default=10, gt=0)
+    mcp_read_only_servers: str = "logistics,aftersales"
+    mcp_write_tools: str = ""
+    tool_plugin_dir: Path = Path("app/tools/plugins")
+    tool_audit_result_max_chars: int = Field(default=1000, gt=0)
+    ticket_create_delay_seconds: float = Field(default=0, ge=0)
+
     @field_validator("openai_base_url")
     @classmethod
     def validate_base_url(cls, value: str) -> str:

@@ -32,6 +32,15 @@ _SETTINGS_ENV_NAMES = frozenset(
         "SERVICE_HOURS",
         "LOG_LEVEL",
         "LOG_CONTENT",
+        "MCP_ENABLED",
+        "MCP_LOGISTICS_URL",
+        "MCP_AFTERSALES_URL",
+        "MCP_REQUEST_TIMEOUT_SECONDS",
+        "MCP_READ_ONLY_SERVERS",
+        "MCP_WRITE_TOOLS",
+        "TOOL_PLUGIN_DIR",
+        "TOOL_AUDIT_RESULT_MAX_CHARS",
+        "TICKET_CREATE_DELAY_SECONDS",
     }
 )
 

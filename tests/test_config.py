@@ -174,3 +174,17 @@ def test_ch07_settings_defaults(clean_unit_env):
     assert settings.summary_projection_segments == 3
     assert settings.summary_prompt_path.name == "summary_prompt.txt"
     assert settings.log_file.name == "app.log"
+
+
+def test_ch08_settings_defaults(clean_unit_env):
+    settings = Settings(_env_file=None, openai_api_key="test")
+
+    assert settings.mcp_enabled is True
+    assert settings.mcp_logistics_url == "http://127.0.0.1:8765/mcp"
+    assert settings.mcp_aftersales_url == "http://127.0.0.1:8766/mcp"
+    assert settings.mcp_request_timeout_seconds == 10
+    assert settings.mcp_read_only_servers == "logistics,aftersales"
+    assert settings.mcp_write_tools == ""
+    assert str(settings.tool_plugin_dir) == "app/tools/plugins"
+    assert settings.tool_audit_result_max_chars == 1000
+    assert settings.ticket_create_delay_seconds == 0

@@ -19,6 +19,9 @@ dependencies = [
   "jieba>=0.42,<1",
   "httpx>=0.28",
   "cryptography>=42",
+  "mcp>=1.30.0",
+  "langchain-mcp-adapters>=0.3.2",
+  "jsonschema>=4.26.0",
 ]
 
 [dependency-groups]
