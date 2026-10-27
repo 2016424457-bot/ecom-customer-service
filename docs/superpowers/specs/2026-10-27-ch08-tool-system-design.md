@@ -265,7 +265,7 @@ async def execute(
 2. JSON Schema 校验；失败 → 校验拦下 + 审计。
 3. 权限判断：
    - `read_only=True` → 继续执行。
-   - `read_only=False` 且 `confirmed=False` → **不执行**，返回 `ToolResult(ok=False, error_code="permission_required", meta={"preview": ...})`；此时不写审计（等待用户确认/取消后只落一条）。
+   - `read_only=False` 且 `confirmed=False` → **不执行**，返回 `ToolResult(ok=False, error_code="permission_required", meta={"arguments": ...})`；此时不写审计（等待用户确认/取消后只落一条）。预览 payload 由 `agent_tools` 从已校验参数构造。
    - `read_only=False` 且 `confirmed=True` → 执行。
 4. 执行 / 重试 / 格式化。
 5. 写审计（成功/失败/超时）。
@@ -400,18 +400,18 @@ mcp_servers/
 
 **logistics_server.py**
 
-- `MCPServer("logistics")`（MCP Python SDK v2；若安装版本仍是 FastMCP 旧 API，按实际版本适配并在 dev-notes 记录）。
+- `FastMCP("logistics", host="127.0.0.1", port=8765, stateless_http=True, json_response=True)`（MCP Python SDK 1.30.0 的官方 API；安装后以实际版本为准，按实际版本适配并在 dev-notes 记录）。
 - 工具 `query_logistics(tracking_no: str) -> dict`：
   - 确定性 mock：`random.Random(tracking_no)`；
   - 返回 `tracking_no/carrier/status/latest_event/estimated_delivery`；
   - 状态：运输中 / 派送中 / 已签收；承运商：顺丰速运 / 中通快递 / 圆通速递。
 - 故障注入：读取环境变量 `LOGISTICS_TOOL_DELAY_SECONDS`（默认 0），在返回前 `await asyncio.sleep(delay)`，用于验收 6 的超时演示。
-- 启动：`mcp.run(transport="streamable-http", host="127.0.0.1", port=8765, stateless_http=True, json_response=True)`；端口可用 `LOGISTICS_PORT` 覆盖。
+- 启动：`mcp.run(transport="streamable-http")`；端口用 `LOGISTICS_PORT` 覆盖。
 - 路径默认 `/mcp`。
 
 **aftersales_server.py**
 
-- `MCPServer("aftersales")`。
+- `FastMCP("aftersales", host="127.0.0.1", port=8766, stateless_http=True, json_response=True)`。
 - 工具 `check_warranty(order_id: str) -> dict`：
   - 确定性 mock：按 `order_id` 生成商品名、购买日、保修期 365 天；
   - 返回 `order_id/product/warranty_status(在保|已过保)/warranty_end/remaining_days/note`。
@@ -458,9 +458,9 @@ client = MultiServerMCPClient(
 
 ### 10.3 依赖
 
-- `mcp`（官方 Python SDK，v2.x）。
-- `langchain-mcp-adapters`（与 LangChain 1.4 兼容的当前版本）。
-- `jsonschema`。
+- `mcp`（官方 Python SDK，实际解析 1.30.0）。
+- `langchain-mcp-adapters`（实际解析 0.3.2，与 LangChain 1.4 兼容）。
+- `jsonschema`（实际解析 4.26.0）。
 - 用 `uv add` 安装并记录解析到的版本；每个 Server 用同一虚拟环境运行。
 
 ## 11. 建工单确认流
@@ -551,7 +551,7 @@ client = MultiServerMCPClient(
       return {
           "messages": [ToolMessage(content=result.content, ...)],
           "pending_ticket": None,
-          "ticket_no": result.meta.get("ticket_no") if result.ok else None,
+          "ticket_no": result.meta.get("payload", {}).get("ticket_no") if result.ok else None,
           "ticket_cancelled": not result.ok and result.error_code == "permission_denied",
           "trace": merge_trace(state, tools=[...]),
       }
@@ -772,7 +772,7 @@ mysql -h 127.0.0.1 -u root -p ecom -e "SELECT tool_name,status,retry_count,durat
 
 ## 17. 风险与待确认
 
-- `mcp` Python SDK v2 的 `MCPServer` 与旧 `FastMCP` 导入路径不同；安装后以实际版本为准，若版本不兼容按用户要求停下来问，不自行换传输。
+- `mcp` Python SDK 实际解析到 1.30.0（`langchain-mcp-adapters 0.3.2` 把 `mcp` 约束在 1.x），用官方 `mcp.server.fastmcp.FastMCP`；传输仍是 Streamable HTTP，不换库、不换传输。若后续升级到 mcp 2.x，按 v2 API 适配并在 dev-notes 记录。
 - `langchain-mcp-adapters` 的 `args_schema` 可能是 dict，LangChain `bind_tools` 对 dict Schema 的兼容性需在实现第一步验证；不兼容时用 Pydantic 模型包装，不换库。
 - LangGraph `interrupt()` 在 `AsyncSqliteSaver` + `astream` 下的行为需用最小图测试先验证；若 `stream_mode` 不暴露 interrupt，改用 `aget_state` 读取（已在设计中采用）。
 - 审计用独立会话，MySQL 连接池耗尽风险低；审计失败只告警。

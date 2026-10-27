@@ -6,14 +6,14 @@
 
 **Architecture:** 每轮 `build_deps()` 合并「核心内置目录 + 插件目录热加载 + MCP 动态发现」成一份 `ToolSpec` 清单；所有调用走 `ToolRegistry.execute()`，依次做 Schema 校验、权限判断、超时/重试/分诊/格式化，最后旁路写 `tool_audit_logs`。`create_ticket` 是唯一写操作：引擎先返回 `permission_required`，图在独立节点 `ticket_confirm` 调 `interrupt()` 弹预览卡，前端确认后 `Command(resume=...)` 放行，取消则 `deny()` 落权限拒绝审计。
 
-**Tech Stack:** Python 3.11 / uv；FastAPI 0.139 + SSE；LangChain 1.4.6；LangGraph 1.2.16；SQLAlchemy 2.0 + MySQL 8.4；MCP Python SDK 2.3.0（`mcp.server.mcpserver.MCPServer`）；langchain-mcp-adapters 0.3.1（`MultiServerMCPClient`）；jsonschema 4.26.0。
+**Tech Stack:** Python 3.11 / uv；FastAPI 0.139 + SSE；LangChain 1.4.6；LangGraph 1.2.16；SQLAlchemy 2.0 + MySQL 8.4；MCP Python SDK 1.30.0（`mcp.server.fastmcp.FastMCP`）；langchain-mcp-adapters 0.3.2（`MultiServerMCPClient`）；jsonschema 4.26.0。
 
 **Spec:** `docs/superpowers/specs/2026-10-27-ch08-tool-system-design.md`
 
 ## Global Constraints
 
 - 技术选型定死：MCP Server 用 MCP 官方 Python SDK + Streamable HTTP；MCP Client 用 `MultiServerMCPClient`；不得换库或换传输。
-- 依赖版本以 `uv add` 解析为准；已 dry-run 解析到 `mcp==2.3.0`、`langchain-mcp-adapters==0.3.1`、`jsonschema==4.26.0`。
+- 依赖版本以 `uv add` 解析为准；实际解析到 `mcp==1.30.0`、`langchain-mcp-adapters==0.3.2`、`jsonschema==4.26.0`。适配器把 `mcp` 约束在 1.x，因此 MCP Server 用 `mcp.server.fastmcp.FastMCP`（官方 SDK 的 1.x API），不是 v2 的 `MCPServer`；传输仍是 Streamable HTTP。
 - 所有工具调用必须经过 `ToolRegistry.execute()`；模型、图节点、退款子流程都不得直接 `tool.ainvoke()`。
 - 写操作只有 `create_ticket`；`confirmed=True` 只能由 `ticket_confirm` 在 `interrupt()` 返回确认后传入，不能来自模型参数。
 - 审计表 DDL 以 spec 附录 A 原文为准；不挂外键；`status` 只用「成功/失败/超时/校验拦下/权限拒绝」；审计写失败只告警，不阻塞工具。
@@ -139,7 +139,7 @@ Expected: PASS。
 
 - [ ] **Step 5: 验证 MCP/适配器可导入**
 
-Run: `uv run python -c "from mcp.server.mcpserver import MCPServer; from langchain_mcp_adapters.client import MultiServerMCPClient; import jsonschema; print('ok')"`
+Run: `uv run python -c "from mcp.server.fastmcp import FastMCP; from langchain_mcp_adapters.client import MultiServerMCPClient; import jsonschema; print('ok')"`
 Expected: 输出 `ok`。
 
 - [ ] **Step 6: Commit**
@@ -270,6 +270,7 @@ git commit -m "ch08: ToolSpec 注册中心与插件目录热加载"
   - `ToolRegistry.reject(name, arguments, *, tool_call_id=None, error_code="tool_rejected", message="调用被拒绝", status="失败") -> ToolResult`
   - `normalize_tool_output(raw) -> Any`
   - `FORMATTERS` / `CLASSIFIERS` 映射。
+  - `ToolResult.meta` 约定：成功时 `{"payload": <格式化后的 dict>}`；`permission_required` 时 `{"arguments": <原始参数>}`；其余失败为 `None`。
 
 - [ ] **Step 1: 写失败测试 `tests/test_tool_validation.py`**
 
@@ -341,6 +342,7 @@ Expected: FAIL。
 - 错误文案：`required`→「缺少必填参数 X」；`type`→「参数 X 类型应为 ...」；`enum`→「参数 X 只能是 ...」；`minimum/maximum/minLength/maxLength/pattern`→「参数 X 取值越界/格式不对」；最多 5 条。
 - `execute` 顺序：lookup → validate → permission → invoke → classify → format → audit。
 - `permission_required` 返回 `meta={"arguments": arguments}`，不审计。
+- 成功返回 `meta={"payload": formatted}`；失败/校验/超时/权限拒绝为 `None`。
 - `deny` / `reject` 写审计。
 - 审计 writer 是 duck-typed `.write(record)`；Task 3 可传 `None`。
 - `_audit` 包 `try/except`，失败只 `logger.warning`。
@@ -450,9 +452,12 @@ git commit -m "ch08: 执行引擎超时重试、错误分诊与审计落库"
 - Modify: `app/tools/__init__.py`
 - Modify: `app/tools/ticket.py`
 - Modify: `app/tools/order.py` / `app/tools/product.py` / `app/tools/faq.py`（Schema 约束）
+- Modify: `scripts/bare_agent_loop.py`（`build_tools`/`ToolRegistry(tools)` → specs）
+- Modify: `evals/run_tool_routing_eval.py`（`build_tools` → specs）
 - Delete: `app/tools/logistics.py`
 - Test: `tests/test_tools.py`（重写）
 - Test: `tests/test_tool_registry.py`（追加核心目录断言）
+- Test: `tests/test_bare_agent_loop.py`（随脚本迁移）
 
 **Interfaces:**
 - Consumes: `ToolSpec`、`spec_from_tool`、`builtin_plugin_specs`（Task 2）、`FORMATTERS`（Task 3）。
@@ -509,16 +514,19 @@ Expected: FAIL。
   - `create_ticket` 的 formatter/classifier 指向 `formatters.format_ticket`。
 - `app/tools/__init__.py`：导出 `build_builtin_specs`；删除 `build_tools`。
 - 删除 `app/tools/logistics.py`；同步删除/替换所有 import。
+- `scripts/bare_agent_loop.py`：`specs = build_builtin_specs(...)`；`registry = ToolRegistry(specs, ...)`；`tools = registry.tools`。
+- `evals/run_tool_routing_eval.py`：`specs = build_builtin_specs(...)`；`tools = [s.tool for s in specs]`。
+- `tests/test_bare_agent_loop.py`：如 `FakeRegistry.execute` 签名受影响，补 `**kwargs`；确认导入脚本不再触发 `build_tools` ImportError。
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `uv run pytest tests/test_tools.py tests/test_tool_registry.py -v`
+Run: `uv run pytest tests/test_tools.py tests/test_tool_registry.py tests/test_bare_agent_loop.py -v`
 Expected: PASS。
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app/tools/__init__.py app/tools/builtins.py app/tools/ticket.py app/tools/order.py app/tools/product.py app/tools/faq.py tests/test_tools.py tests/test_tool_registry.py
+git add app/tools/__init__.py app/tools/builtins.py app/tools/ticket.py app/tools/order.py app/tools/product.py app/tools/faq.py scripts/bare_agent_loop.py evals/run_tool_routing_eval.py tests/test_tools.py tests/test_tool_registry.py tests/test_bare_agent_loop.py
 git rm app/tools/logistics.py
 git commit -m "ch08: 核心工具目录、工单落库与下线内置物流"
 ```
@@ -568,7 +576,8 @@ Expected: FAIL。
 
 - [ ] **Step 3: 实现 `app/services/mcp_tools.py`**
 
-- 构造 `MultiServerMCPClient(connections, handle_tool_errors=False)`。
+- 构造 `MultiServerMCPClient(connections, handle_tool_errors=False)`；每个 connection 带 `"timeout": settings.mcp_request_timeout_seconds`。
+- `McpToolProvider(..., enabled=settings.mcp_enabled)`；`enabled=False` 时 `get_specs()` 直接返回 `[]`。
 - `get_specs`：只对 `read_only_servers` 里的 Server 调 `get_tools(server_name=...)`；成功更新 `self._cache[server]`；失败用缓存并 `logger.warning`；`asyncio.gather(..., return_exceptions=True)`。
 - `read_only = tool.name not in write_tools`。
 - 已知工具名从 `FORMATTERS`/`CLASSIFIERS` 取格式化/空结果钩子。
@@ -579,7 +588,7 @@ Expected: FAIL。
 `app/runtime.py`：
 - 新增字段；`build_runtime` 构造 `ToolAuditWriter(session_factory, max_chars=...)` 和 `McpToolProvider(connections, ...)`。
 - `build_runtime` 先调用 `ensure_plugins_loaded(settings.tool_plugin_dir)`，满足「内置工具服务启动时登记」。
-- `connections` 从 settings URL 组装；`read_only_servers`/`write_tools` 从逗号分隔字符串解析。
+- `connections` 从 settings URL 组装（每个连接带 `"timeout": settings.mcp_request_timeout_seconds`）；`read_only_servers`/`write_tools` 从逗号分隔字符串解析；`enabled=settings.mcp_enabled`。
 - `Runtime.aclose` 里若 provider 有 `aclose` 则调用。
 
 `app/graph/runtime.py`：
@@ -621,32 +630,32 @@ git commit -m "ch08: MCP 工具发现、Runtime 单例与 async build_deps"
 - Modify: `.env.example`（追加 `LOGISTICS_PORT` / `AFTERSALES_PORT` / 延迟注入变量）
 
 **Interfaces:**
-- Consumes: `mcp.server.mcpserver.MCPServer`（MCP SDK 2.3.0）。
+- Consumes: `mcp.server.fastmcp.FastMCP`（MCP SDK 1.30.0）。
 - Produces:
-  - `mcp_servers.logistics_server.query_logistics(tracking_no: str) -> dict`
-  - `mcp_servers.aftersales_server.check_warranty(order_id: str) -> dict`
-  - `mcp_servers.aftersales_server.query_return_progress(order_id: str) -> dict`
-  - 两个模块的 `main()`（`mcp.run(transport="streamable-http", ...)`）。
+  - `mcp_servers.logistics_server.query_logistics(tracking_no: str) -> dict`（async）
+  - `mcp_servers.aftersales_server.check_warranty(order_id: str) -> dict`（async）
+  - `mcp_servers.aftersales_server.query_return_progress(order_id: str) -> dict`（async）
+  - 两个模块的 `main()`（`mcp.run(transport="streamable-http")`）。
 
 - [ ] **Step 1: 写失败测试 `tests/test_mcp_servers.py`**
 
 ```python
-def test_logistics_is_deterministic():
-    a = query_logistics("SF123456789012")
-    b = query_logistics("SF123456789012")
+async def test_logistics_is_deterministic():
+    a = await query_logistics("SF123456789012")
+    b = await query_logistics("SF123456789012")
     assert a == b
     assert a["status"] in {"运输中", "派送中", "已签收"}
     assert a["carrier"] in {"顺丰速运", "中通快递", "圆通速递"}
     assert a["latest_event"]
 
-def test_warranty_returns_chinese_status():
-    result = check_warranty("1001")
+async def test_warranty_returns_chinese_status():
+    result = await check_warranty("1001")
     assert result["warranty_status"] in {"在保", "已过保"}
     assert isinstance(result["remaining_days"], int)
     assert result["warranty_end"]
 
-def test_return_progress_returns_chinese_status():
-    result = query_return_progress("1001")
+async def test_return_progress_returns_chinese_status():
+    result = await query_return_progress("1001")
     assert result["status"] in {"已申请", "审核中", "已收货", "退款中", "已完成"}
     assert result["return_no"].startswith("RT")
     assert result["latest_update"]
@@ -661,11 +670,11 @@ Expected: FAIL。
 
 - [ ] **Step 3: 实现两个 Server**
 
-- `MCPServer("logistics")` / `MCPServer("aftersales")`。
-- `@mcp.tool()` + 中文 docstring + `Annotated[str, Field(min_length=4, pattern=...)]`。
+- `FastMCP("logistics", host="127.0.0.1", port=int(os.getenv("LOGISTICS_PORT", "8765")), stateless_http=True, json_response=True)` / 同构的 `FastMCP("aftersales", ...)`。
+- `@mcp.tool()` + 中文 docstring + `Annotated[str, Field(min_length=4, pattern=...)]`；工具函数用 `async def`。
 - `random.Random(seed)` 确定性 mock；返回中文状态。
-- `time.sleep(float(os.getenv("LOGISTICS_TOOL_DELAY_SECONDS", "0")))` 故障注入（工具函数是同步 `def`，SDK 会在线程池里跑；不要用 `asyncio.sleep` 阻塞事件循环）。
-- `main()` 读端口环境变量，`mcp.run(transport="streamable-http", host="127.0.0.1", port=..., stateless_http=True, json_response=True)`。
+- `await asyncio.sleep(float(os.getenv("LOGISTICS_TOOL_DELAY_SECONDS", "0")))` 故障注入。
+- `main()` 读端口环境变量（也可在 `FastMCP(...)` 构造时传），`mcp.run(transport="streamable-http")`。
 - `if __name__ == "__main__": main()`。
 
 - [ ] **Step 4: Makefile 目标**
@@ -735,6 +744,7 @@ git commit -m "ch08: 物流与售后 MCP Server（Streamable HTTP）"
 - Test: `tests/graph/test_graph_smoke.py`（更新）
 - Test: `tests/graph/test_log_node.py`（工单号追加）
 - Test: `tests/graph/test_state.py`（新字段）
+- Test: `tests/graph/test_refund_subflow.py`（FakeRegistry 接受 `tool_call_id`）
 - Test: `tests/test_agent_api.py`（pending_confirm）
 
 **Interfaces:**
@@ -847,11 +857,12 @@ def tool_gate_route(state): ...
 - `permission_required` 且 `name == "create_ticket"` → `pending_ticket`，不加 ToolMessage；
 - `permission_required` 且 `name != "create_ticket"`（插件写工具）→ `registry.reject(..., error_code="write_tool_not_supported", message="写操作未开通人工确认")`，加错误 ToolMessage；
 - 重复调用/已有 ticket 结果 → `registry.reject(...)`；
-- 其他工具不变；`duplicate_faq` 改 `registry.reject(...)`。
+- 其他工具也统一传 `tool_call_id=call_id`（`query_order`/`query_product`/`query_faq`/MCP 工具都要能对回模型申请单）；`duplicate_faq` 改 `registry.reject(...)`。
 `app/graph/nodes.py::refund_order_lookup`：直调 `query_order` 时传 `tool_call_id=f"refund_order_{order_id}"`，保证审计可对回。
 `ticket_confirm` 节点：
 - `interrupt({"type": "ticket_confirm", "ticket_type": ..., "description": ..., "tool_call_id": ...})`；
 - confirm → `execute(..., confirmed=True)`；cancel → `deny(...)`；
+- `ticket_no` 取 `result.meta.get("payload", {}).get("ticket_no")`（成功时引擎写入）；拿不到再从 `result.content` 解析；
 - 返回 ToolMessage、`pending_ticket=None`、`ticket_no`、`ticket_cancelled`、`ticket_draft=None`、trace。
 `log_node`：
 - `ticket_no` 不在 answer 里则追加 `（工单号：X）`；空 answer 用「已为您创建工单（工单号：X）。」；写回 `answer`。
@@ -872,7 +883,7 @@ def tool_gate_route(state): ...
 
 - [ ] **Step 7: 跑测试确认通过**
 
-Run: `uv run pytest tests/graph/test_tool_gate.py tests/graph/test_ticket_confirm.py tests/graph/test_build.py tests/graph/test_agent_nodes.py tests/graph/test_graph_smoke.py tests/graph/test_log_node.py tests/graph/test_state.py tests/test_agent_api.py -v`
+Run: `uv run pytest tests/graph/test_tool_gate.py tests/graph/test_ticket_confirm.py tests/graph/test_build.py tests/graph/test_agent_nodes.py tests/graph/test_graph_smoke.py tests/graph/test_log_node.py tests/graph/test_state.py tests/graph/test_refund_subflow.py tests/test_agent_api.py -v`
 Expected: PASS。
 
 - [ ] **Step 8: Prompt 评估集**
