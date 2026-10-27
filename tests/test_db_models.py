@@ -14,6 +14,7 @@ def test_table_and_column_names_match_schema():
         "faith_cases",
         "refund_requests",
         "conversation_summaries",
+        "tool_audit_logs",
     }
     assert [c.name for c in Base.metadata.tables["conversations"].columns] == [
         "id",
