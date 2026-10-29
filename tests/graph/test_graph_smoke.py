@@ -85,7 +85,7 @@ class FakeRegistry:
         self.calls: list[tuple] = []
         self.content = content
 
-    async def execute(self, name, arguments):
+    async def execute(self, name, arguments, *, tool_call_id=None):
         self.calls.append((name, arguments))
         return ToolResult(
             name=name,

@@ -60,8 +60,8 @@ class FakeRegistry:
         self.error_code = error_code
         self.calls: list[tuple] = []
 
-    async def execute(self, name, arguments):
-        self.calls.append((name, arguments))
+    async def execute(self, name, arguments, *, tool_call_id=None):
+        self.calls.append((name, arguments, tool_call_id))
         return ToolResult(
             name=name,
             ok=self.ok,
@@ -282,7 +282,9 @@ async def test_have_order_calls_query_order_and_records_tool_trace():
     )
 
     assert out["order"]["order_id"] == "1001"
-    assert registry.calls == [("query_order", {"order_id": "1001"})]
+    assert registry.calls == [
+        ("query_order", {"order_id": "1001"}, "refund_order_1001")
+    ]
     entry = out["trace"]["tools"][0]
     assert entry["name"] == "query_order"
     assert entry["args"] == {"order_id": "1001"}

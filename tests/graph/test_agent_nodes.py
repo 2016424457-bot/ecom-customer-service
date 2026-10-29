@@ -29,7 +29,9 @@ class FakeRegistry:
         self.fail = fail
         self.calls: list[tuple[str, dict]] = []
 
-    async def execute(self, name: str, arguments: dict) -> ToolResult:
+    async def execute(
+        self, name: str, arguments: dict, *, tool_call_id=None
+    ) -> ToolResult:
         if self.fail:
             raise AssertionError(f"{name} must not execute")
         self.calls.append((name, arguments))
@@ -40,6 +42,29 @@ class FakeRegistry:
             error_code=None,
             duration_ms=2.0,
             attempts=1,
+        )
+
+    async def reject(
+        self,
+        name: str,
+        arguments: dict,
+        *,
+        tool_call_id=None,
+        error_code="tool_rejected",
+        message="调用被拒绝",
+        status="失败",
+    ) -> ToolResult:
+        return ToolResult(
+            name=name,
+            ok=False,
+            content=(
+                '{"error": {"code": "%s", "message": "%s"}}'
+                % (error_code, message)
+            ),
+            error_code=error_code,
+            duration_ms=1.0,
+            attempts=0,
+            status=status,
         )
 
 
@@ -168,7 +193,26 @@ async def test_agent_tools_executes_normal_tool():
 
 @pytest.mark.asyncio
 async def test_agent_tools_intercepts_create_ticket():
-    registry = FakeRegistry(fail=True)
+    class ConfirmRegistry:
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        async def execute(self, name, arguments, *, tool_call_id=None):
+            self.calls.append((name, arguments, tool_call_id))
+            return ToolResult(
+                name=name,
+                ok=False,
+                content=(
+                    '{"error": {"code": "permission_required", '
+                    '"message": "写操作需要前端确认"}}'
+                ),
+                error_code="permission_required",
+                duration_ms=1.0,
+                attempts=0,
+                meta={"arguments": arguments},
+            )
+
+    registry = ConfirmRegistry()
     ai = AIMessage(
         "",
         tool_calls=[
@@ -188,11 +232,18 @@ async def test_agent_tools_intercepts_create_ticket():
         deps=_deps(registry=registry),
     )
 
-    action = out["suggested_actions"][0]
-    assert action["type"] == "create_ticket"
-    assert action["draft"]["description"] == "屏幕碎了"
-    assert out["messages"][0].tool_call_id == "t9"
+    assert registry.calls == [
+        (
+            "create_ticket",
+            {"description": "屏幕碎了", "ticket_type": "售后"},
+            "t9",
+        )
+    ]
+    assert out["pending_ticket"]["call_id"] == "t9"
+    assert out["pending_ticket"]["args"]["description"] == "屏幕碎了"
+    assert out["messages"] == []
     assert out["trace"]["tools"][0]["intercepted"] is True
+    assert "suggested_actions" not in out
 
 
 @pytest.mark.asyncio
@@ -270,7 +321,7 @@ async def test_agent_tools_skips_malformed_tool_calls():
 @pytest.mark.asyncio
 async def test_agent_tools_renders_query_faq_evidence():
     class FaqRegistry:
-        async def execute(self, name, arguments):
+        async def execute(self, name, arguments, *, tool_call_id=None):
             return ToolResult(
                 name=name,
                 ok=True,
@@ -319,7 +370,7 @@ def test_tool_registry_is_still_used():
 @pytest.mark.asyncio
 async def test_agent_tools_caps_big_json_result_to_valid_json():
     class BigRegistry:
-        async def execute(self, name, arguments):
+        async def execute(self, name, arguments, *, tool_call_id=None):
             return ToolResult(
                 name=name,
                 ok=True,
@@ -352,7 +403,7 @@ async def test_agent_tools_caps_big_json_result_to_valid_json():
 @pytest.mark.asyncio
 async def test_agent_tools_parses_query_faq_before_capping():
     class BigFaqRegistry:
-        async def execute(self, name, arguments):
+        async def execute(self, name, arguments, *, tool_call_id=None):
             return ToolResult(
                 name=name,
                 ok=True,

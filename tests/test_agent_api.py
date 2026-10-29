@@ -164,3 +164,39 @@ async def test_agent_endpoint_database_error_503(monkeypatch):
         )
 
     assert exc.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_agent_endpoint_returns_pending_confirm(monkeypatch):
+    preview = {
+        "type": "ticket_confirm",
+        "interrupt_id": "i1",
+        "conversation_id": 5,
+        "draft": {"ticket_type": "售后", "description": "屏幕碎了"},
+    }
+
+    async def fake_run(deps, *, conversation_id, user_id, message):
+        return {
+            "conversation_id": conversation_id,
+            "state": {
+                "messages": [AIMessage("")],
+                "suggested_actions": [],
+            },
+            "pending_confirm": preview,
+        }
+
+    monkeypatch.setattr(
+        routes.graph_runtime, "build_deps", _fake_build_deps
+    )
+    monkeypatch.setattr(routes.graph_runtime, "run_turn", fake_run)
+
+    response = await routes.agent_endpoint(
+        AgentRequest(
+            user_id="u1",
+            message="帮我建个工单",
+            conversation_id=5,
+        ),
+        _runtime(FakeRepository()),
+    )
+
+    assert response.pending_confirm == preview

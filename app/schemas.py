@@ -39,6 +39,16 @@ class ChatRequest(BaseModel):
         return value
 
 
+class ChatResumeRequest(BaseModel):
+    """Payload for resuming a paused ticket confirmation."""
+
+    conversation_id: int = Field(gt=0)
+    decision: Literal["confirm", "cancel"]
+    interrupt_id: str | None = Field(
+        default=None, max_length=128
+    )
+
+
 class ChatExtractRequest(BaseModel):
     """Payload for the structured after-sales extraction endpoint."""
 
@@ -103,6 +113,7 @@ class AgentResponse(BaseModel):
     tool_calls: list[ToolCallView] = Field(default_factory=list)
     tool_results: list[ToolResultView] = Field(default_factory=list)
     suggested_actions: list[dict] = Field(default_factory=list)
+    pending_confirm: dict | None = None
 
 
 class CreateTicketRequest(BaseModel):

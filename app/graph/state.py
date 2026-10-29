@@ -39,6 +39,11 @@ class ConversationState(TypedDict, total=False):
     refund_eligible: bool | None
     pending: dict | None
     pending_resume: bool
+    pending_ticket: dict | None
+    ticket_no: str | None
+    ticket_cancelled: bool
+    ticket_draft: dict | None
+    forced_route: str | None
     summary: str
     summary_upto_msg_id: int
     layer1_from_msg_id: int

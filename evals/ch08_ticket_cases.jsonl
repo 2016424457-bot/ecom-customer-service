@@ -1,0 +1,10 @@
+{"id":"T01","turns":["帮我建个工单"],"expect":{"pending":false,"no_create_ticket":true}}
+{"id":"T02","turns":["帮我建个工单，屏幕碎了，要售后"],"expect":{"pending":true,"ticket_type":"售后","description_contains":"屏幕"}}
+{"id":"T03","turns":["帮我建个工单，订单1001屏幕碎了"],"expect":{"pending":true,"ticket_type":"售后","description_contains":"1001"}}
+{"id":"T04","turns":["退货政策是什么"],"expect":{"pending":false,"no_create_ticket":true}}
+{"id":"T05","turns":["你好"],"expect":{"pending":false,"no_create_ticket":true}}
+{"id":"T06","turns":["你们服务太差了"],"expect":{"pending":false,"no_create_ticket":true}}
+{"id":"T07","turns":["帮我建个工单","耳机左耳没声音，要售后"],"expect":{"pending":true,"ticket_type":"售后","description_contains":"耳机"}}
+{"id":"T08","turns":["我要投诉，帮我建个工单，描述：快递一直不送"],"expect":{"pending":true,"ticket_type":"投诉","description_contains":"快递"}}
+{"id":"T09","turns":["帮我建个售后工单，我的耳机坏了"],"expect":{"pending":true,"ticket_type":"售后","description_contains":"耳机"}}
+{"id":"T10","turns":["帮我建个工单"],"expect":{"pending":false,"no_create_ticket":true}}

@@ -16,6 +16,14 @@ INTENT_TO_ROUTE: dict[str, str] = {
 
 ORDER_SELECTION_RE = re.compile(r"^订单号[：:]\s*([A-Za-z0-9-]{1,32})$")
 
+TICKET_REQUEST_RE = re.compile(
+    r"(帮我|给我|我要|请|麻烦)?(建|创建|提交|开)(一个|个)?工单|转人工"
+)
+TICKET_CANCEL_RE = re.compile(r"算了|不用了|不建了|取消|先不建")
+AFTERSALES_STATUS_RE = re.compile(
+    r"在保|保修期|保修状态|退货进度|退款进度|售后进度|退款到哪"
+)
+
 _ORDER_TOPIC_WORDS = (
     "物流",
     "发货",
@@ -42,6 +50,29 @@ _POLICY_KEYWORD_RE = re.compile(
 def route_by_intent(state: dict) -> str:
     """Route the eight intents into the six outlets."""
     return INTENT_TO_ROUTE.get(state.get("intent", ""), "other")
+
+
+def detect_tool_intent(
+    text: str, *, draft_active: bool
+) -> Literal["ticket", "aftersales", "cancel"] | None:
+    """Deterministic gate for explicit ticket/after-sales tool requests."""
+    value = (text or "").strip()
+    if draft_active and TICKET_CANCEL_RE.search(value):
+        return "cancel"
+    if TICKET_REQUEST_RE.search(value):
+        return "ticket"
+    if AFTERSALES_STATUS_RE.search(value):
+        return "aftersales"
+    return None
+
+
+def tool_gate_route(state: dict) -> Literal["business", "classify"]:
+    """Conditional edge after ``tool_intent_gate``."""
+    return (
+        "business"
+        if state.get("forced_route") == "business"
+        else "classify"
+    )
 
 
 def classify_refund_scope(

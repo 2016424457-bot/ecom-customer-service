@@ -8,6 +8,7 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from langgraph.types import interrupt
 
 from app.context import (
     build_agent_messages,
@@ -23,6 +24,7 @@ from app.context import (
 from app.graph.refund import RefundVerdict, request_type_for
 from app.graph.routing import (
     classify_refund_scope,
+    detect_tool_intent,
     is_order_selection,
     route_by_intent,
 )
@@ -296,6 +298,71 @@ async def pending_check(state: dict, *, deps: Any = None) -> dict:
     return update
 
 
+async def tool_intent_gate(state: dict, *, deps: Any = None) -> dict:
+    """Force the Agent route for explicit ticket/after-sales tool requests.
+
+    A ticket draft stays active across turns so the user's follow-up
+    description still reaches the Agent. The gate never calls the model.
+    """
+    text = state.get("standalone_query") or _user_text(state)
+    draft = state.get("ticket_draft") or {}
+    draft_active = bool(draft.get("active"))
+    kind = detect_tool_intent(text, draft_active=draft_active)
+
+    if kind == "cancel":
+        return {
+            "ticket_draft": None,
+            "forced_route": None,
+            "route": "",
+            "trace": merge_trace(
+                state, tool_gate={"kind": "cancel"}
+            ),
+        }
+
+    if kind == "ticket":
+        return {
+            "ticket_draft": {"active": True},
+            "forced_route": "business",
+            "intent": "建单",
+            "intent_confidence": 1.0,
+            "intent_tier": "rule",
+            "route": "business",
+            "trace": merge_trace(
+                state, tool_gate={"kind": "ticket"}
+            ),
+        }
+
+    if draft_active:
+        return {
+            "ticket_draft": draft,
+            "forced_route": "business",
+            "intent": "建单",
+            "intent_confidence": 1.0,
+            "intent_tier": "rule",
+            "route": "business",
+            "trace": merge_trace(
+                state, tool_gate={"kind": "draft_continue"}
+            ),
+        }
+
+    if kind == "aftersales":
+        return {
+            "forced_route": "business",
+            "intent": "售后查询",
+            "intent_confidence": 1.0,
+            "intent_tier": "rule",
+            "route": "business",
+            "trace": merge_trace(
+                state, tool_gate={"kind": "aftersales"}
+            ),
+        }
+
+    return {
+        "forced_route": None,
+        "trace": merge_trace(state, tool_gate={"kind": None}),
+    }
+
+
 async def classify_intent(state: dict, *, deps: Any) -> dict:
     """Classify the user message and record confidence, tier, and route."""
     query = state.get("standalone_query") or _user_text(state)
@@ -486,7 +553,9 @@ async def refund_order_lookup(state: dict, *, deps: Any) -> dict:
 
     if order_id:
         result = await deps.tool_registry.execute(
-            "query_order", {"order_id": order_id}
+            "query_order",
+            {"order_id": order_id},
+            tool_call_id=f"refund_order_{order_id}",
         )
         tool_entry = {
             "name": "query_order",
@@ -815,12 +884,16 @@ def _faq_evidence(content: str) -> str:
 
 
 async def agent_tools(state: dict, *, deps: Any) -> dict:
-    """ReAct action step: execute tools; create_ticket becomes a proposal."""
+    """ReAct action step: execute read tools and hand writes to confirmation."""
     last = state["messages"][-1]
     existing = list(state.get("trace", {}).get("tools", []))
     trace_tools: list[dict] = []
     tool_messages: list[ToolMessage] = []
     actions = list(state.get("suggested_actions", []))
+    pending_ticket: dict | None = None
+    ticket_resolved = bool(
+        state.get("ticket_no") or state.get("ticket_cancelled")
+    )
 
     for call in last.tool_calls:
         name = call.get("name")
@@ -830,35 +903,79 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
         args = call.get("args") or {}
 
         if name == "create_ticket":
-            draft = {
-                "description": args.get("description", ""),
-                "ticket_type": args.get("ticket_type", "咨询"),
-            }
-            if not any(
-                action.get("type") == "create_ticket"
-                and action.get("draft") == draft
-                for action in actions
-            ):
-                actions.append({"type": "create_ticket", "draft": draft})
+            if ticket_resolved or pending_ticket is not None:
+                result = await deps.tool_registry.reject(
+                    name,
+                    args,
+                    tool_call_id=call_id,
+                    error_code="duplicate_create_ticket",
+                    message="本轮已处理过建单请求，不要重复调用",
+                )
+                tool_messages.append(
+                    ToolMessage(
+                        content=result.content,
+                        tool_call_id=call_id,
+                        name=name,
+                        status="error",
+                    )
+                )
+                trace_tools.append(
+                    {
+                        "name": name,
+                        "ok": False,
+                        "error_code": result.error_code,
+                        "duration_ms": result.duration_ms,
+                        "args": args,
+                        "intercepted": True,
+                        "tool_call_id": call_id,
+                    }
+                )
+                continue
+
+            result = await deps.tool_registry.execute(
+                name, args, tool_call_id=call_id
+            )
+            if result.error_code == "permission_required":
+                pending_ticket = {
+                    "call_id": call_id,
+                    "name": name,
+                    "args": args,
+                    "preview": {
+                        "ticket_type": args.get(
+                            "ticket_type", "咨询"
+                        ),
+                        "description": args.get("description", ""),
+                    },
+                }
+                trace_tools.append(
+                    {
+                        "name": name,
+                        "ok": False,
+                        "error_code": result.error_code,
+                        "duration_ms": result.duration_ms,
+                        "args": args,
+                        "intercepted": True,
+                        "tool_call_id": call_id,
+                    }
+                )
+                continue
+
             tool_messages.append(
                 ToolMessage(
-                    content=(
-                        "已把『建工单』选项交给用户自行确认。"
-                        "请用一句话简要说明并停止，不要再调用任何工具。"
-                    ),
+                    content=result.content,
                     tool_call_id=call_id,
                     name=name,
-                    status="success",
+                    status="success" if result.ok else "error",
                 )
             )
             trace_tools.append(
                 {
                     "name": name,
-                    "ok": True,
-                    "error_code": None,
-                    "duration_ms": 0.0,
+                    "ok": result.ok,
+                    "error_code": result.error_code,
+                    "duration_ms": result.duration_ms,
                     "args": args,
-                    "intercepted": True,
+                    "intercepted": False,
                     "tool_call_id": call_id,
                 }
             )
@@ -869,13 +986,18 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
             for item in existing + trace_tools
         )
         if duplicate_faq:
+            result = await deps.tool_registry.reject(
+                name,
+                args,
+                tool_call_id=call_id,
+                error_code="duplicate_faq",
+                message=(
+                    "query_faq 每轮只能调用一次；请使用已返回的证据。"
+                ),
+            )
             tool_messages.append(
                 ToolMessage(
-                    content=(
-                        '{"error": {"code": "duplicate_faq", '
-                        '"message": "query_faq 每轮只能调用一次；'
-                        '请使用已返回的证据。"}}'
-                    ),
+                    content=result.content,
                     tool_call_id=call_id,
                     name=name,
                     status="error",
@@ -885,8 +1007,8 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
                 {
                     "name": name,
                     "ok": False,
-                    "error_code": "duplicate_faq",
-                    "duration_ms": 0.0,
+                    "error_code": result.error_code,
+                    "duration_ms": result.duration_ms,
                     "args": args,
                     "intercepted": True,
                     "tool_call_id": call_id,
@@ -894,7 +1016,38 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
             )
             continue
 
-        result = await deps.tool_registry.execute(name, args)
+        result = await deps.tool_registry.execute(
+            name, args, tool_call_id=call_id
+        )
+        if result.error_code == "permission_required":
+            result = await deps.tool_registry.reject(
+                name,
+                args,
+                tool_call_id=call_id,
+                error_code="write_tool_not_supported",
+                message="写操作未开通人工确认",
+            )
+            tool_messages.append(
+                ToolMessage(
+                    content=result.content,
+                    tool_call_id=call_id,
+                    name=name,
+                    status="error",
+                )
+            )
+            trace_tools.append(
+                {
+                    "name": name,
+                    "ok": False,
+                    "error_code": result.error_code,
+                    "duration_ms": result.duration_ms,
+                    "args": args,
+                    "intercepted": True,
+                    "tool_call_id": call_id,
+                }
+            )
+            continue
+
         content = result.content
         if name == "query_faq" and result.ok:
             content = _faq_evidence(result.content)
@@ -930,7 +1083,89 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
     }
     if actions:
         out["suggested_actions"] = actions
+    if pending_ticket is not None:
+        out["pending_ticket"] = pending_ticket
     return out
+
+
+async def ticket_confirm(state: dict, *, deps: Any) -> dict:
+    """Pause for the user's confirmation, then execute or deny create_ticket."""
+    pending = state.get("pending_ticket")
+    if not pending:
+        return {}
+
+    decision = interrupt(
+        {
+            "type": "ticket_confirm",
+            "ticket_type": pending["args"].get(
+                "ticket_type", "咨询"
+            ),
+            "description": pending["args"].get("description", ""),
+            "tool_call_id": pending["call_id"],
+        }
+    )
+    confirmed = (
+        isinstance(decision, dict)
+        and decision.get("decision") == "confirm"
+    )
+
+    if confirmed:
+        result = await deps.tool_registry.execute(
+            "create_ticket",
+            pending["args"],
+            tool_call_id=pending["call_id"],
+            confirmed=True,
+        )
+    else:
+        result = await deps.tool_registry.deny(
+            "create_ticket",
+            pending["args"],
+            tool_call_id=pending["call_id"],
+            reason="用户取消确认",
+        )
+
+    ticket_no = None
+    if result.ok:
+        payload = (result.meta or {}).get("payload") or {}
+        ticket_no = payload.get("ticket_no")
+        if ticket_no is None:
+            try:
+                ticket_no = json.loads(result.content).get(
+                    "ticket_no"
+                )
+            except (TypeError, ValueError, AttributeError):
+                ticket_no = None
+
+    trace_tools = list(state.get("trace", {}).get("tools", []))
+    trace_tools.append(
+        {
+            "name": "create_ticket",
+            "ok": result.ok,
+            "error_code": result.error_code,
+            "duration_ms": result.duration_ms,
+            "args": pending["args"],
+            "intercepted": not confirmed,
+            "tool_call_id": pending["call_id"],
+        }
+    )
+    return {
+        "messages": [
+            ToolMessage(
+                content=result.content,
+                tool_call_id=pending["call_id"],
+                name="create_ticket",
+                status="success" if result.ok else "error",
+            )
+        ],
+        "pending_ticket": None,
+        "ticket_no": ticket_no,
+        "ticket_cancelled": (
+            not confirmed
+            and result.error_code == "permission_denied"
+        ),
+        "ticket_draft": None,
+        "trace": merge_trace(state, tools=trace_tools),
+    }
 
 
 def resolve_answer(state: dict) -> str:
@@ -948,11 +1183,20 @@ def resolve_answer(state: dict) -> str:
 async def log_node(state: dict, *, deps: Any) -> dict:
     """Log the turn trace and persist the assistant message for audit."""
     answer = resolve_answer(state)
+    ticket_no = state.get("ticket_no")
+    if ticket_no:
+        if not answer:
+            answer = f"已为您创建工单（工单号：{ticket_no}）。"
+        elif ticket_no not in answer:
+            answer = f"{answer}（工单号：{ticket_no}）"
     messages = state.get("messages", [])
     last = messages[-1] if messages else None
     updates: dict[str, Any] = {}
 
-    if state.get("answer") and not (
+    if ticket_no:
+        updates["answer"] = answer
+
+    if answer and not (
         isinstance(last, AIMessage)
         and _content_text(last.content) == answer
     ):

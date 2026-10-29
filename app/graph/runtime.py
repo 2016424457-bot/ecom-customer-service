@@ -2,9 +2,11 @@ import logging
 from collections.abc import AsyncIterator
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.types import Command
 
 from app.config import Settings
 from app.context import (
@@ -270,6 +272,10 @@ def _graph_input(
         "refund_mode": "",
         "refund_eligible": None,
         "pending_resume": False,
+        "pending_ticket": None,
+        "ticket_no": None,
+        "ticket_cancelled": False,
+        "forced_route": None,
         "summary": summary,
         "summary_upto_msg_id": summary_upto,
         "layer1_from_msg_id": layer1_from,
@@ -322,6 +328,67 @@ async def _maybe_schedule_summary(
         )
 
 
+def _preview_from_interrupt(
+    interrupt_item: Any, conversation_id: int
+) -> dict:
+    value = getattr(interrupt_item, "value", None)
+    if not isinstance(value, dict):
+        value = {}
+    return {
+        "type": "ticket_confirm",
+        "interrupt_id": getattr(interrupt_item, "id", ""),
+        "conversation_id": conversation_id,
+        "draft": {
+            "ticket_type": value.get("ticket_type", "咨询"),
+            "description": value.get("description", ""),
+        },
+    }
+
+
+def _done_payload(
+    cid: int,
+    values: dict,
+    *,
+    pending_confirm: dict | None = None,
+    answer: str | None = None,
+) -> dict:
+    trace = values.get("trace", {}) or {}
+    tools = trace.get("tools", [])
+    tool_calls = [
+        item["name"]
+        for item in tools
+        if item.get("name")
+        and (
+            not item.get("intercepted")
+            or item.get("name") == "create_ticket"
+        )
+    ]
+    return {
+        "session_id": str(cid),
+        "intent": values.get("intent", ""),
+        "route": values.get("route", ""),
+        "tool_calls": tool_calls,
+        "citations": values.get("citations", []) or [],
+        "suggested_actions": values.get("suggested_actions", [])
+        or [],
+        "steps": values.get("steps", 0),
+        "tokens_used": values.get("tokens_used", 0),
+        "trace": trace,
+        "refused": values.get("route")
+        in ("fallback", "refund_fallback")
+        or bool(trace.get("fallback")),
+        "answer": resolve_answer(values) if answer is None else answer,
+        "standalone_query": values.get("standalone_query", ""),
+        "intent_confidence": values.get("intent_confidence", 0.0),
+        "intent_tier": values.get("intent_tier", ""),
+        "queries": values.get("queries", []) or [],
+        "refund": trace.get("refund", {}) or {},
+        "ticket_no": values.get("ticket_no"),
+        "ticket_cancelled": bool(values.get("ticket_cancelled")),
+        "pending_confirm": pending_confirm,
+    }
+
+
 async def stream_turn(
     deps: GraphDeps,
     *,
@@ -335,6 +402,19 @@ async def stream_turn(
             deps, user_id, conversation_id
         )
     )
+    graph = build_graph(get_checkpointer(), deps)
+    config = {"configurable": {"thread_id": str(cid)}}
+    snapshot = await graph.aget_state(config)
+    if getattr(snapshot, "interrupts", ()):
+        yield (
+            "error",
+            {
+                "code": "pending_confirmation",
+                "message": "请先确认或取消工单预览",
+            },
+        )
+        return
+
     original_len = len(message)
     message, truncated = truncate_user_input(
         message,
@@ -355,8 +435,6 @@ async def stream_turn(
     msg_id = _message_id(row)
     yield ("session", {"session_id": str(cid)})
 
-    graph = build_graph(get_checkpointer(), deps)
-    config = {"configurable": {"thread_id": str(cid)}}
     actions: list[dict] = []
 
     async for mode, chunk in graph.astream(
@@ -389,10 +467,10 @@ async def stream_turn(
             if node in UPDATE_ANSWER_NODES and update.get("answer"):
                 yield ("token", {"delta": update["answer"]})
             if node == "agent_llm":
-                for message in update.get("messages", []):
+                for message_item in update.get("messages", []):
                     if (
-                        isinstance(message, AIMessage)
-                        and message.tool_calls
+                        isinstance(message_item, AIMessage)
+                        and message_item.tool_calls
                     ):
                         yield ("reset", {"reason": "tool_step"})
             if node in ("forced_rag", "refund_policy_rag") and update.get(
@@ -405,47 +483,129 @@ async def stream_turn(
             if update.get("suggested_actions"):
                 actions = list(update["suggested_actions"])
 
+    snapshot = await graph.aget_state(config)
+    values = getattr(snapshot, "values", {}) or {}
+    interrupts = getattr(snapshot, "interrupts", ())
+    if interrupts:
+        payload = _preview_from_interrupt(interrupts[0], cid)
+        yield ("ticket_preview", payload)
+        yield (
+            "done",
+            _done_payload(
+                cid, values, pending_confirm=payload, answer=""
+            ),
+        )
+        return
+
     if actions:
         yield ("actions", {"event": "actions", "items": actions})
+    await _maybe_schedule_summary(deps, cid, values)
+    yield ("done", _done_payload(cid, values))
+
+
+async def resume_turn(
+    deps: GraphDeps,
+    *,
+    conversation_id: int,
+    decision: str,
+    interrupt_id: str | None = None,
+) -> AsyncIterator[tuple[str, dict]]:
+    """Resume a paused ticket confirmation with the user's decision."""
+    graph = build_graph(get_checkpointer(), deps)
+    config = {"configurable": {"thread_id": str(conversation_id)}}
+    snapshot = await graph.aget_state(config)
+    interrupts = getattr(snapshot, "interrupts", ())
+    if not interrupts:
+        yield (
+            "error",
+            {
+                "code": "no_pending_confirmation",
+                "message": "没有待确认的工单预览",
+            },
+        )
+        return
+    current = interrupts[0]
+    if interrupt_id and interrupt_id != getattr(current, "id", None):
+        yield (
+            "error",
+            {
+                "code": "stale_confirmation",
+                "message": "工单预览已过期，请刷新后重试",
+            },
+        )
+        return
+
+    actions: list[dict] = []
+    streamed_text = ""
+
+    async for mode, chunk in graph.astream(
+        Command(resume={"decision": decision}),
+        config,
+        stream_mode=["messages", "updates"],
+    ):
+        if mode == "messages":
+            node_message, metadata = chunk
+            if metadata.get("langgraph_node") not in ANSWER_NODES:
+                continue
+            text = _content_text(getattr(node_message, "content", None))
+            if text:
+                streamed_text += text
+                yield ("token", {"delta": text})
+            continue
+
+        for node, update in chunk.items():
+            if not isinstance(update, dict):
+                continue
+            if node in DETERMINISTIC_ANSWER_NODES and update.get("answer"):
+                yield ("token", {"delta": update["answer"]})
+            if node in UPDATE_ANSWER_NODES and update.get("answer"):
+                yield ("token", {"delta": update["answer"]})
+            if node == "agent_llm":
+                for message_item in update.get("messages", []):
+                    if (
+                        isinstance(message_item, AIMessage)
+                        and message_item.tool_calls
+                    ):
+                        yield ("reset", {"reason": "tool_step"})
+            if node in ("forced_rag", "refund_policy_rag") and update.get(
+                "citations"
+            ):
+                yield ("citations", {"items": update["citations"]})
+            if node in ("agent_tools", "refund_order_lookup"):
+                for tool_event in _tool_events(update):
+                    yield ("tool", tool_event)
+            if update.get("suggested_actions"):
+                actions = list(update["suggested_actions"])
 
     snapshot = await graph.aget_state(config)
     values = getattr(snapshot, "values", {}) or {}
-    trace = values.get("trace", {}) or {}
-    tools = trace.get("tools", [])
-    tool_calls = [
-        item["name"]
-        for item in tools
-        if item.get("name")
-        and (
-            not item.get("intercepted")
-            or item.get("name") == "create_ticket"
-        )
-    ]
-    await _maybe_schedule_summary(deps, cid, values)
-    yield (
-        "done",
-        {
-            "session_id": str(cid),
-            "intent": values.get("intent", ""),
-            "route": values.get("route", ""),
-            "tool_calls": tool_calls,
-            "citations": values.get("citations", []) or [],
-            "suggested_actions": values.get("suggested_actions", [])
-            or [],
-            "steps": values.get("steps", 0),
-            "tokens_used": values.get("tokens_used", 0),
-            "trace": trace,
-            "refused": values.get("route")
-            in ("fallback", "refund_fallback")
-            or bool(trace.get("fallback")),
-            "answer": resolve_answer(values),
-            "standalone_query": values.get("standalone_query", ""),
-            "intent_confidence": values.get("intent_confidence", 0.0),
-            "intent_tier": values.get("intent_tier", ""),
-            "queries": values.get("queries", []) or [],
-            "refund": trace.get("refund", {}) or {},
-        },
+    final_answer = resolve_answer(values)
+    if final_answer.startswith(streamed_text) and len(final_answer) > len(
+        streamed_text
+    ):
+        yield ("token", {"delta": final_answer[len(streamed_text):]})
+    elif not streamed_text and final_answer:
+        yield ("token", {"delta": final_answer})
+
+    if actions:
+        yield ("actions", {"event": "actions", "items": actions})
+    await _maybe_schedule_summary(deps, conversation_id, values)
+    yield ("done", _done_payload(conversation_id, values))
+
+
+async def get_pending(
+    settings: Any, conversation_id: int
+) -> dict | None:
+    """Return the pending ticket preview for a conversation, if any."""
+    graph = build_graph(
+        get_checkpointer(), SimpleNamespace(settings=settings)
     )
+    config = {"configurable": {"thread_id": str(conversation_id)}}
+    snapshot = await graph.aget_state(config)
+    interrupts = getattr(snapshot, "interrupts", ())
+    if not interrupts:
+        return None
+    return _preview_from_interrupt(interrupts[0], conversation_id)
 
 
 async def run_turn(
@@ -461,6 +621,19 @@ async def run_turn(
             deps, user_id, conversation_id
         )
     )
+    graph = build_graph(get_checkpointer(), deps)
+    config = {"configurable": {"thread_id": str(cid)}}
+    snapshot = await graph.aget_state(config)
+    pending = getattr(snapshot, "interrupts", ())
+    if pending:
+        return {
+            "conversation_id": cid,
+            "state": getattr(snapshot, "values", {}) or {},
+            "pending_confirm": _preview_from_interrupt(
+                pending[0], cid
+            ),
+        }
+
     original_len = len(message)
     message, truncated = truncate_user_input(
         message,
@@ -480,8 +653,6 @@ async def run_turn(
     await deps.repository.commit()
     msg_id = _message_id(row)
 
-    graph = build_graph(get_checkpointer(), deps)
-    config = {"configurable": {"thread_id": str(cid)}}
     final = await graph.ainvoke(
         _graph_input(
             user_id,
@@ -494,5 +665,15 @@ async def run_turn(
         ),
         config,
     )
+    snapshot = await graph.aget_state(config)
+    interrupts = getattr(snapshot, "interrupts", ())
+    if interrupts:
+        return {
+            "conversation_id": cid,
+            "state": final,
+            "pending_confirm": _preview_from_interrupt(
+                interrupts[0], cid
+            ),
+        }
     await _maybe_schedule_summary(deps, cid, final)
     return {"conversation_id": cid, "state": final}

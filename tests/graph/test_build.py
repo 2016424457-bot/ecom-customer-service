@@ -15,6 +15,7 @@ EXPECTED_NODES = {
     "prepare_context",
     "coref_rewrite",
     "pending_check",
+    "tool_intent_gate",
     "classify_intent",
     "other_reply",
     "refund_scope",
@@ -26,6 +27,7 @@ EXPECTED_NODES = {
     "confidence_check",
     "agent_llm",
     "agent_tools",
+    "ticket_confirm",
     "complaint_reply",
     "chitchat_reply",
     "fallback_reply",
@@ -55,7 +57,7 @@ def test_conditional_edges_have_expected_targets():
         for edge in graph.edges
         if not edge.conditional
     }
-    assert ("agent_tools", "agent_llm") in edges
+    assert ("ticket_confirm", "agent_llm") in edges
     assert ("forced_rag", "confidence_check") in edges
     for node in (
         "complaint_reply",
@@ -77,7 +79,9 @@ def test_router_edges_are_wired():
     assert ("coref_rewrite", "pending_check") in pairs
     for pair in (
         ("pending_check", "refund_order_lookup"),
-        ("pending_check", "classify_intent"),
+        ("pending_check", "tool_intent_gate"),
+        ("tool_intent_gate", "agent_llm"),
+        ("tool_intent_gate", "classify_intent"),
         ("classify_intent", "refund_scope"),
         ("classify_intent", "other_reply"),
         ("refund_scope", "forced_rag"),
@@ -89,5 +93,8 @@ def test_router_edges_are_wired():
         ("refund_judge", "log"),
         ("refund_fallback_reply", "log"),
         ("other_reply", "log"),
+        ("agent_tools", "ticket_confirm"),
+        ("agent_tools", "agent_llm"),
+        ("ticket_confirm", "agent_llm"),
     ):
         assert pair in pairs

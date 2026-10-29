@@ -35,6 +35,9 @@ eval-ch06:
 eval-ch07:
 	uv run python -m scripts.eval_ch07
 
+eval-ch08:
+	uv run python -m scripts.eval_ch08
+
 mcp-logistics:
 	uv run python -m mcp_servers.logistics_server
 

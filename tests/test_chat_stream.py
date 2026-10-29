@@ -199,3 +199,88 @@ def test_stream_route_rejects_bad_user_id(
         )
 
     assert response.status_code == 422
+
+
+def test_resume_route_returns_sse(
+    settings: Settings,
+    prompt_builder: PromptBuilder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict = {}
+
+    async def fake_resume(**kwargs):
+        seen.update(kwargs)
+        yield ("token", {"delta": "已提交"})
+        yield ("done", {"session_id": "1", "ticket_no": "T1"})
+
+    monkeypatch.setattr(routes, "resume_chat", fake_resume)
+    client = make_client(settings=settings, prompt_builder=prompt_builder)
+
+    with client:
+        response = client.post(
+            "/api/chat/resume",
+            json={
+                "conversation_id": 1,
+                "decision": "confirm",
+                "interrupt_id": "i1",
+            },
+        )
+
+    assert response.status_code == 200
+    events = parse_sse(response.text)
+    assert [name for name, _ in events] == ["token", "done"]
+    assert events[1][1]["ticket_no"] == "T1"
+    assert seen["conversation_id"] == 1
+    assert seen["decision"] == "confirm"
+    assert seen["interrupt_id"] == "i1"
+
+
+def test_pending_route_returns_preview(
+    settings: Settings,
+    prompt_builder: PromptBuilder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_pending(settings_obj, conversation_id):
+        return {
+            "type": "ticket_confirm",
+            "interrupt_id": "i1",
+            "conversation_id": conversation_id,
+            "draft": {"ticket_type": "售后", "description": "屏幕碎了"},
+        }
+
+    monkeypatch.setattr(
+        routes.graph_runtime, "get_pending", fake_pending
+    )
+    client = make_client(settings=settings, prompt_builder=prompt_builder)
+
+    with client:
+        response = client.get(
+            "/api/chat/pending", params={"conversation_id": 7}
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["pending_confirm"]["interrupt_id"] == "i1"
+    assert payload["pending_confirm"]["conversation_id"] == 7
+
+
+def test_pending_route_returns_null_when_absent(
+    settings: Settings,
+    prompt_builder: PromptBuilder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_pending(settings_obj, conversation_id):
+        return None
+
+    monkeypatch.setattr(
+        routes.graph_runtime, "get_pending", fake_pending
+    )
+    client = make_client(settings=settings, prompt_builder=prompt_builder)
+
+    with client:
+        response = client.get(
+            "/api/chat/pending", params={"conversation_id": 7}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["pending_confirm"] is None

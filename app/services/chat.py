@@ -138,3 +138,88 @@ async def stream_chat(
             exc,
         )
         yield ("error", {"code": error.code, "message": error.message})
+
+
+async def resume_chat(
+    *,
+    conversation_id: int,
+    decision: str,
+    interrupt_id: str | None = None,
+    chat_model: Any,
+    repository: Any,
+    prompt_builder: PromptBuilder,
+    settings: Settings,
+    locks: ConversationLocks,
+    faq_search: Any = None,
+    evidence_checker: Any = None,
+    intent_model: Any = None,
+    coref_model: Any = None,
+    expansion_model: Any = None,
+    refund_judge_model: Any = None,
+    intent_fast_model: Any = None,
+    context_budget: Any = None,
+    summary_service: Any = None,
+    mcp_provider: Any = None,
+    audit_writer: Any = None,
+) -> AsyncIterator[Event]:
+    """Resume a paused ticket confirmation and map events to SSE."""
+    lock = locks.lock_for(str(conversation_id))
+    try:
+        async with lock:
+            if intent_model is None:
+                intent_model = chat_model.with_structured_output(
+                    IntentResult,
+                    method=settings.structured_output_method,
+                )
+            deps = await graph_runtime.build_deps(
+                settings=settings,
+                chat_model=chat_model,
+                intent_model=intent_model,
+                prompt_builder=prompt_builder,
+                repository=repository,
+                conversation_id=conversation_id,
+                evidence_checker=evidence_checker,
+                faq_search=faq_search,
+                coref_model=coref_model,
+                expansion_model=expansion_model,
+                refund_judge_model=refund_judge_model,
+                intent_fast_model=intent_fast_model,
+                context_budget=context_budget,
+                summary_service=summary_service,
+                mcp_provider=mcp_provider,
+                audit_writer=audit_writer,
+            )
+            async for event, data in graph_runtime.resume_turn(
+                deps,
+                conversation_id=conversation_id,
+                decision=decision,
+                interrupt_id=interrupt_id,
+            ):
+                yield event, data
+    except graph_runtime.ConversationNotFound:
+        yield (
+            "error",
+            {"code": "conversation_not_found", "message": "会话不存在"},
+        )
+    except AppError as error:
+        yield (
+            "error",
+            {"code": error.code, "message": error.message},
+        )
+    except Exception as exc:
+        error = map_upstream_error(exc)
+        if error.code == "parse_error":
+            error = AppError(
+                code="upstream_error",
+                message=ERROR_MESSAGES["upstream_error"],
+                status_code=502,
+            )
+        logger.warning(
+            "chat_resume event=chat_resume outcome=error "
+            "conversation_id=%s error_code=%s error_type=%s error=%r",
+            conversation_id,
+            error.code,
+            type(exc).__name__,
+            exc,
+        )
+        yield ("error", {"code": error.code, "message": error.message})

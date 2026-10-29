@@ -17,13 +17,14 @@ from app.schemas import (
     AgentResponse,
     ChatExtractRequest,
     ChatRequest,
+    ChatResumeRequest,
     FaithCaseOut,
     FaithCaseUpdate,
     KnowledgeChunkDetail,
     ToolCallView,
     ToolResultView,
 )
-from app.services.chat import stream_chat
+from app.services.chat import resume_chat, stream_chat
 from app.services.extraction import extract_after_sales
 
 router = APIRouter()
@@ -158,6 +159,7 @@ async def agent_endpoint(
         tool_calls=calls,
         tool_results=results,
         suggested_actions=state.get("suggested_actions", []) or [],
+        pending_confirm=out.get("pending_confirm"),
     )
 
 
@@ -204,6 +206,53 @@ async def chat_endpoint(
     """Alias for /api/chat/stream kept for the CH05 spec."""
     async for event in chat_stream_endpoint(payload, runtime):
         yield event
+
+
+@router.post("/api/chat/resume", response_class=EventSourceResponse)
+async def chat_resume_endpoint(
+    payload: ChatResumeRequest,
+    runtime: Runtime = Depends(get_runtime),
+) -> AsyncIterator[ServerSentEvent]:
+    """Resume a paused ticket confirmation as Server-Sent Events."""
+    async with runtime.repository_scope() as repository:
+        async for event, data in resume_chat(
+            conversation_id=payload.conversation_id,
+            decision=payload.decision,
+            interrupt_id=payload.interrupt_id,
+            chat_model=runtime.chat_model,
+            repository=repository,
+            prompt_builder=runtime.prompt_builder,
+            settings=runtime.settings,
+            locks=runtime.locks,
+            faq_search=runtime.faq_search,
+            evidence_checker=runtime.evidence_checker,
+            intent_model=runtime.intent_model,
+            coref_model=getattr(runtime, "coref_model", None),
+            expansion_model=getattr(runtime, "expansion_model", None),
+            refund_judge_model=getattr(
+                runtime, "refund_judge_model", None
+            ),
+            intent_fast_model=getattr(runtime, "intent_fast_model", None),
+            context_budget=getattr(runtime, "context_budget", None),
+            summary_service=getattr(
+                runtime, "summary_service", None
+            ),
+            mcp_provider=getattr(runtime, "mcp_provider", None),
+            audit_writer=getattr(runtime, "audit_writer", None),
+        ):
+            yield ServerSentEvent(event=event, data=data)
+
+
+@router.get("/api/chat/pending")
+async def chat_pending_endpoint(
+    conversation_id: int = Query(gt=0),
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    """Return the pending ticket preview for a conversation, if any."""
+    preview = await graph_runtime.get_pending(
+        runtime.settings, conversation_id
+    )
+    return {"pending_confirm": preview}
 
 
 @router.post("/api/chat/extract", response_model=AfterSalesExtraction)

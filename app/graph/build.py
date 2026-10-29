@@ -11,6 +11,7 @@ from app.graph.routing import (
     refund_scope_route,
     route_by_intent,
     should_continue,
+    tool_gate_route,
 )
 from app.graph.state import ConversationState
 
@@ -30,6 +31,7 @@ def _builder(deps: GraphDeps) -> StateGraph:
         "coref_rewrite", partial(nodes.coref_rewrite, deps=deps)
     )
     builder.add_node("pending_check", partial(nodes.pending_check, deps=deps))
+    builder.add_node("tool_intent_gate", nodes.tool_intent_gate)
     builder.add_node(
         "classify_intent", partial(nodes.classify_intent, deps=deps)
     )
@@ -39,6 +41,9 @@ def _builder(deps: GraphDeps) -> StateGraph:
     )
     builder.add_node("agent_llm", partial(nodes.agent_llm, deps=deps))
     builder.add_node("agent_tools", partial(nodes.agent_tools, deps=deps))
+    builder.add_node(
+        "ticket_confirm", partial(nodes.ticket_confirm, deps=deps)
+    )
     builder.add_node(
         "complaint_reply", partial(nodes.complaint_reply, deps=deps)
     )
@@ -71,7 +76,12 @@ def _builder(deps: GraphDeps) -> StateGraph:
     builder.add_conditional_edges(
         "pending_check",
         pending_check_route,
-        {"resume": "refund_order_lookup", "classify": "classify_intent"},
+        {"resume": "refund_order_lookup", "classify": "tool_intent_gate"},
+    )
+    builder.add_conditional_edges(
+        "tool_intent_gate",
+        tool_gate_route,
+        {"business": "agent_llm", "classify": "classify_intent"},
     )
     builder.add_conditional_edges(
         "classify_intent",
@@ -125,7 +135,19 @@ def _builder(deps: GraphDeps) -> StateGraph:
             "cap": "budget_reply",
         },
     )
-    builder.add_edge("agent_tools", "agent_llm")
+    def _ticket_route(state: dict) -> str:
+        return (
+            "confirm"
+            if state.get("pending_ticket")
+            else "continue"
+        )
+
+    builder.add_conditional_edges(
+        "agent_tools",
+        _ticket_route,
+        {"confirm": "ticket_confirm", "continue": "agent_llm"},
+    )
+    builder.add_edge("ticket_confirm", "agent_llm")
 
     for reply in (
         "complaint_reply",
