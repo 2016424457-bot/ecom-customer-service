@@ -28,6 +28,7 @@
 **非目标（本章不做）**
 
 - 低置信度问题按主题归类的微调分类器（下一步）。
+- 审核自动通过/全自动写库：LLM 只起草，人工点「通过」是唯一入库闸门（方案 A）；高置信自动通过（B）与全自动（C）不在本章。
 - 审核后台的登录/权限体系（沿用项目现状：本地管理页无认证）。
 - 替换 Langfuse 为其他可观测平台。
 - 新增除用户给定 DDL 之外的表或列。
@@ -120,7 +121,7 @@
 ### 4.5 飞轮流水线
 
 - 新增 `app/flywheel/`：
-  - `normalize.py`：`QuestionNormalizer.normalize(raw_question) -> NormalizedQuestion(question, suggested_answer)`；prompt `app/prompts/question_normalize_prompt.txt`；结构化输出。
+  - `normalize.py`：`QuestionNormalizer.normalize(raw_question, retrieved_chunks=None) -> NormalizedQuestion(question, suggested_answer, grounded)`；prompt `app/prompts/question_normalize_prompt.txt`；结构化输出。`retrieved_chunks` 来自池行的快照，作为起草依据；有依据时要求答案尽量引用片段，依据不足时 `grounded=False`，示例答案标注「需人工补充」，不编造政策。`ai_suggested_answer` 始终只是初稿。
   - `dedup.py`：`QuestionDeduplicator.match(normalized, candidates) -> DedupVerdict(matched_id, reason)`；候选为 `review_queue` 中 `review_status='待审'` 的行，按 `occurrence_count desc, updated_at desc` 取前 `flywheel_dedup_candidate_limit`（默认 100）；prompt `app/prompts/question_dedup_prompt.txt`。
   - `service.py`：`FlywheelService`，持有 `session_factory`、normalizer、deduplicator；内部是单 worker 的 `asyncio.Queue`——`enqueue(pool_id)` 只入队，一个后台 worker 串行处理，避免同题并发都 miss 查重、`occurrence_count` 丢增量；`process(pool_id)`：
     1. 新 session 读 `low_confidence_questions` 行；`matched_review_id` 非空 → 跳过（幂等）。
@@ -227,6 +228,7 @@
 | 5 | top2/gap 取错序 | 从 `result.hits` 按 score 降序取，不用 `prompt_order` 展示序 |
 | 6 | 飞轮并发重复入队 | `FlywheelService` 单 worker + `asyncio.Queue` 串行处理；跨进程竞争记为已知限制 |
 | 7 | 校准口径与生产不一致 | 校准用 `NoOpQueryRewriter` + `min_score=settings.rerank_min_score` + 无 content_type，对齐 `forced_rag`；退款路沿用同阈值并记 `confidence_route="refund"` |
+| 8 | 审核阶段多大程度依赖大模型 | 方案 A：AI 用召回片段起草 `ai_suggested_answer`，人工审核并点「通过」后才写 `approved_answer` 入库；不做 B（自动通过）/C（全自动）。2026-10-29 用户拍板 |
 
 ### 留给实现者的决定
 
