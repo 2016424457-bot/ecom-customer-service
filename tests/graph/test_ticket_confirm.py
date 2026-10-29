@@ -78,11 +78,14 @@ class FakeExpander:
 
 
 class FakeRegistry:
-    def __init__(self, *, invalid: bool = False) -> None:
+    def __init__(
+        self, *, invalid: bool = False, confirmed_error: bool = False
+    ) -> None:
         self.calls: list[tuple] = []
         self.denies: list[tuple] = []
         self.rejects: list[tuple] = []
         self.invalid = invalid
+        self.confirmed_error = confirmed_error
 
     async def execute(
         self, name, arguments, *, tool_call_id=None, confirmed=False
@@ -117,6 +120,20 @@ class FakeRegistry:
                     error_kind="permission_required",
                     status="权限拒绝",
                     meta={"arguments": arguments},
+                )
+            if self.confirmed_error:
+                return ToolResult(
+                    name=name,
+                    ok=False,
+                    content=(
+                        '{"error": {"code": "tool_error", '
+                        '"message": "工单系统异常"}}'
+                    ),
+                    error_code="tool_error",
+                    duration_ms=1.0,
+                    attempts=1,
+                    error_kind="tool_error",
+                    status="失败",
                 )
             return ToolResult(
                 name=name,
@@ -338,6 +355,42 @@ async def test_confirm_creates_ticket_and_reply_has_no():
         for row in deps.repository.rows
         if row[1] == "assistant"
     )
+
+
+@pytest.mark.asyncio
+async def test_confirm_failure_that_retries_interrupts_again():
+    model = FakeModel(
+        [
+            AIMessage("", tool_calls=[_call()]),
+            AIMessage("", tool_calls=[_call(call_id="t2")]),
+        ]
+    )
+    registry = FakeRegistry(confirmed_error=True)
+    deps = _deps(model, registry)
+
+    first = await _first_turn(deps)
+    preview = next(data for kind, data in first if kind == "ticket_preview")
+
+    resumed = [
+        event
+        async for event in runtime.resume_turn(
+            deps,
+            conversation_id=7,
+            decision="confirm",
+            interrupt_id=preview["interrupt_id"],
+        )
+    ]
+
+    previews = [data for kind, data in resumed if kind == "ticket_preview"]
+    assert len(previews) == 1
+    assert previews[0]["draft"]["description"] == "耳机左耳没声音"
+    done = resumed[-1][1]
+    assert done["pending_confirm"] is not None
+    assert (
+        done["pending_confirm"]["draft"]["description"]
+        == "耳机左耳没声音"
+    )
+    assert done["ticket_no"] is None
 
 
 @pytest.mark.asyncio

@@ -482,6 +482,7 @@
     const resolution = item.ticketResolution;
     if (!preview && !resolution) return;
     if (bubble.querySelector(".ticket-preview-card")) return;
+    const draft = (preview && preview.draft) || item.ticketDraft || {};
 
     const card = document.createElement("div");
     card.className = "ticket-preview-card";
@@ -493,15 +494,12 @@
     badge.textContent = "工单预览";
     const type = document.createElement("span");
     type.className = "ticket-preview-type";
-    type.textContent =
-      (preview && preview.draft && preview.draft.ticket_type) || "咨询";
+    type.textContent = draft.ticket_type || "咨询";
     head.append(badge, type);
 
     const desc = document.createElement("p");
     desc.className = "ticket-preview-desc";
-    desc.textContent =
-      (preview && preview.draft && preview.draft.description) ||
-      "（无描述）";
+    desc.textContent = draft.description || "（无描述）";
 
     const actions = document.createElement("div");
     actions.className = "ticket-preview-actions";
@@ -540,6 +538,12 @@
       );
     } else if (resolution === "cancelled") {
       setTicketCardState(card, "done", "已取消，未创建工单");
+    } else if (resolution === "failed") {
+      setTicketCardState(
+        card,
+        "done",
+        "未创建成功，请重试或联系人工",
+      );
     } else {
       setTicketCardState(card, "pending", "");
     }
@@ -549,6 +553,7 @@
   async function resumeTicket(item, card, decision) {
     if (busy || !item.pendingConfirm) return;
     const preview = item.pendingConfirm;
+    item.ticketDraft = preview.draft || item.ticketDraft || {};
     const answerEl = card.querySelector(".ticket-preview-answer");
     const status = card.querySelector(".ticket-preview-status");
     item.text = "";
@@ -593,11 +598,25 @@
         throw new Error("当前浏览器不支持流式响应");
       }
 
+      let reinterrupted = false;
       await readSse(response, (event, data) => {
         if (event === "session" && data && data.session_id) {
           sessionId = String(data.session_id);
           conversationId = Number(data.session_id) || conversationId;
           saveSessionId();
+          return;
+        }
+        if (event === "reset") {
+          item.text = "";
+          if (answerEl) answerEl.textContent = "";
+          return;
+        }
+        if (event === "ticket_preview" && data) {
+          reinterrupted = true;
+          item.pendingConfirm = data;
+          item.ticketResolution = null;
+          item.ticketNo = null;
+          item.ticketCancelled = false;
           return;
         }
         if (event === "token" && data && typeof data.delta === "string") {
@@ -611,16 +630,31 @@
             item.text = data.answer;
             if (answerEl) answerEl.textContent = item.text;
           }
+          if (data && data.pending_confirm) {
+            reinterrupted = true;
+            item.pendingConfirm = data.pending_confirm;
+            item.ticketResolution = null;
+            item.ticketNo = null;
+            item.ticketCancelled = false;
+            return;
+          }
           item.pendingConfirm = null;
           item.ticketNo = (data && data.ticket_no) || null;
           item.ticketCancelled = Boolean(
             data && data.ticket_cancelled,
           );
-          item.ticketResolution = item.ticketCancelled
-            ? "cancelled"
-            : "confirmed";
+          item.ticketResolution = item.ticketNo
+            ? "confirmed"
+            : item.ticketCancelled
+              ? "cancelled"
+              : "failed";
           if (!item.text && item.ticketCancelled) {
             item.text = "已取消建单。";
+            if (answerEl) answerEl.textContent = item.text;
+          }
+          if (!item.text && item.ticketResolution === "failed") {
+            item.text =
+              "工单没有创建成功，请稍后重试或联系人工客服。";
             if (answerEl) answerEl.textContent = item.text;
           }
           return;
@@ -632,14 +666,27 @@
         }
       });
 
+      if (reinterrupted || item.pendingConfirm) {
+        const bubble = card.parentElement;
+        if (bubble) {
+          card.remove();
+          renderTicketPreview(bubble, item);
+        }
+        setPendingLock(true);
+        saveHistory();
+        return;
+      }
+
       setTicketCardState(
         card,
         "done",
         item.ticketResolution === "cancelled"
           ? "已取消，未创建工单"
-          : item.ticketNo
-            ? `已提交，工单号 ${item.ticketNo}`
-            : "已提交",
+          : item.ticketResolution === "failed"
+            ? "未创建成功，请重试或联系人工"
+            : item.ticketNo
+              ? `已提交，工单号 ${item.ticketNo}`
+              : "已提交",
       );
       if (answerEl && item.text) {
         renderAnswer(answerEl, item.text, item.citations || []);

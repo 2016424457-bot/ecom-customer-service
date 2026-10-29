@@ -161,6 +161,78 @@ def _ensure_checkpointer():
     runtime.set_checkpointer(None)
 
 
+class ResumingErrorGraph:
+    """First aget_state has an interrupt; resume then fails upstream."""
+
+    def __init__(self) -> None:
+        self.states = 0
+
+    async def aget_state(self, config):
+        self.states += 1
+        if self.states == 1:
+            return SimpleNamespace(
+                values={},
+                interrupts=(
+                    SimpleNamespace(
+                        id="i1",
+                        value={
+                            "type": "ticket_confirm",
+                            "ticket_type": "售后",
+                            "description": "屏幕碎了",
+                            "tool_call_id": "t1",
+                        },
+                    ),
+                ),
+            )
+        return SimpleNamespace(
+            values={
+                "intent": "建单",
+                "route": "business",
+                "ticket_no": "T1",
+                "citations": [],
+                "suggested_actions": [],
+                "trace": {"tools": []},
+                "messages": [],
+            },
+            interrupts=(),
+        )
+
+    async def astream(self, inp, config, stream_mode=None):
+        yield ("updates", {"ticket_confirm": {"ticket_no": "T1"}})
+        raise RuntimeError("upstream down")
+
+
+@pytest.mark.asyncio
+async def test_resume_failure_after_ticket_commit_surfaces_ticket_no(
+    monkeypatch,
+):
+    repository = FakeRepository()
+    graph = ResumingErrorGraph()
+    monkeypatch.setattr(runtime, "build_graph", lambda *a, **k: graph)
+
+    events = [
+        event
+        async for event in runtime.resume_turn(
+            SimpleNamespace(
+                repository=repository,
+                settings=SimpleNamespace(max_agent_steps=6),
+            ),
+            conversation_id=7,
+            decision="confirm",
+            interrupt_id="i1",
+        )
+    ]
+
+    assert events[-1][0] == "done"
+    done = events[-1][1]
+    assert done["ticket_no"] == "T1"
+    assert "T1" in done["answer"]
+    assert any(
+        row[1] == "assistant" and "T1" in (row[2] or "")
+        for row in repository.rows
+    )
+
+
 @pytest.mark.asyncio
 async def test_stream_turn_filters_and_maps_events(monkeypatch):
     repository = FakeRepository()

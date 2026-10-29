@@ -503,6 +503,26 @@ async def stream_turn(
     yield ("done", _done_payload(cid, values))
 
 
+async def _persist_ticket_fallback(
+    deps: Any, conversation_id: int, ticket_no: str
+) -> str:
+    """Persist the ticket number when the post-confirm model call fails."""
+    message = f"已为您创建工单（工单号：{ticket_no}）。"
+    try:
+        await deps.repository.add_message(
+            conversation_id, "assistant", content=message
+        )
+        await deps.repository.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "ticket_fallback_persist_failed conv=%s ticket_no=%s error=%r",
+            conversation_id,
+            ticket_no,
+            exc,
+        )
+    return message
+
+
 async def resume_turn(
     deps: GraphDeps,
     *,
@@ -538,47 +558,91 @@ async def resume_turn(
     actions: list[dict] = []
     streamed_text = ""
 
-    async for mode, chunk in graph.astream(
-        Command(resume={"decision": decision}),
-        config,
-        stream_mode=["messages", "updates"],
-    ):
-        if mode == "messages":
-            node_message, metadata = chunk
-            if metadata.get("langgraph_node") not in ANSWER_NODES:
+    try:
+        async for mode, chunk in graph.astream(
+            Command(resume={"decision": decision}),
+            config,
+            stream_mode=["messages", "updates"],
+        ):
+            if mode == "messages":
+                node_message, metadata = chunk
+                if metadata.get("langgraph_node") not in ANSWER_NODES:
+                    continue
+                text = _content_text(
+                    getattr(node_message, "content", None)
+                )
+                if text:
+                    streamed_text += text
+                    yield ("token", {"delta": text})
                 continue
-            text = _content_text(getattr(node_message, "content", None))
-            if text:
-                streamed_text += text
-                yield ("token", {"delta": text})
-            continue
 
-        for node, update in chunk.items():
-            if not isinstance(update, dict):
-                continue
-            if node in DETERMINISTIC_ANSWER_NODES and update.get("answer"):
-                yield ("token", {"delta": update["answer"]})
-            if node in UPDATE_ANSWER_NODES and update.get("answer"):
-                yield ("token", {"delta": update["answer"]})
-            if node == "agent_llm":
-                for message_item in update.get("messages", []):
-                    if (
-                        isinstance(message_item, AIMessage)
-                        and message_item.tool_calls
-                    ):
-                        yield ("reset", {"reason": "tool_step"})
-            if node in ("forced_rag", "refund_policy_rag") and update.get(
-                "citations"
-            ):
-                yield ("citations", {"items": update["citations"]})
-            if node in ("agent_tools", "refund_order_lookup"):
-                for tool_event in _tool_events(update):
-                    yield ("tool", tool_event)
-            if update.get("suggested_actions"):
-                actions = list(update["suggested_actions"])
+            for node, update in chunk.items():
+                if not isinstance(update, dict):
+                    continue
+                if (
+                    node in DETERMINISTIC_ANSWER_NODES
+                    and update.get("answer")
+                ):
+                    yield ("token", {"delta": update["answer"]})
+                if node in UPDATE_ANSWER_NODES and update.get("answer"):
+                    yield ("token", {"delta": update["answer"]})
+                if node == "agent_llm":
+                    for message_item in update.get("messages", []):
+                        if (
+                            isinstance(message_item, AIMessage)
+                            and message_item.tool_calls
+                        ):
+                            yield ("reset", {"reason": "tool_step"})
+                if node in (
+                    "forced_rag",
+                    "refund_policy_rag",
+                ) and update.get("citations"):
+                    yield ("citations", {"items": update["citations"]})
+                if node in ("agent_tools", "refund_order_lookup"):
+                    for tool_event in _tool_events(update):
+                        yield ("tool", tool_event)
+                if update.get("suggested_actions"):
+                    actions = list(update["suggested_actions"])
+    except Exception as exc:
+        snapshot = await graph.aget_state(config)
+        values = getattr(snapshot, "values", {}) or {}
+        ticket_no = values.get("ticket_no")
+        if not ticket_no:
+            raise
+        message = await _persist_ticket_fallback(
+            deps, conversation_id, ticket_no
+        )
+        logger.warning(
+            "resume_failed_after_ticket conv=%s ticket_no=%s error=%r",
+            conversation_id,
+            ticket_no,
+            exc,
+        )
+        yield ("reset", {"reason": "ticket_fallback"})
+        yield ("token", {"delta": message})
+        yield (
+            "done",
+            _done_payload(conversation_id, values, answer=message),
+        )
+        return
 
     snapshot = await graph.aget_state(config)
     values = getattr(snapshot, "values", {}) or {}
+    interrupts = getattr(snapshot, "interrupts", ())
+    if interrupts:
+        payload = _preview_from_interrupt(interrupts[0], conversation_id)
+        yield ("ticket_preview", payload)
+        yield (
+            "done",
+            _done_payload(
+                conversation_id,
+                values,
+                pending_confirm=payload,
+                answer="",
+            ),
+        )
+        return
+
     final_answer = resolve_answer(values)
     if final_answer.startswith(streamed_text) and len(final_answer) > len(
         streamed_text
