@@ -1,6 +1,6 @@
-# 电商智能客服（CH07：三层会话上下文管理）
+# 电商智能客服（CH08：即插即用工具系统）
 
-基于 FastAPI + LangChain + LangGraph + SQLAlchemy + MySQL + Milvus 的电商售后客服后端。CH07 在 CH06 分流骨架上加入三层会话上下文：最近轮次原文、中间轮次规则半压、更早轮次后台分段摘要；两个 DB 锚点只挪 id 不搬数据，调模型前现拼精简版，State/checkpoint 仍保存全量历史。
+基于 FastAPI + LangChain + LangGraph + SQLAlchemy + MySQL + Milvus 的电商售后客服后端。CH08 把工具层从写死的内置工具升级为注册中心 + JSON Schema 校验 + 只读/写权限门禁 + 统一执行引擎 + 审计；内置工具与两个自建业务 MCP Server（物流 / 售后）统一登记，MCP 工具每轮动态发现；`create_ticket` 走 LangGraph `interrupt()` 前端预览卡确认后才落库。
 
 - `app/context.py`：从模型窗口倒推 token 预算；层1 原文 + 层2 半压 + 层3 分段摘要；`layer1_from_msg_id` 降级只挪锚点；固定拼装顺序，梗概/证据合并挂在当前用户消息之后，绝不单独占 system。
 - `app/summarizer.py`：轮结束后按层2 token 用量触发后台摘要；`conversation_summaries` 一段一行只追加，`conversations.summary` 只是最近几段投影；任务失败只 log，不阻塞当轮回复。
@@ -9,14 +9,27 @@
 - 默认窗口下 20 轮不压缩；演示配置（窗口 18000）会看到 `layer1 degrade` → `summary trigger` → `summary done 第N段` 的完整级联。
 
 - `POST /api/chat/stream` / `POST /api/chat`：SSE 流式对话；骨架依次走 coref（指代消解 + Query 改写）→ 八类意图识别（含置信度）→ 8→6 分流 → 知识类强制检索/证据闸、退款/售后确定性子流程或主力 ReAct Agent → 日志。
-- `POST /api/agent`：非流式图入口，返回 answer、tool_calls、tool_results、suggested_actions，供评估。
-- 五个业务工具：`query_order`、`query_product`、`query_logistics`、`query_faq`、`create_ticket`；Agent 的 `create_ticket` 只表达“建议建单”，不自动写库。
+- `POST /api/chat/resume` / `GET /api/chat/pending`：工单预览卡的确认/取消（`Command(resume=...)`）与刷新恢复。
+- `POST /api/agent`：非流式图入口，返回 answer、tool_calls、tool_results、suggested_actions、pending_confirm，供评估。
+- 工具注册中心：内置工具 + 插件目录热加载 + MCP 动态发现；JSON Schema 校验回灌、只读/写权限门禁、超时/重试/分诊/格式化、`tool_audit_logs` 审计。
+- 两个业务 MCP Server：物流（`query_logistics`）、售后（`check_warranty` / `query_return_progress`），走 Streamable HTTP。
+- Agent 的 `create_ticket` 现在走 `interrupt()`：先弹预览卡，用户确认后才写 `tickets`；取消落「权限拒绝」审计。
 - 退款/退货/售后走确定性子流程：先判定问题对象（政策还是某一单），缺订单号发订单选择器，判定可处理后退货/退款发退款表单、换货/换新建议售后工单，用户提交后 `POST /api/actions/submit-refund` 写 `refund_requests`。
 - 转人工 / 建工单是两件事：后端只产出可选项，前端各渲染按钮；转人工纯前端模拟，建工单由用户填表后调 `POST /api/actions/create-ticket` 才写 `tickets`。
 - 图状态用 `ConversationState` 贯穿，checkpointer 按 `thread_id=conversation_id` 持久化；MySQL 存 user/assistant 审计与低置信池，checkpointer 持有含工具消息的图历史。
 - `POST /api/chat/extract`：保留 CH01 的售后结构化抽取。
 - 聊天页在 assistant 气泡内显示工具轨迹徽章、引用角标、订单卡片、退款表单、转人工/建工单按钮。
 - 应用侧统一使用 OpenAI 兼容协议，可切换 DeepSeek / OpenAI / Ollama / Claude 兼容代理。
+
+## CH08 新增能力
+
+- **工具注册中心**：`ToolSpec`（名称 / 描述 / JSON Schema）统一登记内置工具、`app/tools/plugins/` 热加载插件与 MCP 工具；同名冲突有明确裁决。
+- **执行引擎**：JSON Schema 校验失败回灌给模型；只读/写权限按本侧配置判断，MCP 声明的 annotation 不可信；超时/重试（读重试、写不重试）、错误分诊、结果格式化统一收口。
+- **审计**：每次工具调用落 `tool_audit_logs`（成功 / 失败 / 超时 / 校验拦下 / 权限拒绝），`tool_call_id` 可对回模型申请单；审计写失败不阻塞主流程。
+- **建单确认流**：`agent_tools` 收到 `create_ticket` 的 `permission_required` 后写 `pending_ticket`，条件边进入 `ticket_confirm` 节点 `interrupt()`；`POST /api/chat/resume` 用 `Command(resume={"decision": ...})` 确认/取消；确认成功回复带工单号，取消落权限拒绝审计。
+- **MCP**：`mcp_servers/logistics_server.py`、`mcp_servers/aftersales_server.py` 用官方 Python SDK FastMCP + Streamable HTTP；`MultiServerMCPClient` 每轮发现，单 Server 缓存；加工具只重启该 Server。
+- **前端**：工单预览卡（类型 / 描述 / 确认提交 / 取消）、pending 期间锁输入、刷新后从 `/api/chat/pending` 恢复。
+- **评估**：`evals/ch08_ticket_cases.jsonl` 10 条建单 Prompt 标注；`make eval-ch08` 走 `/api/agent` 打印通过率。
 
 ## CH07 新增能力
 

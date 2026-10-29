@@ -1,8 +1,76 @@
-# 电商智能客服 CH07 — 当前进度与交付说明
+# 电商智能客服 CH08 — 当前进度与交付说明
 
-- 日期：2026-10-27
-- 功能分支：`ch07-context`（从 `ch06-router` HEAD `3dc42ec` 起）
-- 状态：功能代码、单元/集成测试、摘要 prompt 评估、演示配置级联验收、默认窗口验收、浏览器验收、文档与 dev-notes 已完成；待最终整分支 code review / finish
+- 日期：2026-10-29
+- 功能分支：`ch08-tool-system`（从 `ch06-router` 起）
+- 状态：Task 1–9 已完成；Task 10 验收（建单确认/取消真实跑通、DDL 已应用、全量单测 493 passed）、code review 与文档收尾进行中
+
+## 一、CH08 做了什么
+
+把工具层从写死的内置工具升级成即插即用的工具系统：
+
+- **注册中心**：`ToolSpec`（名称 / 描述 / JSON Schema）统一登记内置工具、`app/tools/plugins/` 热加载插件与 MCP 工具。
+- **执行引擎**：JSON Schema 校验回灌、只读/写权限门禁（MCP 声明不可信）、超时/重试/错误分诊/结果格式化统一收口。
+- **审计**：`tool_audit_logs` 每次调用落一行（成功 / 失败 / 超时 / 校验拦下 / 权限拒绝），写失败不阻塞主流程。
+- **建单确认流**：`create_ticket` 的 `permission_required` → `pending_ticket` → `ticket_confirm` 节点 `interrupt()` → `POST /api/chat/resume` 确认/取消；前端预览卡，刷新可从 `GET /api/chat/pending` 恢复。
+- **MCP**：物流 / 售后两个 FastMCP Server（Streamable HTTP），`MultiServerMCPClient` 每轮发现；加工具只重启该 Server。
+- **评估**：`evals/ch08_ticket_cases.jsonl` 10 条 + `make eval-ch08`。
+
+## 二、CH08 模块
+
+| # | 模块 | 关键文件 | 状态 |
+|---|---|---|---|
+| 1 | 依赖、配置、DDL、审计模型 | `pyproject.toml`、`app/config.py`、`sql/ch08-ddl.sql`、`app/db/models.py` | ✅ |
+| 2 | ToolSpec、Schema 适配、插件热加载 | `app/tools/registry.py`、`app/tools/schema.py`、`app/tools/plugins.py` | ✅ |
+| 3 | 格式化、校验、权限门禁 | `app/tools/formatting.py`、`app/tools/permissions.py` | ✅ |
+| 4 | 超时、重试、分诊、审计 | `app/services/tool_exec.py`、`app/services/audit.py` | ✅ |
+| 5 | 内置目录、工单落库、下线内置物流 | `app/tools/builtins.py`、`app/tools/ticket.py`、`app/services/tickets.py` | ✅ |
+| 6 | MCP 客户端、Runtime 单例、async build_deps | `app/services/mcp_tools.py`、`app/runtime.py`、`app/graph/runtime.py` | ✅ |
+| 7 | 两个业务 MCP Server | `mcp_servers/logistics_server.py`、`mcp_servers/aftersales_server.py` | ✅ |
+| 8 | 路由 gate、工单 interrupt、resume API、Prompt、评估 | `app/graph/routing.py`、`app/graph/nodes.py`、`app/services/chat.py`、`app/api/routes.py`、`scripts/eval_ch08.py` | ✅ |
+| 9 | 前端工单预览卡 | `app/static/chat.html/js/css` | ✅ |
+| 10 | 验收、review、文档 | `README.md`、`PROGRESS.md`、`dev-notes/ch08.md` | 进行中 |
+
+## 三、CH08 接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/chat/stream` / `/api/chat` | SSE 图对话；工具轨迹、actions、citations |
+| POST | `/api/chat/resume` | 工单预览确认/取消（`Command(resume=...)`），SSE |
+| GET | `/api/chat/pending?conversation_id=` | 刷新恢复未决工单预览 |
+| POST | `/api/agent` | 非流式图入口，返回 `pending_confirm` |
+| GET | `/health` | 健康检查 |
+
+## 四、CH08 验证状态
+
+| 检查项 | 结果 | 备注 |
+|---|---|---|
+| 单元测试 `pytest -q -m "not integration"` | **493 passed, 32 deselected** | 2026-10-29 |
+| `node --check app/static/chat.js` | 通过 | |
+| `sql/ch08-ddl.sql` | 已应用（2 条语句） | 本机 MySQL |
+| 建单确认（真实） | 通过 | conversation 9518 → `T20261029002`，`tickets` 新增，审计「成功」 |
+| 建单取消（真实） | 通过 | conversation 9519 → `tickets` 无新增，审计「权限拒绝」 |
+| 预览卡刷新恢复 | 通过 | `/api/chat/pending` 恢复卡片并锁输入 |
+| MCP 工具真实进程 | 通过（Task 7 已跑） | 发现 `check_warranty` / `query_logistics` / `query_return_progress` 并调用 |
+| 插件热加载 / 超时验收 | 待用户终端 | 见 spec §15 |
+| `make eval-ch08` | 待用户终端 | 需运行中的服务与上游 key |
+
+## 五、CH08 演示命令
+
+```bash
+uv sync
+mysql -h 127.0.0.1 -u root -p ecom_customer_service < sql/ch08-ddl.sql
+
+uv run python -m mcp_servers.logistics_server
+uv run python -m mcp_servers.aftersales_server
+uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
+
+uv run pytest -q -m "not integration"
+make eval-ch08
+```
+
+---
+
+## 附：CH07 历史进度
 
 ## 一、CH07 做了什么
 
