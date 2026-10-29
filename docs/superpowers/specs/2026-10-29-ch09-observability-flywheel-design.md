@@ -1,14 +1,14 @@
 # CH09 设计：可观测性、成本控制与数据飞轮
 
 - 日期：2026-10-29
-- 状态：brainstorm 定稿 + builder check 完成；用户要求先收尾 CH08，暂未批准
-- 前置章节：CH08（工具系统与 MCP）已完成 Task 1–9，Task 10 收尾中
+- 状态：brainstorm 定稿 + builder check 完成；CH08 已合并；ch09 暂停，待用户恢复。Langfuse 默认 Cloud Hobby（课程演示数据），自部署 compose 可选。
+- 前置章节：CH08（工具系统与 MCP）已完成并合并到 `ch01-pure-chat`
 
 ## 1. 意图
 
 给客服系统装上眼睛，并把答不上的问题变成改进燃料：
 
-1. 用自部署 Langfuse 看每条请求的完整链路（每个节点的 prompt、工具调用、检索结果、token 与耗时）。
+1. 用 Langfuse（课程默认 Cloud Hobby，可切自部署）看每条请求的完整链路（每个节点的 prompt、工具调用、检索结果、token 与耗时）。
 2. 把意图识别结果写进 trace 元数据，按意图统计 token 花销。
 3. 三个入口把答不上的问题送进 CH04 的 `low_confidence_questions` 池，并带上落池时的召回片段快照。
 4. 飞轮流水线把原话标准化、查重、入待审队列；人工审核通过后走 CH03 落库流程写回知识库。
@@ -41,7 +41,7 @@
 
 ## 3. 约束
 
-- 技术选型定死：Langfuse 自部署、开源；不换方案。发现走不通停下来问用户。
+- 技术选型定死：Langfuse（开源），不换平台。部署形态：课程演示默认 **Langfuse Cloud Hobby**（演示数据），真实数据/需要“数据不出本机”时切自部署；SDK 接入代码不变，只换 base URL 与 key。2026-10-29 用户拍板（课程用演示数据）。
 - 所有库/Framework 用法先用 Context7 查最新官方文档。
 - 代码任务走 TDD；纯 Prompt/数据任务用标注样例或评估集跑一遍验证；前端 Vibe Coding。
 - 过程留痕：`dev-notes/ch09.md` 每阶段追记四样（用户原话、关键产出、拒绝/纠偏、翻车与返工），不许收尾一次性补记。
@@ -56,8 +56,9 @@
   - `LANGFUSE_ENABLED`（默认 `false`）
   - `LANGFUSE_PUBLIC_KEY`
   - `LANGFUSE_SECRET_KEY`
-  - `LANGFUSE_BASE_URL`（自部署默认 `http://localhost:3000`；兼容旧 `LANGFUSE_HOST`）
+  - `LANGFUSE_BASE_URL`（课程默认 `https://cloud.langfuse.com`；US 区 `https://us.cloud.langfuse.com`；自部署填 `http://localhost:3000`；兼容旧 `LANGFUSE_HOST`）
   - `LANGFUSE_TRACE_NAME`（默认 `chat`）
+- 课程演示默认 Cloud Hobby：**50k units/月、30 天数据访问、2 用户**；`units = traces + observations + scores`，演示数据可上传。真实客服数据不建议用 Cloud，切自部署（数据边界在自家服务器）。
 - `LANGFUSE_ENABLED=false` 或 key 缺失时，`app/observability.py` 返回 `None`，全链路 no-op，测试不依赖 Langfuse 服务。
 - 接入方式：`from langfuse.langchain import CallbackHandler`，在 `stream_turn` / `resume_turn` / `run_turn` 的 `config["callbacks"]` 挂一次；`with propagate_attributes(user_id=..., session_id=..., tags=["chat"])` 包住图执行。
 - 每个请求创建一个根 span：`langfuse.start_as_current_observation(name="chat", input={"message": ...})`。
@@ -75,7 +76,7 @@
   - `metrics=[{"measure":"totalTokens","aggregation":"sum"}, {"measure":"totalCost","aggregation":"sum"}]`
   - 时间范围参数 `--from/--to`（默认最近 7 天）
 - 输出 Markdown 表：意图、token、成本、占比，按 token 降序；同时打印“最烧钱意图”。
-- 若自部署版本不支持 `traceName` 维度，脚本回退到 Observations API v2：拉根 observation（含 metadata.intent）与子 observation 的 usage，按 traceId 本地汇总。回退路径在实现时用真实 Langfuse 验证一次。
+- 若 Langfuse 版本不支持 `traceName` 维度，脚本回退到 Observations API v2：拉根 observation（含 metadata.intent）与子 observation 的 usage，按 traceId 本地汇总。回退路径在实现时用真实 Langfuse 验证一次。
 
 ### 4.3 证据置信度闸
 
@@ -196,7 +197,7 @@
 
 | # | 验收 | 实现/演示 |
 |---|---|---|
-| 1 | Langfuse 点开任意请求看完整链路 | 启动自部署 Langfuse + `LANGFUSE_ENABLED=true`；聊天页问一句；Langfuse 里看根 span → 节点 → LLM/tool/retrieval |
+| 1 | Langfuse 点开任意请求看完整链路 | 在 Langfuse Cloud Hobby 建项目并配 `LANGFUSE_ENABLED=true` + base URL/key（或自部署实例）；聊天页问一句；Langfuse 里看根 span → 节点 → LLM/tool/retrieval |
 | 2 | 问知识库没有的问题 → 兜底 + 待审队列；详情能看到原话与召回片段 | 问一个 F_unanswerable 类问题；`/review-queue` 打开该行详情 |
 | 3 | 审核通过后同一问题再问能答对 | 审核页点通过（或填核准答案）→ 等向量化；再问同一问题 |
 | 4 | 聊天页 👎 → 问题池 → 标准化查重 → 待审队列 | 点 👎；查 `low_confidence_questions(source='user_feedback')` 与 `review_queue` |
@@ -211,6 +212,7 @@
 4. **审核通过后的向量化依赖嵌入服务**：失败时审核行保持「待审」、chunk 留 pending，接口返回 502；重试走同一 source_doc，不会重复建 chunk。
 5. **👎 只能回捞最新一轮的检索快照**：更早轮次快照未持久化，符合“尽力回捞”的约定；详情里会显示快照为空。
 6. **重排服务故障时机械闸跳过**：只靠 EvidenceChecker 自评，可能放宽知识类回答；trace 记 `confidence_skipped`，便于复盘。
+7. **Cloud 的数据边界与额度**：课程演示数据可上传；真实客服数据应切自部署。Hobby 50k units/月、30 天访问窗口、2 用户，超量需升级。
 
 ## 10. Builder check 后的实现裁决
 
@@ -220,7 +222,7 @@
 |---|---|---|
 | 1 | 审核通过与向量化的顺序/重试 | 先插 chunk（`source_doc=review_queue:{id}`）→ 只向量化该 chunk → 成功后才置「通过」；失败保持「待审」可重试；同 source_doc 幂等，不重复建 chunk |
 | 2 | 重排不可用时的闸 | `reranked=False` 跳过机械置信度闸，只跑 EvidenceChecker；trace 记 `confidence_skipped=True` |
-| 3 | 谁提供 Langfuse | 仓库提供 `deploy/langfuse/docker-compose.yml`（官方最小栈）+ `.env.example`；也支持用户现成实例，只配 env |
+| 3 | 谁提供 Langfuse | 课程演示默认 Langfuse Cloud Hobby；`deploy/langfuse/docker-compose.yml` 作为可选自部署方案保留（真实数据时用）；SDK 只换 base URL/key |
 | 4 | 跳过 classify_intent 的路径如何带意图 | 不在节点里更新；runtime 拿到最终 state 后 `finish_turn_trace(values)`，覆盖 gate 直达、pending resume、interrupt 暂停 |
 | 5 | top2/gap 取错序 | 从 `result.hits` 按 score 降序取，不用 `prompt_order` 展示序 |
 | 6 | 飞轮并发重复入队 | `FlywheelService` 单 worker + `asyncio.Queue` 串行处理；跨进程竞争记为已知限制 |
