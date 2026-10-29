@@ -136,6 +136,10 @@ class ChatRepository:
             conversation_id=conversation_id,
             description=description,
             ticket_type=ticket_type,
+            # Set in Python as well as by the server default: otherwise the
+            # attribute is unloaded after flush and reading it from async
+            # code triggers a lazy refresh (MissingGreenlet).
+            status="待处理",
         )
         # A duplicate ticket number aborts only the savepoint, so the tool
         # can retry with a fresh number on the same session.

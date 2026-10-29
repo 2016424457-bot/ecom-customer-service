@@ -5,6 +5,8 @@
   const USER_KEY = "ecom-chat-user-id";
   const HISTORY_KEY = "ecom-chat-history";
   const STREAM_URL = "/api/chat/stream";
+  const RESUME_URL = "/api/chat/resume";
+  const PENDING_URL = "/api/chat/pending";
   const HEALTH_URL = "/health";
   const TICKET_URL = "/api/actions/create-ticket";
   const REFUND_URL = "/api/actions/submit-refund";
@@ -69,6 +71,7 @@
   let userId = loadUserId();
   let history = loadHistory();
   let busy = false;
+  let pendingLocked = false;
   let pendingTicket = null;
   let pendingRefund = null;
 
@@ -128,8 +131,8 @@
         (item) =>
           item &&
           VALID_ROLES.has(item.role) &&
-          typeof item.text === "string" &&
-          item.text.length > 0,
+          ((typeof item.text === "string" && item.text.length > 0) ||
+            (item.role === "assistant" && item.pendingConfirm)),
       );
     } catch {
       return [];
@@ -160,9 +163,19 @@
 
   function setBusy(next) {
     busy = next;
-    sendBtn.disabled = next;
+    sendBtn.disabled = next || pendingLocked;
     sendBtn.setAttribute("aria-busy", String(next));
-    composer.classList.toggle("is-busy", next);
+    composer.classList.toggle("is-busy", next || pendingLocked);
+  }
+
+  function setPendingLock(locked) {
+    pendingLocked = locked;
+    input.disabled = locked;
+    sendBtn.disabled = locked || busy;
+    composer.classList.toggle("is-pending", locked);
+    input.placeholder = locked
+      ? "请先在上方确认或取消工单预览"
+      : "请输入您的问题…";
   }
 
   function createMessage(
@@ -452,6 +465,248 @@
     }
   }
 
+  function setTicketCardState(card, state, statusText) {
+    card.dataset.state = state;
+    card.querySelectorAll(".ticket-preview-actions button").forEach((button) => {
+      button.disabled = state !== "pending";
+    });
+    const status = card.querySelector(".ticket-preview-status");
+    if (status && typeof statusText === "string") {
+      status.textContent = statusText;
+    }
+  }
+
+  function renderTicketPreview(bubble, item) {
+    if (!bubble || !item) return;
+    const preview = item.pendingConfirm;
+    const resolution = item.ticketResolution;
+    if (!preview && !resolution) return;
+    if (bubble.querySelector(".ticket-preview-card")) return;
+
+    const card = document.createElement("div");
+    card.className = "ticket-preview-card";
+
+    const head = document.createElement("div");
+    head.className = "ticket-preview-head";
+    const badge = document.createElement("span");
+    badge.className = "ticket-preview-badge";
+    badge.textContent = "工单预览";
+    const type = document.createElement("span");
+    type.className = "ticket-preview-type";
+    type.textContent =
+      (preview && preview.draft && preview.draft.ticket_type) || "咨询";
+    head.append(badge, type);
+
+    const desc = document.createElement("p");
+    desc.className = "ticket-preview-desc";
+    desc.textContent =
+      (preview && preview.draft && preview.draft.description) ||
+      "（无描述）";
+
+    const actions = document.createElement("div");
+    actions.className = "ticket-preview-actions";
+    const confirmBtn = document.createElement("button");
+    confirmBtn.type = "button";
+    confirmBtn.className = "action-btn primary";
+    confirmBtn.textContent = "确认提交";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "action-btn";
+    cancelBtn.textContent = "取消";
+    confirmBtn.addEventListener("click", () => {
+      if (!item.pendingConfirm) return;
+      void resumeTicket(item, card, "confirm");
+    });
+    cancelBtn.addEventListener("click", () => {
+      if (!item.pendingConfirm) return;
+      void resumeTicket(item, card, "cancel");
+    });
+    actions.append(confirmBtn, cancelBtn);
+
+    const status = document.createElement("div");
+    status.className = "ticket-preview-status";
+    const answerEl = document.createElement("div");
+    answerEl.className = "ticket-preview-answer bubble-text";
+    if (item.text) answerEl.textContent = item.text;
+
+    card.append(head, desc, actions, status, answerEl);
+    bubble.append(card);
+
+    if (resolution === "confirmed") {
+      setTicketCardState(
+        card,
+        "done",
+        item.ticketNo ? `已提交，工单号 ${item.ticketNo}` : "已提交",
+      );
+    } else if (resolution === "cancelled") {
+      setTicketCardState(card, "done", "已取消，未创建工单");
+    } else {
+      setTicketCardState(card, "pending", "");
+    }
+    scrollToBottom();
+  }
+
+  async function resumeTicket(item, card, decision) {
+    if (busy || !item.pendingConfirm) return;
+    const preview = item.pendingConfirm;
+    const answerEl = card.querySelector(".ticket-preview-answer");
+    const status = card.querySelector(".ticket-preview-status");
+    item.text = "";
+    if (answerEl) answerEl.textContent = "";
+    setBusy(true);
+    setTicketCardState(
+      card,
+      "loading",
+      decision === "confirm" ? "正在提交…" : "正在取消…",
+    );
+
+    try {
+      const response = await fetch(RESUME_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversation_id:
+            conversationId || Number(preview.conversation_id),
+          decision,
+          interrupt_id: preview.interrupt_id || null,
+        }),
+      });
+
+      if (!response.ok) {
+        let detail = `操作失败（${response.status}）`;
+        try {
+          const body = await response.json();
+          const candidate =
+            body?.detail?.message || body?.message || body?.detail;
+          if (candidate) {
+            detail =
+              typeof candidate === "string"
+                ? candidate
+                : JSON.stringify(candidate);
+          }
+        } catch {
+          /* keep the status message */
+        }
+        throw new Error(detail);
+      }
+      if (!response.body) {
+        throw new Error("当前浏览器不支持流式响应");
+      }
+
+      await readSse(response, (event, data) => {
+        if (event === "session" && data && data.session_id) {
+          sessionId = String(data.session_id);
+          conversationId = Number(data.session_id) || conversationId;
+          saveSessionId();
+          return;
+        }
+        if (event === "token" && data && typeof data.delta === "string") {
+          item.text += data.delta;
+          if (answerEl) answerEl.textContent = item.text;
+          scrollToBottom();
+          return;
+        }
+        if (event === "done") {
+          if (!item.text && data && typeof data.answer === "string") {
+            item.text = data.answer;
+            if (answerEl) answerEl.textContent = item.text;
+          }
+          item.pendingConfirm = null;
+          item.ticketNo = (data && data.ticket_no) || null;
+          item.ticketCancelled = Boolean(
+            data && data.ticket_cancelled,
+          );
+          item.ticketResolution = item.ticketCancelled
+            ? "cancelled"
+            : "confirmed";
+          if (!item.text && item.ticketCancelled) {
+            item.text = "已取消建单。";
+            if (answerEl) answerEl.textContent = item.text;
+          }
+          return;
+        }
+        if (event === "error") {
+          throw new Error(
+            (data && data.message) || "操作失败，请稍后重试",
+          );
+        }
+      });
+
+      setTicketCardState(
+        card,
+        "done",
+        item.ticketResolution === "cancelled"
+          ? "已取消，未创建工单"
+          : item.ticketNo
+            ? `已提交，工单号 ${item.ticketNo}`
+            : "已提交",
+      );
+      if (answerEl && item.text) {
+        renderAnswer(answerEl, item.text, item.citations || []);
+      }
+      saveHistory();
+      setPendingLock(false);
+    } catch (error) {
+      setTicketCardState(card, "pending", "");
+      if (status) {
+        status.textContent =
+          error instanceof Error && error.message
+            ? error.message
+            : "操作失败，请稍后重试";
+      }
+    } finally {
+      setBusy(false);
+      scrollToBottom();
+      void loadConversations();
+    }
+  }
+
+  async function loadPending(id) {
+    if (!Number.isInteger(id) || id <= 0) return;
+    try {
+      const response = await fetch(
+        `${PENDING_URL}?conversation_id=${id}`,
+        { cache: "no-store" },
+      );
+      if (!response.ok) return;
+      const data = await response.json();
+      const preview = data && data.pending_confirm;
+      if (!preview) return;
+      let item = null;
+      for (let index = history.length - 1; index >= 0; index -= 1) {
+        const candidate = history[index];
+        if (
+          candidate &&
+          candidate.role === "assistant" &&
+          candidate.pendingConfirm
+        ) {
+          item = candidate;
+          break;
+        }
+      }
+      if (item) {
+        item.pendingConfirm = preview;
+      } else {
+        item = {
+          role: "assistant",
+          text: "",
+          tools: [],
+          citations: [],
+          actions: [],
+          refused: false,
+          feedback: null,
+          pendingConfirm: preview,
+        };
+        history.push(item);
+      }
+      saveHistory();
+      renderHistory();
+      setPendingLock(true);
+    } catch {
+      /* pending preview is optional */
+    }
+  }
+
   function openTicketDialog(action, button) {
     if (!ticketDialog || typeof ticketDialog.showModal !== "function") {
       return;
@@ -676,6 +931,8 @@
       saveHistory();
       renderHistory();
       showSuggestions(false);
+      setPendingLock(false);
+      void loadPending(target);
       void loadConversations();
       return true;
     } catch {
@@ -710,6 +967,7 @@
         renderAnswer(view.textEl, item.text, item.citations);
         renderFeedback(view.feedbackEl, item);
         renderActions(view.bubble, item);
+        renderTicketPreview(view.bubble, item);
       }
     }
     scrollToBottom("auto");
@@ -796,7 +1054,7 @@
       typeof textOverride === "string" ? textOverride.trim() : "";
     const hasOverride = override.length > 0;
     const text = hasOverride ? override : input.value.trim();
-    if (!text || busy) return;
+    if (!text || busy || pendingLocked) return;
     if (text.length > MAX_INPUT) return;
 
     setBusy(true);
@@ -821,6 +1079,7 @@
       actions: [],
       refused: false,
       feedback: null,
+      pendingConfirm: null,
     };
     history.push(assistantItem);
 
@@ -886,6 +1145,13 @@
           return;
         }
 
+        if (event === "ticket_preview" && data) {
+          assistantItem.pendingConfirm = data;
+          setPendingLock(true);
+          renderTicketPreview(placeholder.bubble, assistantItem);
+          return;
+        }
+
         if (event === "reset") {
           assistantItem.text = "";
           placeholder.textEl.textContent = "";
@@ -925,6 +1191,11 @@
           );
           renderFeedback(placeholder.feedbackEl, assistantItem);
           renderActions(placeholder.bubble, assistantItem);
+          if (data && data.pending_confirm) {
+            assistantItem.pendingConfirm = data.pending_confirm;
+            setPendingLock(true);
+            renderTicketPreview(placeholder.bubble, assistantItem);
+          }
           return;
         }
 
@@ -937,12 +1208,17 @@
 
       placeholder.bubble.classList.remove("typing-state", "streaming");
 
-      if (!assistantItem.text && !assistantItem.actions.length) {
+      if (
+        !assistantItem.text &&
+        !assistantItem.actions.length &&
+        !assistantItem.pendingConfirm
+      ) {
         placeholder.row.remove();
         history.pop();
         addErrorMessage("没有收到回复，请稍后重试。");
       } else {
         renderActions(placeholder.bubble, assistantItem);
+        renderTicketPreview(placeholder.bubble, assistantItem);
         saveHistory();
         if (!sawDone) {
           addErrorMessage("连接中断，当前回复可能不完整。");
@@ -950,11 +1226,16 @@
       }
     } catch (error) {
       placeholder.bubble.classList.remove("typing-state", "streaming");
-      if (!assistantItem.text && !assistantItem.actions.length) {
+      if (
+        !assistantItem.text &&
+        !assistantItem.actions.length &&
+        !assistantItem.pendingConfirm
+      ) {
         placeholder.row.remove();
         history.pop();
       } else {
         renderActions(placeholder.bubble, assistantItem);
+        renderTicketPreview(placeholder.bubble, assistantItem);
         saveHistory();
       }
       const message =
@@ -998,6 +1279,7 @@
     saveSessionId();
     messagesEl.innerHTML = "";
     createMessage("assistant", WELCOME);
+    setPendingLock(false);
     showSuggestions(true);
     autoResize();
     input.focus();
