@@ -23,6 +23,8 @@ class ConversationState(TypedDict, total=False):
     route: str
     evidence: str
     citations: list
+    retrieval_chunks: list[dict]
+    weak_source: str | None
     evidence_strong: bool
     answer: str
     steps: int

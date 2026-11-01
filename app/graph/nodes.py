@@ -30,6 +30,7 @@ from app.graph.routing import (
     route_by_intent,
 )
 from app.graph.state import merge_trace
+from app.knowledge.confidence import compute_confidence
 from app.knowledge.evidence import (
     citation_items_full,
     citation_items_light,
@@ -449,11 +450,20 @@ async def classify_intent(state: dict, *, deps: Any) -> dict:
     }
 
 
-def _weak_evidence(state: dict, **trace: Any) -> dict:
+def _weak_evidence(
+    state: dict,
+    *,
+    weak_source: str,
+    retrieval_chunks: list[dict],
+    **trace: Any,
+) -> dict:
+    """Weak outcome carrying its pool source and retrieval snapshot."""
     return {
         "evidence_strong": False,
         "evidence": "",
         "citations": [],
+        "weak_source": weak_source,
+        "retrieval_chunks": retrieval_chunks,
         "trace": merge_trace(state, **trace),
     }
 
@@ -467,43 +477,76 @@ async def _evidence_update(
     trace: dict[str, Any],
     assess_query: str | None = None,
 ) -> dict:
-    """Shared evidence gate: order hits, score them, and render evidence.
+    """Shared evidence gate: score hits, gate them, and render evidence.
 
     ``trace`` carries caller-specific keys (``forced_rag`` for the knowledge
     route, ``refund`` for the refund subflow); every outcome merges them so
     weak and strong branches record the same context. ``assess_query`` lets
     a caller assess against a policy-focused question instead of the raw
     user query (order-specific asks are judged later with the order data).
+
+    Gate order: empty hits, then — only when ``result.reranked`` — the
+    ``rerank_min_score`` and ``evidence_confidence_threshold`` checks, then
+    the ``EvidenceChecker`` self-check. Without reranking the scores are RRF
+    scaled rather than 0–1, so the mechanical gate is skipped and the
+    self-check alone decides; ``confidence_skipped=True`` records that.
     """
     ordered = prompt_order(result.hits)
+    full_items = citation_items_full(ordered)
+    signals = compute_confidence(
+        [hit.score for hit in result.hits],
+        effective_floor=getattr(
+            deps.settings, "evidence_effective_floor", 0.2
+        ),
+    )
+    base_trace = {
+        "evidence_top": signals.top1,
+        "retrieval_strategy": result.strategy,
+        "reranked": result.reranked,
+        "confidence_skipped": not result.reranked,
+        "top1": signals.top1,
+        "top2": signals.top2,
+        "gap": signals.gap,
+        "effective_count": signals.effective_count,
+        "evidence_confidence": signals.confidence,
+        **trace,
+    }
+
     if not ordered:
         return _weak_evidence(
             state,
-            evidence_top=0.0,
-            retrieval_strategy=result.strategy,
-            reranked=result.reranked,
-            **trace,
-        )
-
-    top = ordered[0][1].score
-    base_trace = {
-        "evidence_top": top,
-        "retrieval_strategy": result.strategy,
-        "reranked": result.reranked,
-        **trace,
-    }
-    if top < deps.settings.rerank_min_score:
-        return _weak_evidence(
-            state,
+            weak_source="retrieval_low_conf",
+            retrieval_chunks=full_items,
             **base_trace,
-            gate_reason=(
-                f"top={top:.3f} < rerank_min_score="
-                f"{deps.settings.rerank_min_score}"
-            ),
         )
 
-    full_items = citation_items_full(ordered)
-    light_items = citation_items_light(ordered)
+    if result.reranked:
+        min_score = deps.settings.rerank_min_score
+        if signals.top1 < min_score:
+            return _weak_evidence(
+                state,
+                weak_source="retrieval_low_conf",
+                retrieval_chunks=full_items,
+                **base_trace,
+                gate_reason=(
+                    f"top={signals.top1:.3f} < rerank_min_score="
+                    f"{min_score}"
+                ),
+            )
+        threshold = getattr(
+            deps.settings, "evidence_confidence_threshold", 0.55
+        )
+        if signals.confidence < threshold:
+            return _weak_evidence(
+                state,
+                weak_source="retrieval_low_conf",
+                retrieval_chunks=full_items,
+                **base_trace,
+                gate_reason=(
+                    f"confidence={signals.confidence:.3f} < "
+                    f"evidence_confidence_threshold={threshold}"
+                ),
+            )
 
     assessment = None
     if deps.evidence_checker is not None:
@@ -516,7 +559,11 @@ async def _evidence_update(
 
     if assessment is not None and not assessment.useful:
         return _weak_evidence(
-            state, **base_trace, self_check=assessment.reason
+            state,
+            weak_source="self_check",
+            retrieval_chunks=full_items,
+            **base_trace,
+            self_check=assessment.reason,
         )
 
     return {
@@ -530,7 +577,9 @@ async def _evidence_update(
             ),
             getattr(deps.settings, "token_chars_per_token", 1.5),
         ),
-        "citations": light_items,
+        "citations": citation_items_light(ordered),
+        "retrieval_chunks": full_items,
+        "weak_source": None,
         "trace": merge_trace(
             state,
             **base_trace,
@@ -566,6 +615,8 @@ async def forced_rag(state: dict, *, deps: Any) -> dict:
         logger.warning("forced_rag_failed error=%r", exc)
         return _weak_evidence(
             state,
+            weak_source="retrieval_low_conf",
+            retrieval_chunks=[],
             forced_rag=True,
             retrieval_error=str(exc),
             evidence_top=0.0,
@@ -715,6 +766,8 @@ async def refund_policy_rag(state: dict, *, deps: Any) -> dict:
         logger.warning("refund_policy_rag_failed error=%r", exc)
         update = _weak_evidence(
             state,
+            weak_source="retrieval_low_conf",
+            retrieval_chunks=[],
             retrieval_error=str(exc),
             evidence_top=0.0,
             refund={"stage": "policy_weak", "queries": queries},
