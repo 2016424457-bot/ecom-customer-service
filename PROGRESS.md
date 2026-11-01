@@ -2,7 +2,7 @@
 
 - 日期：2026-11-01
 - 功能分支：`ch09-observability-flywheel`（2026-11-01 已 fast-forward 合并到 `ch01-pure-chat`，功能分支已删除）
-- 状态：Task 1–19 已完成；DDL 已应用到本机 MySQL；合并后全量单测 753 passed；验收 1/5 因未配置 Langfuse Cloud key 未跑（README 已给配置步骤），验收 2/3/4/6 已真实跑通并记录证据；最终整分支 review 与修复轮通过
+- 状态：Task 1–19 已完成；DDL 已应用到本机 MySQL；合并后全量单测 758 passed；验收 1–6 已真实跑通（Langfuse Cloud JP；成本显示 $0 是因为上游未返回 cost 数据，token 归属正确）；最终整分支 review 与修复轮通过
 
 ## 一、CH09 做了什么
 
