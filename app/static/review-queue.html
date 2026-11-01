@@ -3,93 +3,139 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#1f3b2f" />
-  <title>审核后台 · 示例商城</title>
-  <link rel="stylesheet" href="/static/review-queue.css?v=1" />
+  <meta name="theme-color" content="#1f4d3a" />
+  <title>知识缺口审核台 · 示例商城</title>
+  <link rel="stylesheet" href="/static/review-queue.css?v=3" />
 </head>
 <body>
-  <div class="page-shell">
-    <header class="topbar">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true">审</div>
-        <div class="brand-copy">
-          <p class="brand-kicker">Flywheel Review Desk</p>
+  <div class="page">
+    <header class="masthead">
+      <div class="masthead-main">
+        <div class="mark" aria-hidden="true">审</div>
+        <div class="masthead-copy">
+          <p class="kicker">知识飞轮</p>
           <h1>知识缺口审核台</h1>
-          <p class="subtitle">飞轮按出现次数排队；点开看用户原话与召回快照，通过即写回知识库。</p>
+          <p class="lede">先看用户问了什么，再看当时召回了什么，最后决定是否写回知识库。</p>
         </div>
       </div>
-      <div class="topbar-actions">
-        <a class="ghost-btn" href="/faith-cases">编造台账</a>
-        <a class="ghost-btn" href="/chat">返回聊天</a>
-      </div>
+      <nav class="masthead-nav" aria-label="页面导航">
+        <a href="/chat">返回聊天</a>
+        <a href="/faith-cases">编造台账</a>
+      </nav>
     </header>
 
-    <section class="toolbar" aria-label="状态筛选">
-      <div id="statusFilters" class="filters">
-        <button class="filter-chip is-active" type="button" data-status="待审">待审</button>
-        <button class="filter-chip" type="button" data-status="通过">通过</button>
-        <button class="filter-chip" type="button" data-status="驳回">驳回</button>
-        <button class="filter-chip" type="button" data-status="">全部</button>
-      </div>
+    <section class="guide" aria-label="审核步骤">
+      <ol class="guide-list">
+        <li>
+          <span class="step-index" aria-hidden="true">1</span>
+          <div>
+            <strong>选一条待审</strong>
+            <p>按出现次数排队；次数越高，越值得先补。</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-index" aria-hidden="true">2</span>
+          <div>
+            <strong>核对原话与召回</strong>
+            <p>展开召回片段，判断是知识缺失，还是检索没命中。</p>
+          </div>
+        </li>
+        <li>
+          <span class="step-index" aria-hidden="true">3</span>
+          <div>
+            <strong>通过或驳回</strong>
+            <p>通过会写入知识库并向量化；失败保持待审，可重试。</p>
+          </div>
+        </li>
+      </ol>
     </section>
 
-    <p id="summary" class="summary">加载中…</p>
-    <main id="reviewList" class="review-list" aria-live="polite"></main>
+    <main class="workspace">
+      <section class="queue-pane" aria-label="审核队列">
+        <div class="pane-head">
+          <div>
+            <h2>审核队列</h2>
+            <p id="summary" class="pane-summary">加载中…</p>
+          </div>
+        </div>
 
-    <section class="trend-section" aria-label="评估趋势">
-      <div class="trend-head">
-        <h2 class="section-title">评估趋势</h2>
-        <p id="trendSummary" class="trend-summary">加载中…</p>
-      </div>
+        <div id="statusFilters" class="filter-tabs" role="tablist" aria-label="状态筛选">
+          <button class="filter-tab is-active" type="button" role="tab" aria-selected="true" data-status="待审">待审</button>
+          <button class="filter-tab" type="button" role="tab" aria-selected="false" data-status="通过">通过</button>
+          <button class="filter-tab" type="button" role="tab" aria-selected="false" data-status="驳回">驳回</button>
+          <button class="filter-tab" type="button" role="tab" aria-selected="false" data-status="">全部</button>
+        </div>
+
+        <div id="reviewList" class="queue-list" role="listbox" aria-label="审核项" aria-live="polite"></div>
+      </section>
+
+      <section id="detailPane" class="detail-pane" aria-label="审核详情">
+        <div id="detailEmpty" class="detail-empty">
+          <p class="empty-title">选一条问题</p>
+          <p class="empty-copy">选中后，这里会显示用户原话、召回片段和审核操作。</p>
+        </div>
+
+        <div id="detailBody" class="detail-body is-hidden">
+          <header class="detail-head">
+            <div class="detail-heading">
+              <p id="detailStatusLabel" class="detail-status"></p>
+              <h2 id="detailQuestion"></h2>
+              <div id="detailMeta" class="detail-meta"></div>
+            </div>
+            <button id="detailBack" class="back-btn" type="button">返回队列</button>
+          </header>
+
+          <section class="detail-block">
+            <div class="block-head">
+              <h3>用户原话</h3>
+              <span id="occurrenceCount" class="block-note"></span>
+            </div>
+            <div id="occurrenceList" class="occurrence-list"></div>
+          </section>
+
+          <section id="reviewedSection" class="detail-block is-hidden">
+            <div class="block-head">
+              <h3>审核结果</h3>
+            </div>
+            <p id="reviewedNote" class="reviewed-note"></p>
+            <pre id="approvedAnswer" class="approved-answer is-hidden"></pre>
+          </section>
+
+          <aside id="decisionSection" class="decision-box">
+            <div class="decision-head">
+              <h3>写回知识库的答案</h3>
+              <p>通过后写入知识库并向量化；失败会保持待审，可重试。</p>
+            </div>
+            <textarea
+              id="answerInput"
+              class="answer-input"
+              rows="5"
+              placeholder="填写或修改要写回知识库的答案"
+            ></textarea>
+            <label class="reject-field">
+              <span>驳回原因（可选）</span>
+              <input id="rejectReason" type="text" placeholder="仅记录到日志" />
+            </label>
+            <div class="detail-actions">
+              <button id="approveBtn" class="btn btn-primary" type="button">通过并写回</button>
+              <button id="rejectBtn" class="btn" type="button">驳回</button>
+              <span id="detailStatus" class="save-status"></span>
+            </div>
+            <p id="detailError" class="detail-error is-hidden" role="alert"></p>
+          </aside>
+        </div>
+      </section>
+    </main>
+
+    <details id="trendDrawer" class="trend-drawer">
+      <summary>
+        <span class="trend-title">评估趋势</span>
+        <span id="trendSummary" class="trend-summary">加载中…</span>
+      </summary>
       <div id="trendTableWrap" class="trend-table-wrap" aria-live="polite"></div>
-    </section>
+    </details>
   </div>
 
-  <dialog id="detailDialog" class="detail-dialog" aria-labelledby="detailQuestion">
-    <div class="detail-shell">
-      <header class="detail-head">
-        <div class="detail-title-wrap">
-          <p class="brand-kicker detail-kicker">Review Detail</p>
-          <h2 id="detailQuestion" class="detail-question"></h2>
-        </div>
-        <button id="detailClose" class="close-btn" type="button" aria-label="关闭详情">×</button>
-      </header>
-
-      <div id="detailMeta" class="detail-meta"></div>
-
-      <section class="detail-section">
-        <p class="section-label">用户原话</p>
-        <div id="occurrenceList" class="occurrence-list"></div>
-      </section>
-
-      <section id="reviewedSection" class="detail-section is-hidden">
-        <p class="section-label">审核结果</p>
-        <p id="reviewedNote" class="reviewed-note"></p>
-        <pre id="approvedAnswer" class="approved-answer is-hidden"></pre>
-      </section>
-
-      <section id="decisionSection" class="detail-section">
-        <p class="section-label">审核意见</p>
-        <textarea
-          id="answerInput"
-          class="answer-input"
-          rows="4"
-          placeholder="通过后写入知识库；默认填入 AI 示例答案"
-        ></textarea>
-        <label class="reject-field">
-          <span>驳回原因</span>
-          <input id="rejectReason" type="text" placeholder="可选，仅记录到日志" />
-        </label>
-        <div class="detail-actions">
-          <button id="approveBtn" class="save-btn is-primary" type="button">通过并入库</button>
-          <button id="rejectBtn" class="save-btn" type="button">驳回</button>
-          <span id="detailStatus" class="save-status"></span>
-        </div>
-        <p id="detailError" class="detail-error is-hidden" role="alert"></p>
-      </section>
-    </div>
-  </dialog>
-
-  <script src="/static/review-queue.js?v=1"></script>
+  <script src="/static/review-queue.js?v=3"></script>
 </body>
 </html>

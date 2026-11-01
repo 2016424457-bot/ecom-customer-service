@@ -29,11 +29,15 @@
   const trendSummary = document.getElementById("trendSummary");
   const trendTableWrap = document.getElementById("trendTableWrap");
 
-  const detailDialog = document.getElementById("detailDialog");
+  const detailPane = document.getElementById("detailPane");
+  const detailEmpty = document.getElementById("detailEmpty");
+  const detailBody = document.getElementById("detailBody");
   const detailQuestion = document.getElementById("detailQuestion");
+  const detailStatusLabel = document.getElementById("detailStatusLabel");
   const detailMeta = document.getElementById("detailMeta");
-  const detailClose = document.getElementById("detailClose");
+  const detailBack = document.getElementById("detailBack");
   const occurrenceList = document.getElementById("occurrenceList");
+  const occurrenceCount = document.getElementById("occurrenceCount");
   const reviewedSection = document.getElementById("reviewedSection");
   const reviewedNote = document.getElementById("reviewedNote");
   const approvedAnswer = document.getElementById("approvedAnswer");
@@ -73,76 +77,103 @@
     return value < 0 ? `${text} ↓` : text;
   }
 
-  function truncate(text, max) {
-    const value = String(text || "").trim();
-    if (value.length <= max) return value;
-    return `${value.slice(0, max)}…`;
+  function isNarrowScreen() {
+    return window.matchMedia("(max-width: 900px)").matches;
+  }
+
+  function setSelected(id) {
+    for (const item of listEl.querySelectorAll(".queue-item")) {
+      const selected = String(item.dataset.id) === String(id);
+      item.classList.toggle("is-selected", selected);
+      item.setAttribute("aria-selected", selected ? "true" : "false");
+    }
   }
 
   function createRow(item) {
-    const card = document.createElement("article");
-    card.className = `review-card ${statusClass(item.review_status)}`;
-    card.tabIndex = 0;
-    card.setAttribute("role", "button");
-    card.setAttribute("aria-label", `查看审核项：${item.normalized_question}`);
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "queue-item";
+    row.dataset.id = String(item.id);
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", "false");
+    row.setAttribute(
+      "aria-label",
+      `查看审核项：${item.normalized_question}`,
+    );
 
-    const head = document.createElement("div");
-    head.className = "review-head";
+    const top = document.createElement("span");
+    top.className = "queue-item-top";
 
-    const badges = document.createElement("div");
-    badges.className = "review-badges";
+    const dot = document.createElement("span");
+    dot.className = `status-dot ${statusClass(item.review_status)}`;
+    dot.setAttribute("aria-hidden", "true");
 
-    const statusBadge = document.createElement("span");
-    statusBadge.className = `status-badge ${statusClass(
-      item.review_status,
-    )}`;
-    statusBadge.textContent = item.review_status;
+    const statusText = document.createElement("span");
+    statusText.textContent = item.review_status;
 
     const count = document.createElement("span");
-    count.className = "occurrence-count";
+    count.className = "queue-count";
     count.textContent = `出现 ${item.occurrence_count} 次`;
-    badges.append(statusBadge, count);
 
-    const updated = document.createElement("span");
-    updated.className = "review-time";
-    updated.textContent = `更新 ${formatTime(item.updated_at)}`;
-    head.append(badges, updated);
+    const time = document.createElement("span");
+    time.className = "queue-time";
+    time.textContent = formatTime(item.updated_at);
 
-    const question = document.createElement("p");
-    question.className = "review-question";
+    top.append(dot, statusText, count, time);
+
+    const question = document.createElement("span");
+    question.className = "queue-question";
     question.textContent = item.normalized_question;
 
-    const draft = document.createElement("p");
-    draft.className = "review-draft";
-    const draftText = String(item.ai_suggested_answer || "").trim();
-    draft.textContent = draftText
-      ? `AI 示例答案：${truncate(draftText, 90)}`
-      : "AI 示例答案：（无）";
-
-    card.append(head, question, draft);
-    card.addEventListener("click", () => {
+    row.append(top, question);
+    row.addEventListener("click", () => {
       void openDetail(item.id);
     });
-    card.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        void openDetail(item.id);
-      }
-    });
-    return card;
+    return row;
+  }
+
+  function clearDetailView() {
+    currentId = null;
+    setSelected(null);
+    detailBody.classList.add("is-hidden");
+    detailEmpty.classList.remove("is-hidden");
+    document.body.classList.remove("is-detail-open");
   }
 
   function render(items, total) {
     listEl.textContent = "";
-    summaryEl.textContent = `共 ${total} 条`;
+    const label = status || "全部";
+    summaryEl.textContent = `${label} · 共 ${total} 条`;
+
     if (!items.length) {
       const empty = document.createElement("p");
-      empty.className = "empty-state";
-      empty.textContent = "当前筛选下没有审核项。";
+      empty.className = "queue-empty";
+      empty.textContent =
+        status === "待审"
+          ? "待审队列已清空。可以回聊天页问一个新问题，或切到其他状态看看。"
+          : "当前筛选下没有审核项。";
       listEl.append(empty);
+      clearDetailView();
       return;
     }
+
     for (const item of items) listEl.append(createRow(item));
+
+    if (currentId !== null) {
+      const stillVisible = items.some(
+        (item) => String(item.id) === String(currentId),
+      );
+      if (stillVisible) {
+        setSelected(currentId);
+        return;
+      }
+    }
+
+    if (!isNarrowScreen()) {
+      void openDetail(items[0].id, { auto: true });
+    } else {
+      clearDetailView();
+    }
   }
 
   async function load() {
@@ -166,23 +197,63 @@
       listEl.textContent = "";
       summaryEl.textContent =
         error instanceof Error ? error.message : "加载失败";
+      clearDetailView();
     }
   }
 
-  function openDialog() {
-    if (typeof detailDialog.showModal === "function") {
-      if (!detailDialog.open) detailDialog.showModal();
-    } else {
-      detailDialog.setAttribute("open", "");
+  async function loadCounts() {
+    const statuses = ["待审", "通过", "驳回"];
+    try {
+      const results = await Promise.all(
+        statuses.map(async (value) => {
+          const params = new URLSearchParams({
+            status: value,
+            limit: "1",
+          });
+          const response = await fetch(`${API}?${params.toString()}`, {
+            cache: "no-store",
+          });
+          if (!response.ok) throw new Error("count failed");
+          const data = await response.json();
+          return Number.isFinite(data.total) ? data.total : 0;
+        }),
+      );
+      const counts = new Map(
+        statuses.map((value, index) => [value, results[index]]),
+      );
+      let all = 0;
+      for (const button of statusFilters.querySelectorAll("[data-status]")) {
+        const value = button.dataset.status || "";
+        if (value) {
+          const count = counts.get(value) ?? 0;
+          all += count;
+          button.textContent = `${value} ${count}`;
+        } else {
+          button.textContent = `全部 ${all}`;
+        }
+      }
+    } catch {
+      /* counts are an enhancement; the queue still works without them */
+    }
+  }
+
+  function openDialogShell() {
+    detailEmpty.classList.add("is-hidden");
+    detailBody.classList.remove("is-hidden");
+    if (isNarrowScreen()) {
+      document.body.classList.add("is-detail-open");
+      detailPane.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }
 
   function resetDetail() {
     detailQuestion.textContent = "加载中…";
+    detailStatusLabel.textContent = "";
     detailMeta.textContent = "";
     occurrenceList.textContent = "";
+    occurrenceCount.textContent = "";
     reviewedSection.classList.add("is-hidden");
-    decisionSection.classList.add("is-hidden");
+    decisionSection.classList.remove("is-hidden");
     approvedAnswer.textContent = "";
     approvedAnswer.classList.add("is-hidden");
     answerInput.value = "";
@@ -191,21 +262,29 @@
     hideDetailError();
   }
 
-  async function openDetail(id) {
+  async function openDetail(id, options = {}) {
     currentId = id;
+    setSelected(id);
     resetDetail();
-    openDialog();
+    openDialogShell();
     try {
       const response = await fetch(`${API}/${id}`, { cache: "no-store" });
       if (!response.ok) throw new Error(await readError(response));
       const data = await response.json();
-      if (currentId !== id) return;
+      if (String(currentId) !== String(id)) return;
       renderDetail(
         data.item,
         Array.isArray(data.occurrences) ? data.occurrences : [],
       );
+      if (!options.auto) {
+        detailPane.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
     } catch (error) {
       detailQuestion.textContent = "加载失败";
+      detailStatusLabel.textContent = "";
+      detailMeta.textContent = "";
+      occurrenceList.textContent = "";
+      decisionSection.classList.add("is-hidden");
       showDetailError(
         error instanceof Error ? error.message : "加载失败",
       );
@@ -214,28 +293,18 @@
 
   function renderDetail(item, occurrences) {
     detailQuestion.textContent = item.normalized_question;
+    detailStatusLabel.textContent = `${item.review_status} · 出现 ${item.occurrence_count} 次`;
 
     detailMeta.textContent = "";
-    const statusBadge = document.createElement("span");
-    statusBadge.className = `status-badge ${statusClass(
-      item.review_status,
-    )}`;
-    statusBadge.textContent = item.review_status;
-
-    const count = document.createElement("span");
-    count.className = "meta-chip";
-    count.textContent = `出现 ${item.occurrence_count} 次`;
-
     const created = document.createElement("span");
     created.className = "meta-chip";
     created.textContent = `入队 ${formatTime(item.created_at)}`;
-
     const updated = document.createElement("span");
     updated.className = "meta-chip";
     updated.textContent = `更新 ${formatTime(item.updated_at)}`;
+    detailMeta.append(created, updated);
 
-    detailMeta.append(statusBadge, count, created, updated);
-
+    occurrenceCount.textContent = `共 ${occurrences.length} 条原话`;
     renderOccurrences(occurrences);
 
     const pending = item.review_status === "待审";
@@ -281,9 +350,8 @@
     head.className = "occurrence-head";
 
     const source = document.createElement("span");
-    source.className = "meta-chip source-chip";
-    const label = SOURCE_LABELS[row.source] || "未知入口";
-    source.textContent = `${label} · ${row.source}`;
+    source.className = "source-chip";
+    source.textContent = SOURCE_LABELS[row.source] || "未知入口";
 
     const time = document.createElement("span");
     time.className = "occurrence-time";
@@ -298,10 +366,15 @@
 
     const reason = String(row.reason || "").trim();
     if (reason) {
-      const reasonEl = document.createElement("p");
-      reasonEl.className = "occurrence-reason";
-      reasonEl.textContent = `原因：${reason}`;
-      card.append(reasonEl);
+      const details = document.createElement("details");
+      details.className = "chunk-details";
+      const summary = document.createElement("summary");
+      summary.textContent = "判定原因";
+      const text = document.createElement("p");
+      text.className = "occurrence-reason";
+      text.textContent = reason;
+      details.append(summary, text);
+      card.append(details);
     }
 
     const chunks = Array.isArray(row.retrieved_chunks)
@@ -318,7 +391,7 @@
     const details = document.createElement("details");
     details.className = "chunk-details";
     const summary = document.createElement("summary");
-    summary.textContent = `召回快照（Top ${chunks.length}）`;
+    summary.textContent = `召回片段 · Top ${chunks.length}`;
 
     const list = document.createElement("ol");
     list.className = "chunk-list";
@@ -380,6 +453,13 @@
     return `请求失败（${response.status}）`;
   }
 
+  async function afterDecision() {
+    currentId = null;
+    document.body.classList.remove("is-detail-open");
+    await load();
+    await loadCounts();
+  }
+
   async function approve(id) {
     if (busy) return;
     setBusy(true);
@@ -398,8 +478,7 @@
         return;
       }
       detailStatus.textContent = "已通过，正在刷新…";
-      closeDialog();
-      await load();
+      await afterDecision();
     } catch (error) {
       detailStatus.textContent = "";
       showDetailError(
@@ -430,8 +509,7 @@
         return;
       }
       detailStatus.textContent = "已驳回，正在刷新…";
-      closeDialog();
-      await load();
+      await afterDecision();
     } catch (error) {
       detailStatus.textContent = "";
       showDetailError(
@@ -444,12 +522,10 @@
     }
   }
 
-  function closeDialog() {
-    if (typeof detailDialog.close === "function") {
-      detailDialog.close();
-    } else {
-      detailDialog.removeAttribute("open");
-    }
+  function backToQueue() {
+    document.body.classList.remove("is-detail-open");
+    detailBack.blur();
+    listEl.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   async function loadTrend() {
@@ -481,10 +557,8 @@
       return;
     }
 
-    trendSummary.textContent = `最近 ${items.length} 轮 · 按时间正序，Δ 对比上一轮，下滑标 ↓`;
+    trendSummary.textContent = `最近 ${items.length} 轮 · 展开查看`;
 
-    // The API returns newest first; flip to oldest first so each Δ reads
-    // against the run on the line above, matching show_eval_trend.py.
     const rows = items.slice().reverse();
     const table = document.createElement("table");
     table.className = "trend-table";
@@ -492,7 +566,7 @@
     const headers = [
       "时间",
       "触发",
-      "用例数",
+      "用例",
       ...METRICS.map((metric) => metric.label),
       ...METRICS.map((metric) => `Δ ${metric.label}`),
     ];
@@ -550,7 +624,9 @@
     if (!chip) return;
     status = chip.dataset.status || "";
     for (const button of statusFilters.querySelectorAll("[data-status]")) {
-      button.classList.toggle("is-active", button === chip);
+      const active = button === chip;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
     }
     void load();
   });
@@ -563,12 +639,9 @@
     if (currentId !== null) void reject(currentId);
   });
 
-  detailClose.addEventListener("click", closeDialog);
-
-  detailDialog.addEventListener("click", (event) => {
-    if (event.target === detailDialog) closeDialog();
-  });
+  detailBack.addEventListener("click", backToQueue);
 
   void load();
+  void loadCounts();
   void loadTrend();
 })();
