@@ -14,6 +14,7 @@ from app.db.models import (
     Message,
     QaExtractionStaging,
     RefundRequest,
+    ReviewQueue,
     Ticket,
 )
 from app.knowledge.types import ConversationWindow, StagingRow
@@ -699,6 +700,72 @@ class FaithCaseRepository:
             case.resolved_at = datetime.now()
         await self.session.flush()
         return case
+
+    async def commit(self) -> None:
+        await self.session.commit()
+
+
+class ReviewQueueRepository:
+    """Persistence boundary for the flywheel review queue."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_pool_row(
+        self, pool_id: int
+    ) -> LowConfidenceQuestion | None:
+        return await self.session.get(LowConfidenceQuestion, pool_id)
+
+    async def list_pending_candidates(
+        self, limit: int
+    ) -> list[ReviewQueue]:
+        rows = await self.session.scalars(
+            select(ReviewQueue)
+            .where(ReviewQueue.review_status == "待审")
+            .order_by(
+                ReviewQueue.occurrence_count.desc(),
+                ReviewQueue.updated_at.desc(),
+            )
+            .limit(limit)
+        )
+        return list(rows)
+
+    async def insert_review(
+        self, normalized_question: str, ai_suggested_answer: str
+    ) -> ReviewQueue:
+        row = ReviewQueue(
+            normalized_question=normalized_question,
+            ai_suggested_answer=ai_suggested_answer,
+            # Set in Python as well as by the server defaults so the
+            # attributes stay readable after flush in async code.
+            occurrence_count=1,
+            review_status="待审",
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row
+
+    async def increment_occurrence(self, review_id: int) -> None:
+        # Single-statement increment: a read-modify-write would lose
+        # concurrent updates.
+        await self.session.execute(
+            update(ReviewQueue)
+            .where(ReviewQueue.id == review_id)
+            .values(
+                occurrence_count=ReviewQueue.occurrence_count + 1
+            )
+        )
+        await self.session.flush()
+
+    async def set_pool_matched_review(
+        self, pool_id: int, review_id: int
+    ) -> None:
+        await self.session.execute(
+            update(LowConfidenceQuestion)
+            .where(LowConfidenceQuestion.id == pool_id)
+            .values(matched_review_id=review_id)
+        )
+        await self.session.flush()
 
     async def commit(self) -> None:
         await self.session.commit()
