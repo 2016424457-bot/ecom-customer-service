@@ -4,7 +4,7 @@
   "recommended_threshold": 0.5,
   "balanced_accuracy": 0.9375,
   "f1": 0.9333333333333333,
-  "current_default_threshold": 0.55,
+  "current_default_threshold": 0.5,
   "confusion_matrix": {
     "accepted_answerable": 35,
     "rejected_answerable": 5,
@@ -13,246 +13,336 @@
     "total_answerable": 40,
     "total_unanswerable": 8
   },
+  "by_bucket": {
+    "A_policy": {
+      "accepted_answerable": 10,
+      "rejected_answerable": 0,
+      "accepted_unanswerable": 0,
+      "refused_unanswerable": 0,
+      "total_answerable": 10,
+      "total_unanswerable": 0
+    },
+    "B_model": {
+      "accepted_answerable": 10,
+      "rejected_answerable": 0,
+      "accepted_unanswerable": 0,
+      "refused_unanswerable": 0,
+      "total_answerable": 10,
+      "total_unanswerable": 0
+    },
+    "C_colloquial": {
+      "accepted_answerable": 7,
+      "rejected_answerable": 3,
+      "accepted_unanswerable": 0,
+      "refused_unanswerable": 0,
+      "total_answerable": 10,
+      "total_unanswerable": 0
+    },
+    "E_multi": {
+      "accepted_answerable": 8,
+      "rejected_answerable": 2,
+      "accepted_unanswerable": 0,
+      "refused_unanswerable": 0,
+      "total_answerable": 10,
+      "total_unanswerable": 0
+    },
+    "F_unanswerable": {
+      "accepted_answerable": 0,
+      "rejected_answerable": 0,
+      "accepted_unanswerable": 0,
+      "refused_unanswerable": 8,
+      "total_answerable": 0,
+      "total_unanswerable": 8
+    }
+  },
   "cases": [
     {
       "case_id": "A01",
       "answerable": true,
-      "confidence": 0.8779254525899887
+      "confidence": 0.8782453060150146,
+      "bucket": "A_policy"
     },
     {
       "case_id": "A02",
       "answerable": true,
-      "confidence": 0.866495954990387
+      "confidence": 0.866495954990387,
+      "bucket": "A_policy"
     },
     {
       "case_id": "A03",
       "answerable": true,
-      "confidence": 0.8709850072860718
+      "confidence": 0.8708495020866395,
+      "bucket": "A_policy"
     },
     {
       "case_id": "A04",
       "answerable": true,
-      "confidence": 0.6793292433023452
+      "confidence": 0.6793292433023452,
+      "bucket": "A_policy"
     },
     {
       "case_id": "A05",
       "answerable": true,
-      "confidence": 0.9986061453819275
+      "confidence": 0.9986012816429138,
+      "bucket": "A_policy"
     },
     {
       "case_id": "A06",
       "answerable": true,
-      "confidence": 0.898550820350647
+      "confidence": 0.898550820350647,
+      "bucket": "A_policy"
     },
     {
       "case_id": "A07",
       "answerable": true,
-      "confidence": 0.8105519413948059
+      "confidence": 0.8111058473587036,
+      "bucket": "A_policy"
     },
     {
       "case_id": "A08",
       "answerable": true,
-      "confidence": 0.7698085069656373
+      "confidence": 0.7698085069656373,
+      "bucket": "A_policy"
     },
     {
       "case_id": "A09",
       "answerable": true,
-      "confidence": 0.6808579444885254
+      "confidence": 0.6808579444885254,
+      "bucket": "A_policy"
     },
     {
       "case_id": "A10",
       "answerable": true,
-      "confidence": 0.9482240557670593
+      "confidence": 0.9481872558593749,
+      "bucket": "A_policy"
     },
     {
       "case_id": "B01",
       "answerable": true,
-      "confidence": 0.9095844745635986
+      "confidence": 0.9100152373313903,
+      "bucket": "B_model"
     },
     {
       "case_id": "B02",
       "answerable": true,
-      "confidence": 0.9253564715385436
+      "confidence": 0.9245859980583191,
+      "bucket": "B_model"
     },
     {
       "case_id": "B03",
       "answerable": true,
-      "confidence": 0.9379090666770935
+      "confidence": 0.9379090666770935,
+      "bucket": "B_model"
     },
     {
       "case_id": "B04",
       "answerable": true,
-      "confidence": 0.9381780385971069
+      "confidence": 0.9381780385971069,
+      "bucket": "B_model"
     },
     {
       "case_id": "B05",
       "answerable": true,
-      "confidence": 0.9206004858016967
+      "confidence": 0.9206004858016967,
+      "bucket": "B_model"
     },
     {
       "case_id": "B06",
       "answerable": true,
-      "confidence": 0.9299683332443237
+      "confidence": 0.9301435708999634,
+      "bucket": "B_model"
     },
     {
       "case_id": "B07",
       "answerable": true,
-      "confidence": 0.9281054139137268
+      "confidence": 0.9284107208251953,
+      "bucket": "B_model"
     },
     {
       "case_id": "B08",
       "answerable": true,
-      "confidence": 0.8515129774808883
+      "confidence": 0.8515129774808883,
+      "bucket": "B_model"
     },
     {
       "case_id": "B09",
       "answerable": true,
-      "confidence": 0.922912049293518
+      "confidence": 0.9226512670516968,
+      "bucket": "B_model"
     },
     {
       "case_id": "B10",
       "answerable": true,
-      "confidence": 0.9253379106521606
+      "confidence": 0.9258610486984252,
+      "bucket": "B_model"
     },
     {
       "case_id": "C01",
       "answerable": true,
-      "confidence": 0.7451393634080886
+      "confidence": 0.7451393634080886,
+      "bucket": "C_colloquial"
     },
     {
       "case_id": "C02",
       "answerable": true,
-      "confidence": 0.561679619550705
+      "confidence": 0.560165387392044,
+      "bucket": "C_colloquial"
     },
     {
       "case_id": "C03",
       "answerable": true,
-      "confidence": 0.019676284596789627
+      "confidence": 0.019933255785144866,
+      "bucket": "C_colloquial"
     },
     {
       "case_id": "C04",
       "answerable": true,
-      "confidence": 0.6081710636615753
+      "confidence": 0.6126481562852859,
+      "bucket": "C_colloquial"
     },
     {
       "case_id": "C05",
       "answerable": true,
-      "confidence": 0.875563108921051
+      "confidence": 0.875563108921051,
+      "bucket": "C_colloquial"
     },
     {
       "case_id": "C06",
       "answerable": true,
-      "confidence": 0.8995089411735535
+      "confidence": 0.8995066523551941,
+      "bucket": "C_colloquial"
     },
     {
       "case_id": "C07",
       "answerable": true,
-      "confidence": 0.938193964958191
+      "confidence": 0.938193964958191,
+      "bucket": "C_colloquial"
     },
     {
       "case_id": "C08",
       "answerable": true,
-      "confidence": 0.016332394909113646
+      "confidence": 0.015924008935689925,
+      "bucket": "C_colloquial"
     },
     {
       "case_id": "C09",
       "answerable": true,
-      "confidence": 0.5226353287696839
+      "confidence": 0.5243165194988251,
+      "bucket": "C_colloquial"
     },
     {
       "case_id": "C10",
       "answerable": true,
-      "confidence": 0.005776690179482102
+      "confidence": 0.005745319626294076,
+      "bucket": "C_colloquial"
     },
     {
       "case_id": "E01",
       "answerable": true,
-      "confidence": 0.267307435721159
+      "confidence": 0.2679061986505985,
+      "bucket": "E_multi"
     },
     {
       "case_id": "E02",
       "answerable": true,
-      "confidence": 0.61007681787014
+      "confidence": 0.61007681787014,
+      "bucket": "E_multi"
     },
     {
       "case_id": "E03",
       "answerable": true,
-      "confidence": 0.9861434936523438
+      "confidence": 0.9861434936523438,
+      "bucket": "E_multi"
     },
     {
       "case_id": "E04",
       "answerable": true,
-      "confidence": 0.07751428261399268
+      "confidence": 0.0766193282790482,
+      "bucket": "E_multi"
     },
     {
       "case_id": "E05",
       "answerable": true,
-      "confidence": 0.8371536612510682
+      "confidence": 0.8371536612510682,
+      "bucket": "E_multi"
     },
     {
       "case_id": "E06",
       "answerable": true,
-      "confidence": 0.6796728610992432
+      "confidence": 0.6832310080528259,
+      "bucket": "E_multi"
     },
     {
       "case_id": "E07",
       "answerable": true,
-      "confidence": 0.8957458376884461
+      "confidence": 0.8957245588302613,
+      "bucket": "E_multi"
     },
     {
       "case_id": "E08",
       "answerable": true,
-      "confidence": 0.8856619596481323
+      "confidence": 0.8866611003875732,
+      "bucket": "E_multi"
     },
     {
       "case_id": "E09",
       "answerable": true,
-      "confidence": 0.6958901226520539
+      "confidence": 0.6958901226520539,
+      "bucket": "E_multi"
     },
     {
       "case_id": "E10",
       "answerable": true,
-      "confidence": 0.6373435020446778
+      "confidence": 0.6370498180389405,
+      "bucket": "E_multi"
     },
     {
       "case_id": "F01",
       "answerable": false,
-      "confidence": 0.12006071070209146
+      "confidence": 0.11999231660738588,
+      "bucket": "F_unanswerable"
     },
     {
       "case_id": "F02",
       "answerable": false,
-      "confidence": 0.001166750700213015
+      "confidence": 0.0011695857567247002,
+      "bucket": "F_unanswerable"
     },
     {
       "case_id": "F03",
       "answerable": false,
-      "confidence": 0.047387999622151254
+      "confidence": 0.05006378218531608,
+      "bucket": "F_unanswerable"
     },
     {
       "case_id": "F04",
       "answerable": false,
-      "confidence": 0.0017285021196585147
+      "confidence": 0.0017735927598550917,
+      "bucket": "F_unanswerable"
     },
     {
       "case_id": "F05",
       "answerable": false,
-      "confidence": 0.0019329508577357046
+      "confidence": 0.0019635072167147882,
+      "bucket": "F_unanswerable"
     },
     {
       "case_id": "F06",
       "answerable": false,
-      "confidence": 0.005943237151950598
+      "confidence": 0.0060485524358227846,
+      "bucket": "F_unanswerable"
     },
     {
       "case_id": "F07",
       "answerable": false,
-      "confidence": 0.022414482664316893
+      "confidence": 0.02284961026161909,
+      "bucket": "F_unanswerable"
     },
     {
       "case_id": "F08",
       "answerable": false,
-      "confidence": 0.0005340919422451406
+      "confidence": 0.0005554844014113769,
+      "bucket": "F_unanswerable"
     }
   ]
 }

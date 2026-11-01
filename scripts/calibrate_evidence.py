@@ -13,8 +13,9 @@ Run:
         --output evals/reports/evidence_confidence_calibration.json
 
 The calibration needs the real MySQL/Milvus knowledge base plus the embed
-and rerank models; without them the script fails and the default
-``evidence_confidence_threshold`` stays provisional.
+and rerank models. The default ``evidence_confidence_threshold`` was
+calibrated to 0.50 on 2026-11-01; rerun this script whenever the eval set
+or retrieval settings change.
 """
 
 import argparse
@@ -42,6 +43,7 @@ class CaseScore:
     case_id: str
     answerable: bool
     confidence: float
+    bucket: str | None = None
 
 
 @dataclass(frozen=True)
@@ -64,14 +66,31 @@ def _threshold_grid(lo: float, hi: float, step: float) -> list[float]:
     return [round(lo + index * step, 10) for index in range(count + 1)]
 
 
-def _score_at(
+def _counts(
     cases: list[CaseScore], threshold: float
-) -> CalibrationResult:
+) -> tuple[int, int, int, int]:
     accepted = [case for case in cases if case.confidence >= threshold]
     accepted_answerable = sum(1 for case in accepted if case.answerable)
     accepted_unanswerable = sum(1 for case in accepted if not case.answerable)
     total_answerable = sum(1 for case in cases if case.answerable)
     total_unanswerable = len(cases) - total_answerable
+    return (
+        accepted_answerable,
+        accepted_unanswerable,
+        total_answerable,
+        total_unanswerable,
+    )
+
+
+def _score_at(
+    cases: list[CaseScore], threshold: float
+) -> CalibrationResult:
+    (
+        accepted_answerable,
+        accepted_unanswerable,
+        total_answerable,
+        total_unanswerable,
+    ) = _counts(cases, threshold)
 
     tpr = (
         accepted_answerable / total_answerable
@@ -185,14 +204,52 @@ async def collect_scores(
             [hit.score for hit in result.hits],
             effective_floor=settings.evidence_effective_floor,
         )
+        bucket = case.get("bucket")
         scores.append(
             CaseScore(
                 case_id=str(case["id"]),
                 answerable=bool(case["answerable"]),
                 confidence=signals.confidence,
+                bucket=str(bucket) if bucket is not None else None,
             )
         )
     return scores
+
+
+def _bucket_distribution(
+    cases: list[CaseScore], threshold: float
+) -> dict[str, dict[str, int]]:
+    """Accepted/rejected counts per dataset bucket at ``threshold``.
+
+    Cases without a bucket are grouped under ``"unknown"`` so the per-bucket
+    totals still add up to the global confusion matrix.
+    """
+    grouped: dict[str, list[CaseScore]] = {}
+    for case in cases:
+        grouped.setdefault(case.bucket or "unknown", []).append(case)
+
+    distribution: dict[str, dict[str, int]] = {}
+    for bucket in sorted(grouped):
+        bucket_cases = grouped[bucket]
+        (
+            accepted_answerable,
+            accepted_unanswerable,
+            total_answerable,
+            total_unanswerable,
+        ) = _counts(bucket_cases, threshold)
+        distribution[bucket] = {
+            "accepted_answerable": accepted_answerable,
+            "rejected_answerable": (
+                total_answerable - accepted_answerable
+            ),
+            "accepted_unanswerable": accepted_unanswerable,
+            "refused_unanswerable": (
+                total_unanswerable - accepted_unanswerable
+            ),
+            "total_answerable": total_answerable,
+            "total_unanswerable": total_unanswerable,
+        }
+    return distribution
 
 
 def build_report(
@@ -222,11 +279,13 @@ def build_report(
             "total_answerable": result.total_answerable,
             "total_unanswerable": result.total_unanswerable,
         },
+        "by_bucket": _bucket_distribution(cases, result.threshold),
         "cases": [
             {
                 "case_id": case.case_id,
                 "answerable": case.answerable,
                 "confidence": case.confidence,
+                "bucket": case.bucket,
             }
             for case in cases
         ],

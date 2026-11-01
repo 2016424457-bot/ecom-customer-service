@@ -103,8 +103,13 @@ def _settings(dataset: Path) -> SimpleNamespace:
 
 def _write_dataset(path: Path) -> None:
     rows = [
-        {"id": "A01", "answerable": True, "query": "q1"},
-        {"id": "F01", "answerable": False, "query": "q2"},
+        {"id": "A01", "answerable": True, "query": "q1", "bucket": "A_policy"},
+        {
+            "id": "F01",
+            "answerable": False,
+            "query": "q2",
+            "bucket": "F_unanswerable",
+        },
         {"id": "A02", "answerable": True, "query": "q3"},
     ]
     path.write_text(
@@ -140,6 +145,7 @@ async def test_collect_scores_uses_production_aligned_retrieval(
 
     assert [s.case_id for s in scores] == ["A01", "F01"]
     assert [s.answerable for s in scores] == [True, False]
+    assert [s.bucket for s in scores] == ["A_policy", "F_unanswerable"]
     assert scores[0].confidence == pytest.approx(
         compute_confidence([0.9, 0.5], effective_floor=0.2).confidence
     )
@@ -177,6 +183,7 @@ async def test_collect_scores_defaults_to_settings_dataset(
     scores = await calibration.collect_scores(settings)
 
     assert [s.case_id for s in scores] == ["A01", "F01", "A02"]
+    assert [s.bucket for s in scores] == ["A_policy", "F_unanswerable", None]
     assert all(s.confidence == 0.0 for s in scores)
 
 
@@ -194,8 +201,8 @@ def _fake_result() -> calibration.CalibrationResult:
 
 def test_build_report_includes_confusion_matrix_and_cases():
     cases = [
-        calibration.CaseScore("A01", True, 0.9),
-        calibration.CaseScore("F01", False, 0.2),
+        calibration.CaseScore("A01", True, 0.9, bucket="A_policy"),
+        calibration.CaseScore("F01", False, 0.2, bucket="F_unanswerable"),
     ]
     report = calibration.build_report(
         cases,
@@ -218,10 +225,86 @@ def test_build_report_includes_confusion_matrix_and_cases():
         "total_answerable": 14,
         "total_unanswerable": 8,
     }
+    assert report["by_bucket"] == {
+        "A_policy": {
+            "accepted_answerable": 1,
+            "rejected_answerable": 0,
+            "accepted_unanswerable": 0,
+            "refused_unanswerable": 0,
+            "total_answerable": 1,
+            "total_unanswerable": 0,
+        },
+        "F_unanswerable": {
+            "accepted_answerable": 0,
+            "rejected_answerable": 0,
+            "accepted_unanswerable": 0,
+            "refused_unanswerable": 1,
+            "total_answerable": 0,
+            "total_unanswerable": 1,
+        },
+    }
     assert report["cases"] == [
-        {"case_id": "A01", "answerable": True, "confidence": 0.9},
-        {"case_id": "F01", "answerable": False, "confidence": 0.2},
+        {
+            "case_id": "A01",
+            "answerable": True,
+            "confidence": 0.9,
+            "bucket": "A_policy",
+        },
+        {
+            "case_id": "F01",
+            "answerable": False,
+            "confidence": 0.2,
+            "bucket": "F_unanswerable",
+        },
     ]
+
+
+def test_build_report_per_bucket_counts_at_recommended_threshold():
+    cases = [
+        calibration.CaseScore("A01", True, 0.9, bucket="A_policy"),
+        calibration.CaseScore("A02", True, 0.3, bucket="A_policy"),
+        calibration.CaseScore("F01", False, 0.1, bucket="A_policy"),
+        calibration.CaseScore("B01", True, 0.6, bucket="B_shipping"),
+        calibration.CaseScore("F02", False, 0.6, bucket="B_shipping"),
+        calibration.CaseScore("X01", True, 0.9, bucket=None),
+    ]
+    result = calibration.CalibrationResult(
+        threshold=0.5,
+        balanced_accuracy=0.5,
+        f1=0.5,
+        accepted_answerable=3,
+        refused_unanswerable=1,
+        total_answerable=4,
+        total_unanswerable=2,
+    )
+
+    report = calibration.build_report(cases, result, current_threshold=0.5)
+
+    assert report["by_bucket"]["A_policy"] == {
+        "accepted_answerable": 1,
+        "rejected_answerable": 1,
+        "accepted_unanswerable": 0,
+        "refused_unanswerable": 1,
+        "total_answerable": 2,
+        "total_unanswerable": 1,
+    }
+    assert report["by_bucket"]["B_shipping"] == {
+        "accepted_answerable": 1,
+        "rejected_answerable": 0,
+        "accepted_unanswerable": 1,
+        "refused_unanswerable": 0,
+        "total_answerable": 1,
+        "total_unanswerable": 1,
+    }
+    assert report["by_bucket"]["unknown"] == {
+        "accepted_answerable": 1,
+        "rejected_answerable": 0,
+        "accepted_unanswerable": 0,
+        "refused_unanswerable": 0,
+        "total_answerable": 1,
+        "total_unanswerable": 0,
+    }
+    assert report["cases"][-1]["bucket"] is None
 
 
 def test_render_summary_prints_recommendation_and_matrix():
