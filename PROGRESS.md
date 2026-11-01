@@ -1,8 +1,119 @@
-# 电商智能客服 CH08 — 当前进度与交付说明
+# 电商智能客服 CH09 — 当前进度与交付说明
 
-- 日期：2026-10-29
-- 功能分支：`ch08-tool-system`（从 `ch06-router` 起）
-- 状态：Task 1–9 已完成；Task 10 验收（建单确认/取消真实跑通、DDL 已应用、全量单测 493 passed）、code review 与文档收尾进行中
+- 日期：2026-11-01
+- 功能分支：`ch09-observability-flywheel`（从 CH08 收尾基线起）
+- 状态：Task 1–19 已完成；DDL 已应用到本机 MySQL，全量单测 734 passed；验收 1/5 因未配置 Langfuse Cloud key 未跑（README 已给配置步骤），验收 2/3/4/6 已真实跑通并记录证据
+
+## 一、CH09 做了什么
+
+给客服系统装上「眼睛」，再把答不上的问题变成改进燃料：
+
+- **Langfuse 可观测性**：每个请求一个根 span `chat · <intent>`，metadata 固定 `intent / route / refused`；检索节点单独 `knowledge_retrieval` span；LangChain CallbackHandler 自动带出 LLM/tool 子 span；未配置 key 时全链路 no-op。
+- **意图成本**：`scripts/intent_cost_report.py` 按 Langfuse 根 span 的 `traceName` 汇总 token / 成本 / 占比，输出「最烧钱意图」。
+- **证据置信度闸**：组合信号 `0.60*top1 + 0.25*gap + 0.15*effective_count`；重排不可用时跳过机械闸只跑自评。阈值 0.50 由 CH04 48 条数据集校准（balanced accuracy 0.9375、F1 0.9333、接受不可答 0/8）。
+- **三入口落池**：知识路弱证据 / 自评拒答 / 聊天页 👎 都写 `low_confidence_questions` 并带 `retrieved_chunks` 召回快照；👎 走 `POST /api/feedback`。
+- **数据飞轮**：后台单 worker 标准化（AI 起草、依据不足标「需人工补充」）→ 待审候选内查重 → 原子累加 / 新建 `review_queue` → 写 `matched_review_id`；`scripts/backfill_flywheel.py` 兜底。
+- **审核后台**：`/review-queue` 页面看原话、来源、召回 Top 片段；通过时写知识库并单条向量化，成功后才置「通过」，失败返回 502 可重试；驳回不写知识库。
+- **评估流水线**：`scripts/run_eval_pipeline.py` 复用 CH04 数据集与 `hybrid_rerank`，把 recall@1/3/5/10、MRR、Faithfulness、用例数落 `eval_runs`；`show_eval_trend.py` / `GET /api/eval-runs/trend` 输出 Δ；进程内调度器可选。
+
+## 二、CH09 模块
+
+| # | 模块 | 关键文件 | 状态 |
+|---|---|---|---|
+| 1 | 依赖、配置、DDL、ORM | `pyproject.toml`、`app/config.py`、`sql/ch09-ddl.sql`、`app/db/models.py` | ✅ |
+| 2 | Langfuse 接入与可选自部署 | `app/observability.py`、`deploy/langfuse/docker-compose.yml` | ✅ |
+| 3 | 图运行时 tracing、检索 span | `app/graph/runtime.py`、`app/graph/nodes.py` | ✅ |
+| 4 | 意图成本报告 | `scripts/intent_cost_report.py` | ✅ |
+| 5 | 证据置信度公式 / 三入口拆分 / 校准 | `app/knowledge/confidence.py`、`scripts/calibrate_evidence.py`、`evals/reports/evidence_confidence_calibration.json` | ✅ |
+| 6 | 落池召回快照与 👎 接口 | `app/graph/nodes.py`、`app/db/repositories.py`、`app/api/routes.py` | ✅ |
+| 7 | 飞轮标准化 / 查重 | `app/flywheel/normalize.py`、`app/flywheel/dedup.py`、`app/prompts/question_*_prompt.txt` | ✅ |
+| 8 | 待审队列仓库 / 单 worker 服务 | `app/db/repositories.py`、`app/flywheel/service.py` | ✅ |
+| 9 | 运行时装配与生命周期 | `app/runtime.py`、`app/llm.py`、`app/main.py` | ✅ |
+| 10 | 飞轮补偿脚本 | `scripts/backfill_flywheel.py` | ✅ |
+| 11 | 单条 chunk 向量化 | `app/knowledge/build.py`、`app/db/repositories.py` | ✅ |
+| 12 | 审核队列 API | `app/api/review.py`、`app/schemas.py` | ✅ |
+| 13 | 评估数据集 / 流水线 / 落表 | `app/evaluation/dataset.py`、`app/services/eval_pipeline.py`、`scripts/run_eval_pipeline.py` | ✅ |
+| 14 | 评估调度器 / 趋势 API 与脚本 | `app/services/eval_scheduler.py`、`app/evaluation/trend.py`、`app/api/eval.py`、`scripts/show_eval_trend.py` | ✅ |
+| 15 | 审核后台页面 | `app/static/review-queue.html/css/js`、`app/main.py` | ✅ |
+| 16 | 聊天页 👎 接线 | `app/static/chat.js` | ✅ |
+| 17 | 验收、文档与收尾 | `README.md`、`PROGRESS.md`、`dev-notes/ch09.md`、`Makefile` | ✅ |
+
+## 三、CH09 接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/feedback` | 👎 落池（`source='user_feedback'`）+ 召回快照 + 入飞轮；未知会话 404 |
+| GET | `/api/review-queue?status=&limit=&offset=` | 待审队列列表，按 `occurrence_count` 降序 |
+| GET | `/api/review-queue/{id}` | 详情 + 关联原话 / 来源 / 召回快照 |
+| POST | `/api/review-queue/{id}/approve` | 写知识库并单条向量化，成功后才置「通过」；失败 502 |
+| POST | `/api/review-queue/{id}/reject` | 驳回，不写知识库 |
+| GET | `/api/eval-runs?limit=` | 评估轮次，最新在前 |
+| GET | `/api/eval-runs/trend?limit=` | 趋势 + 三指标 Δ |
+| GET | `/review-queue` | 审核后台页面 |
+| GET | `/api/chat/stream` / `POST /api/chat` | SSE 对话；`done` 帧含 `citations`、`trace`（含 `evidence_confidence` 等） |
+
+## 四、CH09 验证状态
+
+| 检查项 | 结果 | 备注 |
+|---|---|---|
+| 单元测试 `uv run pytest -q -m "not integration"` | **734 passed, 33 deselected** | 2026-11-01 |
+| `node --check app/static/chat.js` / `review-queue.js` | 通过 | 退出码 0 |
+| DDL `sql/ch09-ddl.sql` | 已应用 | Task 17 应用；本次复核 `review_queue` / `eval_runs` / 两列存在 |
+| 验收 1 Langfuse 链路 | **未跑，原因：未配置 Langfuse Cloud key** | `.env` 无 `LANGFUSE_*`；README 已给 Cloud/自部署步骤，配置后问一句即可验证 |
+| 验收 2 知识缺口 | 通过 | 会话 9527 问「支持花呗分期吗？」→ 兜底回复；池行 51（`retrieval_low_conf`）→ 审核行 6（`是否支持花呗分期付款？`），详情含原话 + 10 条召回片段 |
+| 验收 3 审核写回 | 通过 | 审核行 5 通过 → `knowledge_chunks` 276（`review_queue:5`，done）；再问「退款提交后多久能到账？」→ top1 0.998，回答引用 [1][2] |
+| 验收 4 👎 | 通过（Task 18 真实验证，本次复核） | 池行 48–50 `source='user_feedback'`、`matched_review_id=5`，`retrieved_chunks` 非空 |
+| 验收 5 意图成本报告 | **未跑，原因：未配置 Langfuse Cloud key** | 未配置时脚本打印配置提示并 `exit=2`（已复现） |
+| 验收 6 评估趋势 | 通过 | `run_eval_pipeline --trigger 手动` 连跑两轮（48 用例）：recall@1 0.900 / recall@3–10 1.000、MRR 0.950、faithfulness 1.000；第二轮 Δ 全 0；`show_eval_trend` 正常输出 5 行趋势 |
+| 证据置信度校准 | 通过（Task 6 已真跑） | 建议阈值 0.50，balanced 0.9375、F1 0.9333；报告已入库 |
+| 审核页浏览器验收 | 通过（Task 17） | 列表/详情/通过/驳回/409/502/趋势表；`/review-queue` 200 |
+
+## 五、CH09 演示命令
+
+```bash
+uv sync
+mysql -h 127.0.0.1 -u root -p ecom_customer_service < sql/ch09-ddl.sql  # 一次性，勿重复执行
+
+# 起服务（单进程）
+uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 --workers 1
+
+# 浏览器：聊天页点 👎 → http://127.0.0.1:8000/review-queue 审核 → 再问同一问题
+# 服务停止后跑批（Milvus Lite 单进程）
+make eval-ch09
+make eval-ch09-trend
+uv run python -m scripts.backfill_flywheel --limit 100
+uv run python -m scripts.calibrate_evidence
+
+# 配好 Langfuse 后
+uv run python -m scripts.intent_cost_report --days 7
+```
+
+## 六、本机演示数据（不在仓库内）
+
+Task 17/18 与 Task 19 验收在本机 MySQL 留下的数据，保留作为演示：
+
+- `review_queue`：行 1（通过，生鲜退款）、2（驳回，发票抬头）、3（通过，积分兑运费券）、4（待审，修改地址）、5（待审 → Task 19 验收 3 通过，退款到账）、6（待审，花呗分期）。
+- `low_confidence_questions`：行 48–50 为 Task 18 的 👎 反馈（`source='user_feedback'`，均链接审核行 5，`retrieved_chunks` 非空）；行 51 为 Task 19 验收 2 的知识缺口（`retrieval_low_conf`，链接审核行 6）。
+- `knowledge_chunks`：274（`review_queue:1`）、275（`review_queue:3`）为 Task 17 审核写回；276（`review_queue:5`）为 Task 19 验收 3 写回。
+- `eval_runs`：行 1–3 为 Task 17 页面验收造的历史演示数据（40 条）；行 4–5 为 Task 19 验收 6 真实跑的两轮（48 条）。
+- 这些数据只在本机数据库，不随仓库提交；重建或清理后用 `backfill_flywheel.py` / 审核页重新造即可。
+
+## 七、CH09 已知限制
+
+- Milvus Lite 单进程：评估、补偿、校准、审核向量化不能与服务同时打开本地文件；服务只支持 `--workers 1`。
+- 飞轮单 worker + 进程内队列，重启丢未处理项；跨进程有重复/丢更新风险，靠 `matched_review_id IS NULL` + `backfill_flywheel.py` 兜底。
+- Langfuse 默认 Cloud 仅适合演示数据；真实数据切自部署 compose。Hobby 50k units/月、30 天窗口、2 用户。
+- Langfuse 未配置时 tracing / 成本报告 no-op；Observations 回退路径的 `fields` 不含 metadata，意图可能 unknown（主路径 Metrics API 不受影响）。
+- 置信度阈值只按知识路校准；退款路沿用同阈值并记 `confidence_route="refund"`，未单独校准。
+- 审核通过失败返回 502、行保持「待审」、chunk 留 pending；重试按 `source_doc` 幂等。
+- 👎 只回捞最新一轮且文本完全一致的快照；前端锁按钮，后端不去重。
+- 审核页分页目前用 JS 常量 20，`REVIEW_QUEUE_PAGE_SIZE` 改动不会自动传导。
+- 评估数字用于回归，不是线上承诺；Faithfulness 是 LLM 裁判，模型非确定性会带来轮次抖动。
+- `sql/ch09-ddl.sql` 不是幂等脚本，重复执行会报错。
+
+---
+
+## 附：CH08 历史进度
 
 ## 一、CH08 做了什么
 
@@ -28,7 +139,7 @@
 | 7 | 两个业务 MCP Server | `mcp_servers/logistics_server.py`、`mcp_servers/aftersales_server.py` | ✅ |
 | 8 | 路由 gate、工单 interrupt、resume API、Prompt、评估 | `app/graph/routing.py`、`app/graph/nodes.py`、`app/services/chat.py`、`app/api/routes.py`、`scripts/eval_ch08.py` | ✅ |
 | 9 | 前端工单预览卡 | `app/static/chat.html/js/css` | ✅ |
-| 10 | 验收、review、文档 | `README.md`、`PROGRESS.md`、`dev-notes/ch08.md` | 进行中 |
+| 10 | 验收、review、文档 | `README.md`、`PROGRESS.md`、`dev-notes/ch08.md` | ✅ |
 
 ## 三、CH08 接口
 
@@ -51,8 +162,6 @@
 | 建单取消（真实） | 通过 | conversation 9519 → `tickets` 无新增，审计「权限拒绝」 |
 | 预览卡刷新恢复 | 通过 | `/api/chat/pending` 恢复卡片并锁输入 |
 | MCP 工具真实进程 | 通过（Task 7 已跑） | 发现 `check_warranty` / `query_logistics` / `query_return_progress` 并调用 |
-| 插件热加载 / 超时验收 | 待用户终端 | 见 spec §15 |
-| `make eval-ch08` | 待用户终端 | 需运行中的服务与上游 key |
 
 ## 五、CH08 演示命令
 

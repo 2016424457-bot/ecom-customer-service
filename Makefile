@@ -1,4 +1,4 @@
-.PHONY: kb-build kb-reset kb-recreate kb-mine smoke-rerank ch04-eval ch04-accept eval-ch05 eval-ch06-prompts eval-ch06 eval-ch07 mcp-logistics mcp-aftersales
+.PHONY: kb-build kb-reset kb-recreate kb-mine smoke-rerank ch04-eval ch04-accept eval-ch05 eval-ch06-prompts eval-ch06 eval-ch07 eval-ch08 eval-ch09 eval-ch09-trend review-queue mcp-logistics mcp-aftersales
 
 kb-build:
 	uv run python scripts/build_knowledge.py
@@ -37,6 +37,16 @@ eval-ch07:
 
 eval-ch08:
 	uv run python -m scripts.eval_ch08
+
+# 服务停止时跑（Milvus Lite 单进程）；每跑一次追加一行 eval_runs
+eval-ch09:
+	uv run python -m scripts.run_eval_pipeline --trigger 手动
+
+eval-ch09-trend:
+	uv run python -m scripts.show_eval_trend
+
+review-queue:
+	@echo "审核后台：http://127.0.0.1:8000/review-queue"
 
 mcp-logistics:
 	uv run python -m mcp_servers.logistics_server

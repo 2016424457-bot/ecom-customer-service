@@ -1,6 +1,6 @@
-# 电商智能客服（CH08：即插即用工具系统）
+# 电商智能客服（CH09：可观测性与数据飞轮）
 
-基于 FastAPI + LangChain + LangGraph + SQLAlchemy + MySQL + Milvus 的电商售后客服后端。CH08 把工具层从写死的内置工具升级为注册中心 + JSON Schema 校验 + 只读/写权限门禁 + 统一执行引擎 + 审计；内置工具与两个自建业务 MCP Server（物流 / 售后）统一登记，MCP 工具每轮动态发现；`create_ticket` 走 LangGraph `interrupt()` 前端预览卡确认后才落库。
+基于 FastAPI + LangChain + LangGraph + SQLAlchemy + MySQL + Milvus 的电商售后客服后端。CH09 给系统装上「眼睛」并把答不上的问题变成改进燃料：Langfuse 记录每轮完整链路与意图元数据，证据置信度闸把弱证据问题分流到兜底并落池，👎 反馈、知识缺口与自评三入口共享召回快照，飞轮后台标准化/查重后进入审核队列，人工审核通过即写回知识库并向量化；评估流水线按 CH04 数据集落 `eval_runs`，审核页可直接看趋势。
 
 - `app/context.py`：从模型窗口倒推 token 预算；层1 原文 + 层2 半压 + 层3 分段摘要；`layer1_from_msg_id` 降级只挪锚点；固定拼装顺序，梗概/证据合并挂在当前用户消息之后，绝不单独占 system。
 - `app/summarizer.py`：轮结束后按层2 token 用量触发后台摘要；`conversation_summaries` 一段一行只追加，`conversations.summary` 只是最近几段投影；任务失败只 log，不阻塞当轮回复。
@@ -20,6 +20,16 @@
 - `POST /api/chat/extract`：保留 CH01 的售后结构化抽取。
 - 聊天页在 assistant 气泡内显示工具轨迹徽章、引用角标、订单卡片、退款表单、转人工/建工单按钮。
 - 应用侧统一使用 OpenAI 兼容协议，可切换 DeepSeek / OpenAI / Ollama / Claude 兼容代理。
+
+## CH09 新增能力
+
+- **Langfuse 链路**：每个请求一个根 span，名称为 `chat · <intent>`；`intent / route / refused` 写 trace metadata；检索节点单独 `knowledge_retrieval` span，记录 `strategy / reranked / chunk_id / score`；LangChain CallbackHandler 自动带出 LLM/tool 子 span。`LANGFUSE_ENABLED=false` 或 key 缺失时全链路 no-op，测试不依赖 Langfuse 服务。
+- **意图成本报告**：`scripts/intent_cost_report.py` 走 Langfuse Metrics API v2，按根 span 的 `traceName` 汇总 token / 成本与占比，标记「最烧钱意图」；未配置 Langfuse 时打印配置提示并返回 2。
+- **证据置信度闸**：`0.60*top1 + 0.25*min(gap/0.20, 1) + 0.15*min(effective_count/3, 1)`，机械闸先判 `top1 >= RERANK_MIN_SCORE` 与 `confidence >= EVIDENCE_CONFIDENCE_THRESHOLD`，再跑 EvidenceChecker 自评；重排不可用时跳过机械闸、只跑自评并记 `confidence_skipped=true`。阈值 0.50 由 CH04 48 条评估集校准（balanced accuracy 0.9375，FP 0/8）。
+- **三入口落池 + 召回快照**：知识路兜底（`retrieval_low_conf`）、自评拒答（`self_check`）、聊天页 👎（`user_feedback`）落 `low_confidence_questions`，带 `retrieved_chunks` 快照；`POST /api/feedback` 尽力从最新 checkpoint 回捞上一轮检索结果，接口不因快照缺失失败。
+- **数据飞轮**：落池 commit 后后台任务 `QuestionNormalizer`（有快照时引用片段起草，依据不足标「需人工补充」）→ `QuestionDeduplicator` 在待审候选内查重 → 命中原子累加 `occurrence_count`，未命中新建 `review_queue` 行 → 写 `matched_review_id`。单 worker + `asyncio.Queue` 串行，不阻塞回答；`scripts/backfill_flywheel.py` 兜底补偿。
+- **审核后台**：`/review-queue` 页面按出现次数排序，可看原话、来源入口、reason 和召回 Top 片段；通过时先写 `knowledge_chunks`（`source_doc=review_queue:{id}`，幂等）并单条向量化，成功后才置「通过」，失败保持「待审」返回 502；驳回不写知识库。
+- **评估流水线**：`scripts/run_eval_pipeline.py` 复用 CH04 数据集与 `hybrid_rerank`，记录 recall@1/3/5/10、MRR、Faithfulness 与用例数到 `eval_runs`；`scripts/show_eval_trend.py` 和 `GET /api/eval-runs/trend` 输出 Δ；可选的进程内调度器按 `EVAL_INTERVAL_HOURS` 定时跑，首次执行在第一个间隔之后。
 
 ## CH08 新增能力
 
@@ -270,6 +280,42 @@ mysql -h 127.0.0.1 -u root -p ecom_customer_service < sql/ch07-layers.sql
 mysql -h 127.0.0.1 -u root -p ecom_customer_service < sql/ch06-ddl.sql
 ```
 
+CH09 新增 `review_queue`、`eval_runs` 两张表，并给 `low_confidence_questions` 加 `retrieved_chunks` / `matched_review_id` 两列。该 DDL 是一次性变更，**不要重复执行**（重复 `ALTER` 会报列已存在）：
+
+```bash
+mysql -h 127.0.0.1 -u root -p ecom_customer_service < sql/ch09-ddl.sql
+```
+
+CH09 配置（`.env`；Langfuse 未配置时 tracing 与成本报告 no-op，其余飞轮/评估功能不受影响）：
+
+```ini
+# CH09 可观测性与数据飞轮
+LANGFUSE_ENABLED=false
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_TRACE_NAME=chat
+EVIDENCE_CONFIDENCE_THRESHOLD=0.50
+EVIDENCE_EFFECTIVE_FLOOR=0.2
+FLYWHEEL_ENABLED=true
+FLYWHEEL_DEDUP_CANDIDATE_LIMIT=100
+FLYWHEEL_MODEL=
+EVAL_SCHEDULE_ENABLED=false
+EVAL_INTERVAL_HOURS=24
+EVAL_DATASET_PATH=evals/ch04_eval_cases.jsonl
+REVIEW_QUEUE_PAGE_SIZE=20
+```
+
+Langfuse Cloud（课程演示默认，数据边界见「已知限制」）：
+
+1. 在 <https://cloud.langfuse.com> 注册并新建项目（Hobby 免费档：50k units/月、30 天数据访问、2 用户，无需信用卡；`units = traces + observations + scores`）。
+2. 在项目 Settings → API Keys 创建 public/secret key。
+3. 写入 `.env`：`LANGFUSE_ENABLED=true`、`LANGFUSE_PUBLIC_KEY=pk-lf-...`、`LANGFUSE_SECRET_KEY=sk-lf-...`、`LANGFUSE_BASE_URL=https://cloud.langfuse.com`（US 区用 `https://us.cloud.langfuse.com`）。
+4. 重启服务，在聊天页问一句；Langfuse 项目里应看到根 span `chat · <intent>`，展开后有 `knowledge_retrieval`（知识类）与 LLM / tool 子 span，metadata 里有 `intent / route / refused`。
+5. 成本报告：`uv run python -m scripts.intent_cost_report --days 7`。
+
+> `LANGFUSE_BASE_URL` 是 Langfuse 服务地址，不是 LLM 地址。需要「数据不出本机」时改用自部署：`docker-compose -f deploy/langfuse/docker-compose.yml up -d`（需 Docker daemon），再把 `LANGFUSE_BASE_URL` 指向 `http://localhost:3000`；SDK 接入代码不变。
+
 ### 4. 建库与挖矿
 
 先确认嵌入接口是 1024 维，再离线建库：
@@ -439,6 +485,40 @@ curl -s -X POST http://127.0.0.1:8000/api/chat/extract \
 
 `order_id` 保留用户原文（例如“订单号：A12345”），未提及为 `null`；`request_type` 取值限定为 `refund`、`return`、`exchange`、`repair`、`logistics`、`complaint`、`other`。
 
+### 反馈、待审队列与评估趋势（CH09）
+
+```bash
+# 聊天页 👎：落低置信度池并尝试入飞轮；question 必须与最新用户消息一致才会回捞召回快照
+curl -s -X POST http://127.0.0.1:8000/api/feedback \
+  -H "Content-Type: application/json" \
+  -d '{"conversation_id":9526,"question":"退款多久到账？"}'
+# {"pool_id":50,"enqueued":true}
+
+# 待审队列（status 可选 待审/通过/驳回/全部，默认不过滤）
+curl -s "http://127.0.0.1:8000/api/review-queue?status=待审&limit=20"
+
+# 详情：规范化问题 + 关联原话 + 来源 + 召回快照
+curl -s http://127.0.0.1:8000/api/review-queue/6
+
+# 审核通过：写 knowledge_chunks 并单条向量化；失败返回 502 且行保持待审
+curl -s -X POST http://127.0.0.1:8000/api/review-queue/6/approve \
+  -H "Content-Type: application/json" \
+  -d '{"answer":"人工核准后的标准答案"}'
+
+# 驳回：只改状态，不写知识库
+curl -s -X POST http://127.0.0.1:8000/api/review-queue/6/reject \
+  -H "Content-Type: application/json" -d '{"reason":"已有政策覆盖"}'
+
+# 评估轮次与趋势（最新在前）
+curl -s "http://127.0.0.1:8000/api/eval-runs?limit=20"
+curl -s "http://127.0.0.1:8000/api/eval-runs/trend?limit=20"
+
+# 审核后台页面
+open http://127.0.0.1:8000/review-queue
+```
+
+飞轮标准化/查重与审核写回都依赖上游模型与嵌入服务；未配置密钥时聊天与落池仍可用，但 `review_queue` 行可能停在 `matched_review_id IS NULL`，由 `scripts/backfill_flywheel.py` 重试。
+
 ## 测试、评估与验收
 
 ### 测试
@@ -565,6 +645,32 @@ uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 --work
 - 演示配置下 `log/app.log` 应出现 `layer1 degrade`、`summary trigger 层2 约 N token > 预算 M`、`summary start`、`summary done 第N段`；默认窗口 30 轮不应出现这三类压缩日志。
 - `grep model_ctx log/app.log`、`grep history_ctx log/app.log` 可直接看每轮实际发给模型的摘要、滑窗和 token 估算。
 
+CH09 的成本报告、评估流水线与飞轮补偿：
+
+```bash
+# 按意图汇总 token / 成本（需 Langfuse Cloud/自部署配置；未配置时退出码 2）
+uv run python -m scripts.intent_cost_report --days 7
+
+# 评估流水线：跑一轮并落 eval_runs，打印与上一轮的 Δ（服务停止；Milvus Lite 单进程）
+uv run python -m scripts.run_eval_pipeline --trigger 手动
+# 再跑一轮后看趋势表
+uv run python -m scripts.run_eval_pipeline --trigger 手动
+uv run python -m scripts.show_eval_trend --limit 10
+
+# 飞轮补偿：处理 matched_review_id IS NULL 的池行（服务停止时跑）
+uv run python -m scripts.backfill_flywheel --limit 100
+
+# 证据置信度校准：48 条 CH04 数据集，输出建议阈值与混淆矩阵
+uv run python -m scripts.calibrate_evidence
+```
+
+- `intent_cost_report.py`：主路径 Langfuse Metrics API v2，按根 span `chat · <intent>` 的 `traceName` 分组；Metrics API 不可用时回退 Observations API，按 `traceId` 聚合。输出 Markdown 表（意图 / token / 成本 / 占比）与「最烧钱意图」。
+- `run_eval_pipeline.py`：复用 `evals/ch04_eval_cases.jsonl` 与生产对齐的 `hybrid_rerank` 参数；每条用例都检索，只有可答用例生成并跑 Faithfulness 裁判；7 个指标 + `cases` 写入 `eval_runs`，`--trigger` 只能是 `手动` / `定时`，`--limit` 可先跑少量用例。
+- `show_eval_trend.py`：直接读 MySQL `eval_runs`，按时间升序计算 Δ，输出 Markdown 表；负 Δ 带 `↓`。
+- `backfill_flywheel.py`：只处理 `matched_review_id IS NULL` 的池行，逐条调用飞轮服务；单条失败记录日志后继续。飞轮 `FLYWHEEL_ENABLED=false` 时返回 1。
+- `calibrate_evidence.py`：用 `NoOpQueryRewriter` + `RERANK_MIN_SCORE` + 无 `content_type` 对齐生产知识路，扫描 0.30–0.90 阈值；报告写 `evals/reports/evidence_confidence_calibration.json`。当前默认 0.50 是 2026-11-01 的校准结果。
+- 定时评估：`EVAL_SCHEDULE_ENABLED=true` 时进程内调度器每 `EVAL_INTERVAL_HOURS` 跑一次（首次在第一个间隔之后，避免重启即烧 token）；单进程运行，无分布式锁。
+
 脚本默认访问 `http://127.0.0.1:8000`，可用 `ECOM_BASE_URL` 环境变量覆盖。
 
 ## 已知限制
@@ -604,3 +710,13 @@ uv run uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000 --work
 - `SUMMARY_MODEL` 留空复用主聊天模型；摘要 prompt 评估是 4 条标注样例，模型非确定性，数字是底线不是线上承诺。
 - `log/app.log` 会记录摘要全文与滑窗消息前 40 字；生产环境需按隐私要求控制访问与轮转。
 - 演示配置（`MODEL_CONTEXT_WINDOW=18000`）会主动触发降级/摘要；默认窗口 20+ 轮不应出现压缩日志。两者用途不同，不要拿演示配置当生产默认。
+- **Milvus Lite 单进程**：评估流水线、`backfill_flywheel.py`、`calibrate_evidence.py` 与审核通过向量化都会打开本地 Milvus 文件，必须保证同一时间只有一个进程；跑批前先停服务（或切 standalone Milvus）。服务仍只支持 `--workers 1`。
+- **飞轮单 worker**：`FlywheelService` 在应用进程内用单 worker + `asyncio.Queue` 串行处理；服务重启会丢未处理队列，靠 `matched_review_id IS NULL` 与 `backfill_flywheel.py` 补偿。多进程部署有跨进程重复/丢更新风险，本章不覆盖。
+- **Langfuse Cloud 数据边界与额度**：课程演示数据可上传；真实客服数据（用户原话、检索片段、LLM 输入输出）不应发往 Cloud，应切自部署 compose。Hobby 50k units/月、30 天访问窗口、2 用户；`units = traces + observations + scores`，超量需升级。
+- **Langfuse 未配置时**：tracing 与成本报告不可用（`intent_cost_report.py` 返回 2）；聊天、飞轮、评估不受影响。成本报告回退 Observations API 的 `fields=core,basic,usage` 不含 metadata，意图可能归为 unknown，主路径 Metrics API 不受影响。
+- **置信度阈值只按知识路校准**：0.50 来自 CH04 48 条数据集与 `hybrid_rerank`；退款/售后政策路沿用同一阈值并记 `confidence_route="refund"`，分数分布不同，未单独校准。重排服务故障时机械闸跳过，只靠自评，可能放宽回答。
+- **审核写回**：通过时先 commit `pending` chunk 再向量化，失败返回 502、审核行保持「待审」、chunk 留 pending；重试按 `source_doc=review_queue:{id}` 幂等。驳回原因只写日志，DDL 没有该列。
+- **👎 快照尽力回捞**：`POST /api/feedback` 只从最新 checkpoint 找与 `question` 完全一致的最后一条用户消息；更早轮次或文本不一致时快照为 `NULL`。前端对单条消息锁定反馈按钮，后端不做去重。
+- **审核页分页常量**：`REVIEW_QUEUE_PAGE_SIZE` 已进配置，但静态页当前用 JS 常量 `PAGE_SIZE = 20` 对齐，改配置不会自动传导到页面。
+- **评估数字用于回归，不是线上承诺**：CH04 数据集 48 条覆盖有限；Faithfulness 由 LLM 裁判，非金标准；模型非确定性会导致轮次间抖动。
+- **CH09 DDL 不是幂等脚本**：`sql/ch09-ddl.sql` 按用户给定原文照录，重复执行会因表/列已存在报错；新库按顺序执行一次即可。
