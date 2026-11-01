@@ -68,6 +68,8 @@ async def stream_chat(
     summary_service: Any = None,
     mcp_provider: Any = None,
     audit_writer: Any = None,
+    observability: Any = None,
+    flywheel: Any = None,
 ) -> AsyncIterator[Event]:
     """Run one graph turn and map its events to the existing SSE contract."""
     lock = locks.lock_for(_lock_key(session_id))
@@ -101,6 +103,8 @@ async def stream_chat(
                 summary_service=summary_service,
                 mcp_provider=mcp_provider,
                 audit_writer=audit_writer,
+                observability=observability,
+                flywheel=flywheel,
             )
             async for event, data in graph_runtime.stream_turn(
                 deps,
@@ -161,6 +165,8 @@ async def resume_chat(
     summary_service: Any = None,
     mcp_provider: Any = None,
     audit_writer: Any = None,
+    observability: Any = None,
+    flywheel: Any = None,
 ) -> AsyncIterator[Event]:
     """Resume a paused ticket confirmation and map events to SSE."""
     lock = locks.lock_for(str(conversation_id))
@@ -188,6 +194,8 @@ async def resume_chat(
                 summary_service=summary_service,
                 mcp_provider=mcp_provider,
                 audit_writer=audit_writer,
+                observability=observability,
+                flywheel=flywheel,
             )
             async for event, data in graph_runtime.resume_turn(
                 deps,

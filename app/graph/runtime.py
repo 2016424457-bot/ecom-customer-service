@@ -1,5 +1,6 @@
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
+from contextlib import contextmanager, nullcontext
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -147,6 +148,8 @@ async def build_deps(
     summary_service: Any = None,
     mcp_provider: Any = None,
     audit_writer: Any = None,
+    observability: Any = None,
+    flywheel: Any = None,
 ) -> GraphDeps:
     """Assemble the per-turn dependency bag for the graph."""
     ensure_plugins_loaded(
@@ -233,7 +236,76 @@ async def build_deps(
         context_budget=context_budget
         or compute_context_budget(settings),
         summary_service=summary_service,
+        observability=observability,
+        flywheel=flywheel,
     )
+
+
+def _turn_span(
+    deps: Any,
+    *,
+    user_id: str | None,
+    session_id: str,
+    input: dict[str, Any],
+) -> Any:
+    """Root span for one turn, or a no-op when tracing is disabled."""
+    observability = getattr(deps, "observability", None)
+    if observability is None:
+        return nullcontext(None)
+    return _guarded_span(
+        lambda: observability.turn(
+            user_id=user_id, session_id=session_id, input=input
+        ),
+        event="observability_turn_failed",
+    )
+
+
+@contextmanager
+def _guarded_span(factory: Any, *, event: str) -> Any:
+    """Enter a tracing context manager without ever breaking the turn."""
+    manager = None
+    try:
+        manager = factory()
+        span = manager.__enter__()
+    except Exception as exc:
+        logger.warning("%s error=%r", event, exc)
+        yield None
+        return
+    try:
+        yield span
+    finally:
+        try:
+            manager.__exit__(None, None, None)
+        except Exception as exc:
+            logger.warning("%s error=%r", event, exc)
+
+
+def _finish_turn_trace(
+    deps: Any, trace: Any, values: Mapping[str, Any]
+) -> None:
+    """Finish the root span once; tracing failures must not mask chat errors."""
+    if trace is None:
+        return
+    observability = getattr(deps, "observability", None)
+    if observability is None:
+        return
+    try:
+        observability.finish_turn_trace(trace, values)
+    except Exception as exc:
+        logger.warning("observability_finish_failed error=%r", exc)
+
+
+def _with_callbacks(deps: Any, config: dict[str, Any]) -> dict[str, Any]:
+    """Attach the LangChain callback handler when tracing is enabled."""
+    try:
+        observability = getattr(deps, "observability", None)
+        handler = getattr(observability, "callback_handler", None)
+    except Exception as exc:
+        logger.warning("observability_callback_failed error=%r", exc)
+        return config
+    if handler is None:
+        return config
+    return {**config, "callbacks": [handler]}
 
 
 def _graph_input(
@@ -404,103 +476,133 @@ async def stream_turn(
     )
     graph = build_graph(get_checkpointer(), deps)
     config = {"configurable": {"thread_id": str(cid)}}
-    snapshot = await graph.aget_state(config)
-    if getattr(snapshot, "interrupts", ()):
-        yield (
-            "error",
-            {
-                "code": "pending_confirmation",
-                "message": "请先确认或取消工单预览",
-            },
-        )
-        return
+    values: dict[str, Any] = {}
+    with _turn_span(
+        deps,
+        user_id=user_id,
+        session_id=str(cid),
+        input={"message": message},
+    ) as trace:
+        try:
+            snapshot = await graph.aget_state(config)
+            if getattr(snapshot, "interrupts", ()):
+                _finish_turn_trace(
+                    deps, trace, {"route": "pending_confirmation"}
+                )
+                yield (
+                    "error",
+                    {
+                        "code": "pending_confirmation",
+                        "message": "请先确认或取消工单预览",
+                    },
+                )
+                return
 
-    original_len = len(message)
-    message, truncated = truncate_user_input(
-        message,
-        getattr(deps.settings, "max_user_input_tokens", 2000),
-        getattr(deps.settings, "token_chars_per_token", 1.5),
-    )
-    if truncated:
-        logger.warning(
-            "user_input_truncated conv=%s from=%s to=%s",
-            cid,
-            original_len,
-            len(message),
-        )
-    row = await deps.repository.add_message(
-        cid, "user", content=message
-    )
-    await deps.repository.commit()
-    msg_id = _message_id(row)
-    yield ("session", {"session_id": str(cid)})
+            original_len = len(message)
+            message, truncated = truncate_user_input(
+                message,
+                getattr(deps.settings, "max_user_input_tokens", 2000),
+                getattr(deps.settings, "token_chars_per_token", 1.5),
+            )
+            if truncated:
+                logger.warning(
+                    "user_input_truncated conv=%s from=%s to=%s",
+                    cid,
+                    original_len,
+                    len(message),
+                )
+            row = await deps.repository.add_message(
+                cid, "user", content=message
+            )
+            await deps.repository.commit()
+            msg_id = _message_id(row)
+            yield ("session", {"session_id": str(cid)})
 
-    actions: list[dict] = []
+            actions: list[dict] = []
 
-    async for mode, chunk in graph.astream(
-        _graph_input(
-            user_id,
-            message,
-            cid,
-            msg_id,
-            summary,
-            summary_upto,
-            layer1_from,
-        ),
-        config,
-        stream_mode=["messages", "updates"],
-    ):
-        if mode == "messages":
-            node_message, metadata = chunk
-            if metadata.get("langgraph_node") not in ANSWER_NODES:
-                continue
-            text = _content_text(getattr(node_message, "content", None))
-            if text:
-                yield ("token", {"delta": text})
-            continue
-
-        for node, update in chunk.items():
-            if not isinstance(update, dict):
-                continue
-            if node in DETERMINISTIC_ANSWER_NODES and update.get("answer"):
-                yield ("token", {"delta": update["answer"]})
-            if node in UPDATE_ANSWER_NODES and update.get("answer"):
-                yield ("token", {"delta": update["answer"]})
-            if node == "agent_llm":
-                for message_item in update.get("messages", []):
-                    if (
-                        isinstance(message_item, AIMessage)
-                        and message_item.tool_calls
-                    ):
-                        yield ("reset", {"reason": "tool_step"})
-            if node in ("forced_rag", "refund_policy_rag") and update.get(
-                "citations"
+            async for mode, chunk in graph.astream(
+                _graph_input(
+                    user_id,
+                    message,
+                    cid,
+                    msg_id,
+                    summary,
+                    summary_upto,
+                    layer1_from,
+                ),
+                _with_callbacks(deps, config),
+                stream_mode=["messages", "updates"],
             ):
-                yield ("citations", {"items": update["citations"]})
-            if node in ("agent_tools", "refund_order_lookup"):
-                for tool_event in _tool_events(update):
-                    yield ("tool", tool_event)
-            if update.get("suggested_actions"):
-                actions = list(update["suggested_actions"])
+                if mode == "messages":
+                    node_message, metadata = chunk
+                    if (
+                        metadata.get("langgraph_node")
+                        not in ANSWER_NODES
+                    ):
+                        continue
+                    text = _content_text(
+                        getattr(node_message, "content", None)
+                    )
+                    if text:
+                        yield ("token", {"delta": text})
+                    continue
 
-    snapshot = await graph.aget_state(config)
-    values = getattr(snapshot, "values", {}) or {}
-    interrupts = getattr(snapshot, "interrupts", ())
-    if interrupts:
-        payload = _preview_from_interrupt(interrupts[0], cid)
-        yield ("ticket_preview", payload)
-        yield (
-            "done",
-            _done_payload(
-                cid, values, pending_confirm=payload, answer=""
-            ),
-        )
-        return
+                for node, update in chunk.items():
+                    if not isinstance(update, dict):
+                        continue
+                    if (
+                        node in DETERMINISTIC_ANSWER_NODES
+                        and update.get("answer")
+                    ):
+                        yield ("token", {"delta": update["answer"]})
+                    if node in UPDATE_ANSWER_NODES and update.get(
+                        "answer"
+                    ):
+                        yield ("token", {"delta": update["answer"]})
+                    if node == "agent_llm":
+                        for message_item in update.get("messages", []):
+                            if (
+                                isinstance(message_item, AIMessage)
+                                and message_item.tool_calls
+                            ):
+                                yield (
+                                    "reset",
+                                    {"reason": "tool_step"},
+                                )
+                    if node in (
+                        "forced_rag",
+                        "refund_policy_rag",
+                    ) and update.get("citations"):
+                        yield (
+                            "citations",
+                            {"items": update["citations"]},
+                        )
+                    if node in ("agent_tools", "refund_order_lookup"):
+                        for tool_event in _tool_events(update):
+                            yield ("tool", tool_event)
+                    if update.get("suggested_actions"):
+                        actions = list(update["suggested_actions"])
 
-    if actions:
-        yield ("actions", {"event": "actions", "items": actions})
-    await _maybe_schedule_summary(deps, cid, values)
-    yield ("done", _done_payload(cid, values))
+            snapshot = await graph.aget_state(config)
+            values = getattr(snapshot, "values", {}) or {}
+            interrupts = getattr(snapshot, "interrupts", ())
+            if interrupts:
+                payload = _preview_from_interrupt(interrupts[0], cid)
+                yield ("ticket_preview", payload)
+                yield (
+                    "done",
+                    _done_payload(
+                        cid, values, pending_confirm=payload, answer=""
+                    ),
+                )
+                return
+
+            if actions:
+                yield ("actions", {"event": "actions", "items": actions})
+            await _maybe_schedule_summary(deps, cid, values)
+            yield ("done", _done_payload(cid, values))
+        finally:
+            _finish_turn_trace(deps, trace, values)
 
 
 async def _persist_ticket_fallback(
@@ -533,128 +635,180 @@ async def resume_turn(
     """Resume a paused ticket confirmation with the user's decision."""
     graph = build_graph(get_checkpointer(), deps)
     config = {"configurable": {"thread_id": str(conversation_id)}}
-    snapshot = await graph.aget_state(config)
-    interrupts = getattr(snapshot, "interrupts", ())
-    if not interrupts:
-        yield (
-            "error",
-            {
-                "code": "no_pending_confirmation",
-                "message": "没有待确认的工单预览",
-            },
-        )
-        return
-    current = interrupts[0]
-    if interrupt_id and interrupt_id != getattr(current, "id", None):
-        yield (
-            "error",
-            {
-                "code": "stale_confirmation",
-                "message": "工单预览已过期，请刷新后重试",
-            },
-        )
-        return
-
-    actions: list[dict] = []
-    streamed_text = ""
-
-    try:
-        async for mode, chunk in graph.astream(
-            Command(resume={"decision": decision}),
-            config,
-            stream_mode=["messages", "updates"],
-        ):
-            if mode == "messages":
-                node_message, metadata = chunk
-                if metadata.get("langgraph_node") not in ANSWER_NODES:
-                    continue
-                text = _content_text(
-                    getattr(node_message, "content", None)
+    values: dict[str, Any] = {}
+    with _turn_span(
+        deps,
+        user_id=None,
+        session_id=str(conversation_id),
+        input={"decision": decision},
+    ) as trace:
+        try:
+            snapshot = await graph.aget_state(config)
+            interrupts = getattr(snapshot, "interrupts", ())
+            if not interrupts:
+                _finish_turn_trace(
+                    deps, trace, {"route": "no_pending_confirmation"}
                 )
-                if text:
-                    streamed_text += text
-                    yield ("token", {"delta": text})
-                continue
+                yield (
+                    "error",
+                    {
+                        "code": "no_pending_confirmation",
+                        "message": "没有待确认的工单预览",
+                    },
+                )
+                return
+            current = interrupts[0]
+            if interrupt_id and interrupt_id != getattr(
+                current, "id", None
+            ):
+                _finish_turn_trace(
+                    deps, trace, {"route": "stale_confirmation"}
+                )
+                yield (
+                    "error",
+                    {
+                        "code": "stale_confirmation",
+                        "message": "工单预览已过期，请刷新后重试",
+                    },
+                )
+                return
 
-            for node, update in chunk.items():
-                if not isinstance(update, dict):
-                    continue
-                if (
-                    node in DETERMINISTIC_ANSWER_NODES
-                    and update.get("answer")
+            actions: list[dict] = []
+            streamed_text = ""
+
+            try:
+                async for mode, chunk in graph.astream(
+                    Command(resume={"decision": decision}),
+                    _with_callbacks(deps, config),
+                    stream_mode=["messages", "updates"],
                 ):
-                    yield ("token", {"delta": update["answer"]})
-                if node in UPDATE_ANSWER_NODES and update.get("answer"):
-                    yield ("token", {"delta": update["answer"]})
-                if node == "agent_llm":
-                    for message_item in update.get("messages", []):
+                    if mode == "messages":
+                        node_message, metadata = chunk
                         if (
-                            isinstance(message_item, AIMessage)
-                            and message_item.tool_calls
+                            metadata.get("langgraph_node")
+                            not in ANSWER_NODES
                         ):
-                            yield ("reset", {"reason": "tool_step"})
-                if node in (
-                    "forced_rag",
-                    "refund_policy_rag",
-                ) and update.get("citations"):
-                    yield ("citations", {"items": update["citations"]})
-                if node in ("agent_tools", "refund_order_lookup"):
-                    for tool_event in _tool_events(update):
-                        yield ("tool", tool_event)
-                if update.get("suggested_actions"):
-                    actions = list(update["suggested_actions"])
-    except Exception as exc:
-        snapshot = await graph.aget_state(config)
-        values = getattr(snapshot, "values", {}) or {}
-        ticket_no = values.get("ticket_no")
-        if not ticket_no:
-            raise
-        message = await _persist_ticket_fallback(
-            deps, conversation_id, ticket_no
-        )
-        logger.warning(
-            "resume_failed_after_ticket conv=%s ticket_no=%s error=%r",
-            conversation_id,
-            ticket_no,
-            exc,
-        )
-        yield ("reset", {"reason": "ticket_fallback"})
-        yield ("token", {"delta": message})
-        yield (
-            "done",
-            _done_payload(conversation_id, values, answer=message),
-        )
-        return
+                            continue
+                        text = _content_text(
+                            getattr(node_message, "content", None)
+                        )
+                        if text:
+                            streamed_text += text
+                            yield ("token", {"delta": text})
+                        continue
 
-    snapshot = await graph.aget_state(config)
-    values = getattr(snapshot, "values", {}) or {}
-    interrupts = getattr(snapshot, "interrupts", ())
-    if interrupts:
-        payload = _preview_from_interrupt(interrupts[0], conversation_id)
-        yield ("ticket_preview", payload)
-        yield (
-            "done",
-            _done_payload(
-                conversation_id,
-                values,
-                pending_confirm=payload,
-                answer="",
-            ),
-        )
-        return
+                    for node, update in chunk.items():
+                        if not isinstance(update, dict):
+                            continue
+                        if (
+                            node in DETERMINISTIC_ANSWER_NODES
+                            and update.get("answer")
+                        ):
+                            yield (
+                                "token",
+                                {"delta": update["answer"]},
+                            )
+                        if node in UPDATE_ANSWER_NODES and update.get(
+                            "answer"
+                        ):
+                            yield (
+                                "token",
+                                {"delta": update["answer"]},
+                            )
+                        if node == "agent_llm":
+                            for message_item in update.get(
+                                "messages", []
+                            ):
+                                if (
+                                    isinstance(
+                                        message_item, AIMessage
+                                    )
+                                    and message_item.tool_calls
+                                ):
+                                    yield (
+                                        "reset",
+                                        {"reason": "tool_step"},
+                                    )
+                        if node in (
+                            "forced_rag",
+                            "refund_policy_rag",
+                        ) and update.get("citations"):
+                            yield (
+                                "citations",
+                                {"items": update["citations"]},
+                            )
+                        if node in (
+                            "agent_tools",
+                            "refund_order_lookup",
+                        ):
+                            for tool_event in _tool_events(update):
+                                yield ("tool", tool_event)
+                        if update.get("suggested_actions"):
+                            actions = list(
+                                update["suggested_actions"]
+                            )
+            except Exception as exc:
+                snapshot = await graph.aget_state(config)
+                values = getattr(snapshot, "values", {}) or {}
+                ticket_no = values.get("ticket_no")
+                if not ticket_no:
+                    raise
+                message = await _persist_ticket_fallback(
+                    deps, conversation_id, ticket_no
+                )
+                logger.warning(
+                    "resume_failed_after_ticket conv=%s ticket_no=%s "
+                    "error=%r",
+                    conversation_id,
+                    ticket_no,
+                    exc,
+                )
+                yield ("reset", {"reason": "ticket_fallback"})
+                yield ("token", {"delta": message})
+                yield (
+                    "done",
+                    _done_payload(
+                        conversation_id, values, answer=message
+                    ),
+                )
+                return
 
-    final_answer = resolve_answer(values)
-    if final_answer.startswith(streamed_text) and len(final_answer) > len(
-        streamed_text
-    ):
-        yield ("token", {"delta": final_answer[len(streamed_text):]})
-    elif not streamed_text and final_answer:
-        yield ("token", {"delta": final_answer})
+            snapshot = await graph.aget_state(config)
+            values = getattr(snapshot, "values", {}) or {}
+            interrupts = getattr(snapshot, "interrupts", ())
+            if interrupts:
+                payload = _preview_from_interrupt(
+                    interrupts[0], conversation_id
+                )
+                yield ("ticket_preview", payload)
+                yield (
+                    "done",
+                    _done_payload(
+                        conversation_id,
+                        values,
+                        pending_confirm=payload,
+                        answer="",
+                    ),
+                )
+                return
 
-    if actions:
-        yield ("actions", {"event": "actions", "items": actions})
-    await _maybe_schedule_summary(deps, conversation_id, values)
-    yield ("done", _done_payload(conversation_id, values))
+            final_answer = resolve_answer(values)
+            if final_answer.startswith(streamed_text) and len(
+                final_answer
+            ) > len(streamed_text):
+                yield (
+                    "token",
+                    {"delta": final_answer[len(streamed_text):]},
+                )
+            elif not streamed_text and final_answer:
+                yield ("token", {"delta": final_answer})
+
+            if actions:
+                yield ("actions", {"event": "actions", "items": actions})
+            await _maybe_schedule_summary(deps, conversation_id, values)
+            yield ("done", _done_payload(conversation_id, values))
+        finally:
+            _finish_turn_trace(deps, trace, values)
 
 
 async def get_pending(
@@ -687,57 +841,71 @@ async def run_turn(
     )
     graph = build_graph(get_checkpointer(), deps)
     config = {"configurable": {"thread_id": str(cid)}}
-    snapshot = await graph.aget_state(config)
-    pending = getattr(snapshot, "interrupts", ())
-    if pending:
-        return {
-            "conversation_id": cid,
-            "state": getattr(snapshot, "values", {}) or {},
-            "pending_confirm": _preview_from_interrupt(
-                pending[0], cid
-            ),
-        }
+    values: dict[str, Any] = {}
+    with _turn_span(
+        deps,
+        user_id=user_id,
+        session_id=str(cid),
+        input={"message": message},
+    ) as trace:
+        try:
+            snapshot = await graph.aget_state(config)
+            pending = getattr(snapshot, "interrupts", ())
+            if pending:
+                _finish_turn_trace(
+                    deps, trace, {"route": "pending_confirmation"}
+                )
+                return {
+                    "conversation_id": cid,
+                    "state": getattr(snapshot, "values", {}) or {},
+                    "pending_confirm": _preview_from_interrupt(
+                        pending[0], cid
+                    ),
+                }
 
-    original_len = len(message)
-    message, truncated = truncate_user_input(
-        message,
-        getattr(deps.settings, "max_user_input_tokens", 2000),
-        getattr(deps.settings, "token_chars_per_token", 1.5),
-    )
-    if truncated:
-        logger.warning(
-            "user_input_truncated conv=%s from=%s to=%s",
-            cid,
-            original_len,
-            len(message),
-        )
-    row = await deps.repository.add_message(
-        cid, "user", content=message
-    )
-    await deps.repository.commit()
-    msg_id = _message_id(row)
+            original_len = len(message)
+            message, truncated = truncate_user_input(
+                message,
+                getattr(deps.settings, "max_user_input_tokens", 2000),
+                getattr(deps.settings, "token_chars_per_token", 1.5),
+            )
+            if truncated:
+                logger.warning(
+                    "user_input_truncated conv=%s from=%s to=%s",
+                    cid,
+                    original_len,
+                    len(message),
+                )
+            row = await deps.repository.add_message(
+                cid, "user", content=message
+            )
+            await deps.repository.commit()
+            msg_id = _message_id(row)
 
-    final = await graph.ainvoke(
-        _graph_input(
-            user_id,
-            message,
-            cid,
-            msg_id,
-            summary,
-            summary_upto,
-            layer1_from,
-        ),
-        config,
-    )
-    snapshot = await graph.aget_state(config)
-    interrupts = getattr(snapshot, "interrupts", ())
-    if interrupts:
-        return {
-            "conversation_id": cid,
-            "state": final,
-            "pending_confirm": _preview_from_interrupt(
-                interrupts[0], cid
-            ),
-        }
-    await _maybe_schedule_summary(deps, cid, final)
-    return {"conversation_id": cid, "state": final}
+            final = await graph.ainvoke(
+                _graph_input(
+                    user_id,
+                    message,
+                    cid,
+                    msg_id,
+                    summary,
+                    summary_upto,
+                    layer1_from,
+                ),
+                _with_callbacks(deps, config),
+            )
+            values = final
+            snapshot = await graph.aget_state(config)
+            interrupts = getattr(snapshot, "interrupts", ())
+            if interrupts:
+                return {
+                    "conversation_id": cid,
+                    "state": final,
+                    "pending_confirm": _preview_from_interrupt(
+                        interrupts[0], cid
+                    ),
+                }
+            await _maybe_schedule_summary(deps, cid, final)
+            return {"conversation_id": cid, "state": final}
+        finally:
+            _finish_turn_trace(deps, trace, values)

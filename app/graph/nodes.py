@@ -1,5 +1,6 @@
 import json
 import logging
+from contextlib import contextmanager, nullcontext
 from typing import Any
 
 from langchain_core.messages import (
@@ -40,6 +41,69 @@ from app.knowledge.search import search_knowledge_result, search_many_result
 from app.services.refunds import REFUND_REASONS
 
 logger = logging.getLogger(__name__)
+
+
+def _retrieval_span(deps: Any, *, query: str) -> Any:
+    """Knowledge retrieval span, or a no-op when tracing is disabled."""
+    observability = getattr(deps, "observability", None)
+    if observability is None:
+        return nullcontext(None)
+    return _guarded_retrieval_span(observability, query=query)
+
+
+@contextmanager
+def _guarded_retrieval_span(observability: Any, *, query: str) -> Any:
+    """Tracing failures must never break retrieval."""
+    manager = None
+    try:
+        manager = observability.retrieval(query=query)
+        span = manager.__enter__()
+    except Exception as exc:
+        logger.warning("knowledge_retrieval_span_failed error=%r", exc)
+        yield None
+        return
+    try:
+        yield span
+    finally:
+        try:
+            manager.__exit__(None, None, None)
+        except Exception as exc:
+            logger.warning(
+                "knowledge_retrieval_span_failed error=%r", exc
+            )
+
+
+def _span_update(span: Any, **kwargs: Any) -> None:
+    if span is None:
+        return
+    try:
+        span.update(**kwargs)
+    except Exception as exc:
+        logger.warning(
+            "knowledge_retrieval_span_update_failed error=%r", exc
+        )
+
+
+def _retrieval_output(result: Any) -> list[dict[str, Any]]:
+    hits = getattr(result, "hits", None) or []
+    return [
+        {
+            "chunk_id": getattr(hit, "id", None),
+            "score": getattr(hit, "score", None),
+        }
+        for hit in hits
+    ]
+
+
+def _trace_retrieval(span: Any, result: Any) -> None:
+    _span_update(
+        span,
+        output=_retrieval_output(result),
+        metadata={
+            "strategy": getattr(result, "strategy", ""),
+            "reranked": getattr(result, "reranked", False),
+        },
+    )
 
 CHITCHAT_REPLY = (
     "您好，我是客服小猫，很高兴为您服务～"
@@ -483,13 +547,21 @@ async def forced_rag(state: dict, *, deps: Any) -> dict:
     """
     query = state.get("standalone_query") or _user_text(state)
     try:
-        result = await search_knowledge_result(
-            query,
-            repository=deps.knowledge_repository,
-            settings=deps.settings,
-            strategy="hybrid_rerank",
-            rewriter=NoOpQueryRewriter(),
-        )
+        with _retrieval_span(deps, query=query) as span:
+            try:
+                result = await search_knowledge_result(
+                    query,
+                    repository=deps.knowledge_repository,
+                    settings=deps.settings,
+                    strategy="hybrid_rerank",
+                    rewriter=NoOpQueryRewriter(),
+                )
+            except Exception as exc:
+                _span_update(
+                    span, level="ERROR", status_message=str(exc)
+                )
+                raise
+            _trace_retrieval(span, result)
     except Exception as exc:
         logger.warning("forced_rag_failed error=%r", exc)
         return _weak_evidence(
@@ -623,14 +695,22 @@ async def refund_policy_rag(state: dict, *, deps: Any) -> dict:
     content_type = "policy" if intent == "退款退货" else "manual"
 
     try:
-        result = await search_many_result(
-            queries,
-            repository=deps.knowledge_repository,
-            settings=deps.settings,
-            strategy="hybrid_rerank",
-            content_type=content_type,
-            rewriter=NoOpQueryRewriter(),
-        )
+        with _retrieval_span(deps, query=query) as span:
+            try:
+                result = await search_many_result(
+                    queries,
+                    repository=deps.knowledge_repository,
+                    settings=deps.settings,
+                    strategy="hybrid_rerank",
+                    content_type=content_type,
+                    rewriter=NoOpQueryRewriter(),
+                )
+            except Exception as exc:
+                _span_update(
+                    span, level="ERROR", status_message=str(exc)
+                )
+                raise
+            _trace_retrieval(span, result)
     except Exception as exc:
         logger.warning("refund_policy_rag_failed error=%r", exc)
         update = _weak_evidence(

@@ -31,3 +31,5 @@ class GraphDeps:
     order_provider: Any
     context_budget: Any
     summary_service: Any | None = None
+    observability: Any | None = None
+    flywheel: Any | None = None

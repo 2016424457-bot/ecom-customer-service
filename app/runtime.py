@@ -62,6 +62,8 @@ class Runtime:
     summary_service: Any = None
     mcp_provider: Any = None
     audit_writer: Any = None
+    observability: Any | None = None
+    flywheel: Any | None = None
 
     @asynccontextmanager
     async def repository_scope(self) -> AsyncIterator[Any]:
