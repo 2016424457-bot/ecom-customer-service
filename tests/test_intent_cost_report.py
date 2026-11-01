@@ -30,8 +30,9 @@ class FakeMetricsApi:
 
 
 class FakeObservationsApi:
-    def __init__(self, *, response=None, error=None):
+    def __init__(self, *, response=None, error=None, responses=None):
         self.response = response
+        self.responses = responses
         self.error = error
         self.calls: list[dict] = []
 
@@ -39,6 +40,9 @@ class FakeObservationsApi:
         self.calls.append(kwargs)
         if self.error is not None:
             raise self.error
+        if self.responses is not None:
+            index = min(len(self.calls) - 1, len(self.responses) - 1)
+            return self.responses[index]
         return self.response
 
 
@@ -50,13 +54,16 @@ class FakeClient:
         metrics_error=None,
         observations_response=None,
         observations_error=None,
+        observations_responses=None,
     ):
         self.api = SimpleNamespace(
             metrics=FakeMetricsApi(
                 response=metrics_response, error=metrics_error
             ),
             observations=FakeObservationsApi(
-                response=observations_response, error=observations_error
+                response=observations_response,
+                responses=observations_responses,
+                error=observations_error,
             ),
         )
         self.shutdown_called = False
@@ -300,7 +307,7 @@ def test_fetch_falls_back_to_observations_when_metrics_fails(caplog):
     call = client.api.observations.calls[0]
     assert call["from_start_time"] == START
     assert call["to_start_time"] == END
-    assert call["fields"] == "core,basic,usage"
+    assert call["fields"] == "core,basic,usage,metadata"
     assert call["limit"] == 100
 
 
@@ -346,7 +353,7 @@ def test_fetch_fallback_reads_json_encoded_metadata():
     assert rows[0].tokens == 7
 
 
-def test_fetch_fallback_skips_traces_without_intent():
+def test_fetch_fallback_attributes_traces_without_root_intent_to_unknown():
     client = FakeClient(
         metrics_error=RuntimeError("metrics api unavailable"),
         observations_response={
@@ -360,8 +367,9 @@ def test_fetch_fallback_skips_traces_without_intent():
 
     rows = report.fetch_intent_costs(client, start=START, end=END)
 
-    assert [row.intent for row in rows] == ["product"]
-    assert rows[0].tokens == 25
+    assert [row.intent for row in rows] == ["unknown", "product"]
+    assert rows[0].tokens == 50
+    assert rows[1].tokens == 25
 
 
 def test_fetch_returns_empty_when_fallback_also_fails():
@@ -386,6 +394,190 @@ def test_fetch_fallback_returns_empty_and_warns_on_bad_shape(caplog):
 
     assert rows == []
     assert "unexpected" in caplog.text
+
+
+# --- observations fallback (live-verified path) --------------------------
+
+
+def test_fetch_falls_back_when_metrics_rows_have_tokens_without_trace_name(
+    caplog,
+):
+    """Live evidence: the unnamed metrics row held the tokens (5469)."""
+    client = FakeClient(
+        metrics_response={
+            "data": [
+                {
+                    "traceName": None,
+                    "sum_totalTokens": 5469,
+                    "sum_totalCost": 0,
+                },
+                {
+                    "traceName": "chat · 退款退货",
+                    "sum_totalTokens": 0,
+                    "sum_totalCost": 0,
+                },
+            ]
+        },
+        observations_response={
+            "data": [
+                {
+                    "traceId": "t1",
+                    "name": "chat · 退款退货",
+                    "metadata": {"intent": "退款退货"},
+                },
+                {
+                    "traceId": "t1",
+                    "type": "GENERATION",
+                    "usageDetails": {"total": 10},
+                },
+            ]
+        },
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger="scripts.intent_cost_report"
+    ):
+        rows = report.fetch_intent_costs(client, start=START, end=END)
+
+    assert [row.intent for row in rows] == ["退款退货"]
+    assert rows[0].tokens == 10
+    assert "falling back" in caplog.text
+    assert len(client.api.metrics.queries) == 1
+    assert len(client.api.observations.calls) == 1
+    call = client.api.observations.calls[0]
+    assert call["fields"] == "core,basic,usage,metadata"
+    assert call["limit"] == 100
+
+
+def test_fetch_fallback_aggregates_generation_usage_under_root_intent():
+    """Root metadata supplies the intent; child usage supplies the tokens."""
+    client = FakeClient(
+        observations_response={
+            "data": [
+                {
+                    "id": "o1",
+                    "traceId": "t1",
+                    "type": "SPAN",
+                    "name": "chat · 退款退货",
+                    "metadata": {
+                        "intent": "退款退货",
+                        "route": "knowledge",
+                        "refused": False,
+                    },
+                    "usageDetails": {},
+                },
+                {
+                    "id": "o2",
+                    "traceId": "t1",
+                    "type": "GENERATION",
+                    "parentObservationId": "o1",
+                    "usageDetails": {
+                        "input": 688,
+                        "output": 142,
+                        "total": 2238,
+                        "input_cache_read": 1408,
+                    },
+                },
+            ]
+        }
+    )
+
+    rows = report.fetch_intent_costs_from_observations(
+        client, start=START, end=END
+    )
+
+    assert len(rows) == 1
+    assert rows[0].intent == "退款退货"
+    assert rows[0].tokens == 2238
+    assert rows[0].cost == 0.0
+    assert rows[0].share == 1.0
+
+
+def test_fetch_does_not_fall_back_when_token_rows_have_trace_names():
+    client = FakeClient(
+        metrics_response={
+            "data": [
+                {
+                    "traceName": "chat · refund",
+                    "sum_totalTokens": 300,
+                    "sum_totalCost": 0.3,
+                },
+                {
+                    "traceName": None,
+                    "sum_totalTokens": 0,
+                    "sum_totalCost": 0,
+                },
+            ]
+        }
+    )
+
+    rows = report.fetch_intent_costs(client, start=START, end=END)
+
+    assert "refund" in [row.intent for row in rows]
+    assert client.api.observations.calls == []
+
+
+def test_fetch_fallback_follows_cursor_pagination():
+    client = FakeClient(
+        metrics_error=RuntimeError("metrics api unavailable"),
+        observations_responses=[
+            {
+                "data": [
+                    {
+                        "traceId": "t1",
+                        "metadata": {"intent": "refund"},
+                    }
+                ],
+                "meta": {"cursor": "c1"},
+            },
+            {
+                "data": [
+                    {
+                        "traceId": "t1",
+                        "type": "GENERATION",
+                        "usageDetails": {"total": 100},
+                    }
+                ],
+                "meta": {"cursor": None},
+            },
+        ],
+    )
+
+    rows = report.fetch_intent_costs(client, start=START, end=END)
+
+    assert [row.intent for row in rows] == ["refund"]
+    assert rows[0].tokens == 100
+    assert len(client.api.observations.calls) == 2
+    assert "cursor" not in client.api.observations.calls[0]
+    assert client.api.observations.calls[1]["cursor"] == "c1"
+
+
+def test_fetch_fallback_reads_cost_details_and_calculated_cost():
+    client = FakeClient(
+        metrics_error=RuntimeError("metrics api unavailable"),
+        observations_response={
+            "data": [
+                {
+                    "traceId": "t1",
+                    "metadata": {"intent": "refund"},
+                    "costDetails": {"total": 0.25},
+                },
+                {"traceId": "t1", "usageDetails": {"total": 10}},
+                {
+                    "traceId": "t2",
+                    "metadata": {"intent": "product"},
+                    "calculatedTotalCost": 0.5,
+                },
+                {"traceId": "t2", "usageDetails": {"total": 20}},
+            ]
+        },
+    )
+
+    rows = report.fetch_intent_costs(client, start=START, end=END)
+
+    assert [row.intent for row in rows] == ["product", "refund"]
+    assert rows[0].cost == pytest.approx(0.5)
+    assert rows[1].cost == pytest.approx(0.25)
 
 
 # --- render_markdown -----------------------------------------------------

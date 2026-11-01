@@ -24,7 +24,7 @@
 ## CH09 新增能力
 
 - **Langfuse 链路**：每个请求一个根 span，名称为 `chat · <intent>`；`intent / route / refused` 写 trace metadata；检索节点单独 `knowledge_retrieval` span，记录 `strategy / reranked / chunk_id / score`；LangChain CallbackHandler 自动带出 LLM/tool 子 span。`LANGFUSE_ENABLED=false` 或 key 缺失时全链路 no-op，测试不依赖 Langfuse 服务。
-- **意图成本报告**：`scripts/intent_cost_report.py` 走 Langfuse Metrics API v2，按根 span 的 `traceName` 汇总 token / 成本与占比，标记「最烧钱意图」；未配置 Langfuse 时打印配置提示并返回 2。
+- **意图成本报告**：`scripts/intent_cost_report.py` 先走 Langfuse Metrics API v2；实测该 API 的 `traceName` 维度不归属子 observation 的 token（token 落在 `traceName=None` 行），检测到后自动回退 Observations API v2，按 `traceId` 汇总根 span metadata 的 `intent` 与子 observation 的 usage / cost，输出 token / 成本 / 占比并标记「最烧钱意图」；未配置 Langfuse 时打印配置提示并返回 2。
 - **证据置信度闸**：`0.60*top1 + 0.25*min(gap/0.20, 1) + 0.15*min(effective_count/3, 1)`，机械闸先判 `top1 >= RERANK_MIN_SCORE` 与 `confidence >= EVIDENCE_CONFIDENCE_THRESHOLD`，再跑 EvidenceChecker 自评；重排不可用时跳过机械闸、只跑自评并记 `confidence_skipped=true`。阈值 0.50 由 CH04 48 条评估集校准（balanced accuracy 0.9375，FP 0/8）。
 - **三入口落池 + 召回快照**：知识路兜底（`retrieval_low_conf`）、自评拒答（`self_check`）、聊天页 👎（`user_feedback`）落 `low_confidence_questions`，带 `retrieved_chunks` 快照；`POST /api/feedback` 尽力从最新 checkpoint 回捞上一轮检索结果，接口不因快照缺失失败。
 - **数据飞轮**：落池 commit 后后台任务 `QuestionNormalizer`（有快照时引用片段起草，依据不足标「需人工补充」）→ `QuestionDeduplicator` 在待审候选内查重 → 命中原子累加 `occurrence_count`，未命中新建 `review_queue` 行 → 写 `matched_review_id`。单 worker + `asyncio.Queue` 串行，不阻塞回答；`scripts/backfill_flywheel.py` 兜底补偿。
@@ -664,7 +664,7 @@ uv run python -m scripts.backfill_flywheel --limit 100
 uv run python -m scripts.calibrate_evidence
 ```
 
-- `intent_cost_report.py`：主路径 Langfuse Metrics API v2，按根 span `chat · <intent>` 的 `traceName` 分组；Metrics API 不可用时回退 Observations API，按 `traceId` 聚合。输出 Markdown 表（意图 / token / 成本 / 占比）与「最烧钱意图」。
+- `intent_cost_report.py`：先走 Langfuse Metrics API v2，按根 span `chat · <intent>` 的 `traceName` 分组；实测 Metrics API 的 `traceName` 维度只把 token 记在 `traceName=None` 的行上（子 observation usage 不归属根名称），这种行出现时自动回退 Observations API v2（`fields=core,basic,usage,metadata`，cursor 分页），按 `traceId` 汇总所有 observation 的 usage / cost、取根 observation metadata 的 `intent`（缺失记 `unknown`）；Metrics API 抛异常时同样回退。输出 Markdown 表（意图 / token / 成本 / 占比）与「最烧钱意图」。
 - `run_eval_pipeline.py`：复用 `evals/ch04_eval_cases.jsonl` 与生产对齐的 `hybrid_rerank` 参数；每条用例都检索，只有可答用例生成并跑 Faithfulness 裁判；6 个分数指标（`recall_at_1/3/5/10`、`mrr`、`faithfulness`）加 `cases`，共 7 个字段写入 `eval_runs`；`--trigger` 只能是 `手动` / `定时`，`--limit` 可先跑少量用例。
 - `show_eval_trend.py`：直接读 MySQL `eval_runs`，按时间升序计算 Δ，输出 Markdown 表；负 Δ 带 `↓`。
 - `backfill_flywheel.py`：只处理 `matched_review_id IS NULL` 的池行，逐条调用飞轮服务；单条失败记录日志后继续。飞轮 `FLYWHEEL_ENABLED=false` 时返回 1。
@@ -713,7 +713,7 @@ uv run python -m scripts.calibrate_evidence
 - **Milvus Lite 单进程**：评估流水线、`backfill_flywheel.py`、`calibrate_evidence.py` 与审核通过向量化都会打开本地 Milvus 文件，必须保证同一时间只有一个进程；跑批前先停服务（或切 standalone Milvus）。服务仍只支持 `--workers 1`。
 - **飞轮单 worker**：`FlywheelService` 在应用进程内用单 worker + `asyncio.Queue` 串行处理；服务重启会丢未处理队列，靠 `matched_review_id IS NULL` 与 `backfill_flywheel.py` 补偿。多进程部署有跨进程重复/丢更新风险，本章不覆盖。
 - **Langfuse Cloud 数据边界与额度**：课程演示数据可上传；真实客服数据（用户原话、检索片段、LLM 输入输出）不应发往 Cloud，应切自部署 compose。Hobby 50k units/月、30 天访问窗口、2 用户；`units = traces + observations + scores`，超量需升级。
-- **Langfuse 未配置时**：tracing 与成本报告不可用（`intent_cost_report.py` 返回 2）；聊天、飞轮、评估不受影响。成本报告回退 Observations API 的 `fields=core,basic,usage` 不含 metadata，意图可能归为 unknown，主路径 Metrics API 不受影响。
+- **Langfuse 未配置时**：tracing 与成本报告不可用（`intent_cost_report.py` 返回 2）；聊天、飞轮、评估不受影响。成本报告实测（Langfuse 4.x）Metrics API 的 `traceName` 维度不归属子 observation 的 token：token 落在 `traceName=None` 行、具名行只有 0；脚本检测到该形态即回退 Observations API v2（`fields=core,basic,usage,metadata`，cursor 分页，最多 100 页 / 1 万条 observation），按 `traceId` 用根 observation 的 `metadata.intent` 归属子 observation 的 usage / cost，无 intent 的 trace 记 `unknown`。
 - **置信度阈值只按知识路校准**：0.50 来自 CH04 48 条数据集与 `hybrid_rerank`；退款/售后政策路沿用同一阈值并记 `confidence_route="refund"`，分数分布不同，未单独校准。重排服务故障时机械闸跳过，只靠自评，可能放宽回答。
 - **审核写回**：通过时先 commit `pending` chunk 再向量化，失败返回 502、审核行保持「待审」、chunk 留 pending；重试按 `source_doc=review_queue:{id}` 幂等。驳回原因只写日志，DDL 没有该列。
 - **👎 快照尽力回捞**：`POST /api/feedback` 只从最新 checkpoint 找与 `question` 完全一致的最后一条用户消息；更早轮次或文本不一致时快照为 `NULL`。前端对单条消息锁定反馈按钮，后端不做去重。
