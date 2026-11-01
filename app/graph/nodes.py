@@ -215,8 +215,9 @@ async def fallback_reply(state: dict, *, deps: Any) -> dict:
     await deps.repository.insert_low_confidence_question(
         state.get("conversation_id"),
         _user_text(state),
-        "retrieval_low_conf",
+        state.get("weak_source") or "retrieval_low_conf",
         _fallback_reason(state),
+        retrieved_chunks=state.get("retrieval_chunks") or None,
     )
     await deps.repository.commit()
     return {
@@ -911,8 +912,9 @@ async def refund_fallback_reply(state: dict, *, deps: Any) -> dict:
     await deps.repository.insert_low_confidence_question(
         state.get("conversation_id"),
         _user_text(state),
-        "retrieval_low_conf",
+        state.get("weak_source") or "retrieval_low_conf",
         _refund_weak_reason(state),
+        retrieved_chunks=state.get("retrieval_chunks") or None,
     )
     await deps.repository.commit()
     actions = [
@@ -1006,6 +1008,23 @@ async def agent_llm(state: dict, *, deps: Any) -> dict:
     }
 
 
+def _faq_snapshot(content: str) -> list[dict]:
+    """Parse the raw FAQ tool payload into a retrieval snapshot.
+
+    Best-effort: a payload we cannot parse only logs and yields an empty
+    snapshot, so the answer shown to the user is never affected.
+    """
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError) as exc:
+        logger.warning("faq_snapshot_parse_failed error=%r", exc)
+        return []
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
 def _faq_evidence(content: str) -> str:
     try:
         payload = json.loads(content)
@@ -1025,6 +1044,7 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
     tool_messages: list[ToolMessage] = []
     actions = list(state.get("suggested_actions", []))
     pending_ticket: dict | None = None
+    faq_chunks: list[dict] | None = None
     ticket_resolved = bool(
         state.get("ticket_no") or state.get("ticket_cancelled")
     )
@@ -1184,6 +1204,9 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
 
         content = result.content
         if name == "query_faq" and result.ok:
+            # Snapshot the raw items before the evidence renderer rewrites
+            # the payload; a parse failure only logs.
+            faq_chunks = _faq_snapshot(result.content)
             content = _faq_evidence(result.content)
         content = cap_tool_content(
             name,
@@ -1215,6 +1238,8 @@ async def agent_tools(state: dict, *, deps: Any) -> dict:
         "messages": tool_messages,
         "trace": merge_trace(state, tools=existing + trace_tools),
     }
+    if faq_chunks is not None:
+        out["retrieval_chunks"] = faq_chunks
     if actions:
         out["suggested_actions"] = actions
     if pending_ticket is not None:

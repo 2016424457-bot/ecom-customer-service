@@ -12,7 +12,12 @@ class FakeRepository:
         self.commits = 0
 
     async def insert_low_confidence_question(
-        self, conversation_id, raw_question, source, reason
+        self,
+        conversation_id,
+        raw_question,
+        source,
+        reason,
+        retrieved_chunks=None,
     ):
         self.low_confidence.append(
             {
@@ -20,6 +25,7 @@ class FakeRepository:
                 "raw_question": raw_question,
                 "source": source,
                 "reason": reason,
+                "retrieved_chunks": retrieved_chunks,
             }
         )
 

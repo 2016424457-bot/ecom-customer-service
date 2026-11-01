@@ -193,12 +193,14 @@ class ChatRepository:
         raw_question: str,
         source: str,
         reason: str | None,
+        retrieved_chunks: list[dict] | None = None,
     ) -> LowConfidenceQuestion:
         row = LowConfidenceQuestion(
             conversation_id=conversation_id,
             raw_question=raw_question,
             source=source,
             reason=reason,
+            retrieved_chunks=retrieved_chunks,
         )
         self.session.add(row)
         await self.session.flush()
