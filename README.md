@@ -513,8 +513,8 @@ curl -s -X POST http://127.0.0.1:8000/api/review-queue/6/reject \
 curl -s "http://127.0.0.1:8000/api/eval-runs?limit=20"
 curl -s "http://127.0.0.1:8000/api/eval-runs/trend?limit=20"
 
-# 审核后台页面
-open http://127.0.0.1:8000/review-queue
+# 审核后台页面：浏览器打开 http://127.0.0.1:8000/review-queue
+open http://127.0.0.1:8000/review-queue  # macOS；Windows/Linux 用浏览器直接访问
 ```
 
 飞轮标准化/查重与审核写回都依赖上游模型与嵌入服务；未配置密钥时聊天与落池仍可用，但 `review_queue` 行可能停在 `matched_review_id IS NULL`，由 `scripts/backfill_flywheel.py` 重试。
