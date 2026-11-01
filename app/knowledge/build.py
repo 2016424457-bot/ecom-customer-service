@@ -58,6 +58,24 @@ def _resolve_store(
     return store if store is not None else MilvusStore(settings)
 
 
+def _chunk_text(row: Any) -> str:
+    return f"{row.category}\n{row.questions}\n{row.answer}"
+
+
+def _vector_record(
+    row: Any, text: str, vector: list[float]
+) -> VectorRecord:
+    return VectorRecord(
+        id=row.id,
+        text=text,
+        vector=vector,
+        category=row.category,
+        content_type=row.content_type,
+        section_path=row.section_path,
+        source_doc=row.source_doc,
+    )
+
+
 async def write_pending(
     repository: Any, chunks: list[Chunk]
 ) -> list[int]:
@@ -163,10 +181,7 @@ async def vectorize_pending(
     done = 0
     for start in range(0, len(pending), batch_size):
         batch = pending[start : start + batch_size]
-        texts = [
-            f"{row.category}\n{row.questions}\n{row.answer}"
-            for row in batch
-        ]
+        texts = [_chunk_text(row) for row in batch]
         vectors = await embedder(texts, settings)
         if len(vectors) != len(batch):
             raise RuntimeError(
@@ -179,15 +194,7 @@ async def vectorize_pending(
                 )
 
         records = [
-            VectorRecord(
-                id=row.id,
-                text=text,
-                vector=vector,
-                category=row.category,
-                content_type=row.content_type,
-                section_path=row.section_path,
-                source_doc=row.source_doc,
-            )
+            _vector_record(row, text, vector)
             for row, text, vector in zip(
                 batch, texts, vectors, strict=True
             )
@@ -212,7 +219,7 @@ async def vectorize_chunk(
     if row is None:
         raise ValueError(f"knowledge chunk {chunk_id} not found")
 
-    text = f"{row.category}\n{row.questions}\n{row.answer}"
+    text = _chunk_text(row)
     vectors = await embedder([text], settings)
     if len(vectors) != 1:
         raise RuntimeError(
@@ -225,15 +232,7 @@ async def vectorize_chunk(
         )
 
     vector_store = _resolve_store(store, settings)
-    record = VectorRecord(
-        id=row.id,
-        text=text,
-        vector=vector,
-        category=row.category,
-        content_type=row.content_type,
-        section_path=row.section_path,
-        source_doc=row.source_doc,
-    )
+    record = _vector_record(row, text, vector)
     await acall(vector_store.upsert, [record])
     await repository.mark_chunk_vectorized(row.id, str(row.id))
     await repository.commit()
