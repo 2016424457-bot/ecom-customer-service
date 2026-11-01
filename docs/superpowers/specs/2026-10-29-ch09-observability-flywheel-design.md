@@ -1,7 +1,7 @@
 # CH09 设计：可观测性、成本控制与数据飞轮
 
 - 日期：2026-10-29
-- 状态：brainstorm 定稿 + builder check 完成；CH08 已合并；ch09 暂停，待用户恢复。Langfuse 默认 Cloud Hobby（课程演示数据），自部署 compose 可选。
+- 状态：已实现于分支 `ch09-observability-flywheel`，全部代码任务已提交；验收 2/3/4/6 已真实跑通，验收 1/5 因 `.env` 未配置 Langfuse key 未跑；实现计划见 `docs/superpowers/plans/2026-11-01-ch09-observability-flywheel.md`。Langfuse 默认 Cloud Hobby（课程演示数据），自部署 compose 可选。
 - 前置章节：CH08（工具系统与 MCP）已完成并合并到 `ch01-pure-chat`
 
 ## 1. 意图
