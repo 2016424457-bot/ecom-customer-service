@@ -129,7 +129,19 @@ def _intent_from_trace_name(trace_name: str) -> str:
 def _rows_from_totals(
     totals: list[tuple[str, int, float]],
 ) -> list[IntentCostRow]:
-    total_tokens = sum(tokens for _, tokens, _ in totals)
+    """Merge per-trace totals into one row per normalized intent.
+
+    Both paths can yield several totals for the same intent (metrics
+    traceName collisions, or several traces with the same root intent), so
+    tokens and cost are summed before computing share and sorting.
+    """
+    merged: dict[str, list[Any]] = {}
+    for intent, tokens, cost in totals:
+        entry = merged.setdefault(intent, [0, 0.0])
+        entry[0] += tokens
+        entry[1] += cost
+
+    total_tokens = sum(tokens for tokens, _ in merged.values())
     rows = [
         IntentCostRow(
             intent=intent,
@@ -137,7 +149,7 @@ def _rows_from_totals(
             cost=cost,
             share=(tokens / total_tokens) if total_tokens else 0.0,
         )
-        for intent, tokens, cost in totals
+        for intent, (tokens, cost) in merged.items()
     ]
     rows.sort(key=lambda row: row.tokens, reverse=True)
     return rows

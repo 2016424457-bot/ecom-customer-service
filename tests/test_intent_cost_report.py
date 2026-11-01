@@ -222,6 +222,36 @@ def test_parse_intent_rows_sorts_by_tokens_desc():
     assert [row.intent for row in rows] == ["big", "small"]
 
 
+def test_parse_intent_rows_merges_duplicate_intent_rows():
+    rows = report.parse_intent_rows(
+        {
+            "data": [
+                {
+                    "traceName": "chat · refund",
+                    "sum_totalTokens": 500,
+                    "sum_totalCost": 0.5,
+                },
+                {
+                    "traceName": "support · refund",
+                    "sum_totalTokens": 700,
+                    "sum_totalCost": 0.7,
+                },
+                {
+                    "traceName": "chat · product",
+                    "sum_totalTokens": 600,
+                    "sum_totalCost": 0.6,
+                },
+            ]
+        }
+    )
+
+    assert [row.intent for row in rows] == ["refund", "product"]
+    assert rows[0].tokens == 1200
+    assert rows[0].cost == pytest.approx(1.2)
+    assert rows[0].share == pytest.approx(1200 / 1800)
+    assert rows[1].share == pytest.approx(600 / 1800)
+
+
 def test_parse_intent_rows_zero_total_has_zero_share():
     rows = report.parse_intent_rows(
         {
@@ -578,6 +608,39 @@ def test_fetch_fallback_reads_cost_details_and_calculated_cost():
     assert [row.intent for row in rows] == ["product", "refund"]
     assert rows[0].cost == pytest.approx(0.5)
     assert rows[1].cost == pytest.approx(0.25)
+
+
+def test_fetch_fallback_merges_traces_with_same_intent():
+    client = FakeClient(
+        metrics_error=RuntimeError("metrics api unavailable"),
+        observations_response={
+            "data": [
+                {
+                    "traceId": "t1",
+                    "metadata": {"intent": "退款退货"},
+                },
+                {"traceId": "t1", "usageDetails": {"total": 500}},
+                {
+                    "traceId": "t2",
+                    "metadata": {"intent": "退款退货"},
+                },
+                {"traceId": "t2", "usageDetails": {"total": 700}},
+                {
+                    "traceId": "t3",
+                    "metadata": {"intent": "商品咨询"},
+                },
+                {"traceId": "t3", "usageDetails": {"total": 600}},
+            ]
+        },
+    )
+
+    rows = report.fetch_intent_costs(client, start=START, end=END)
+
+    assert [row.intent for row in rows] == ["退款退货", "商品咨询"]
+    assert rows[0].tokens == 1200
+    assert rows[0].share == pytest.approx(1200 / 1800)
+    assert rows[1].tokens == 600
+    assert rows[1].share == pytest.approx(600 / 1800)
 
 
 # --- render_markdown -----------------------------------------------------
