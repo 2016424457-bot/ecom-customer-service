@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import (
     Conversation,
     ConversationSummary,
+    EvalRun,
     Faq,
     FaithCase,
     KnowledgeChunk,
@@ -850,6 +851,36 @@ class ReviewQueueRepository:
             .values(**values)
         )
         await self.session.flush()
+
+    async def commit(self) -> None:
+        await self.session.commit()
+
+
+class EvalRunRepository:
+    """Persistence boundary for automated evaluation run history."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def insert_run(
+        self, *, triggered_by: str, dataset_size: int, metrics: dict
+    ) -> int:
+        run = EvalRun(
+            triggered_by=triggered_by,
+            dataset_size=dataset_size,
+            metrics=metrics,
+        )
+        self.session.add(run)
+        await self.session.flush()
+        return run.id
+
+    async def list_runs(self, limit: int = 20) -> list[EvalRun]:
+        rows = await self.session.scalars(
+            select(EvalRun)
+            .order_by(EvalRun.created_at.desc(), EvalRun.id.desc())
+            .limit(limit)
+        )
+        return list(rows)
 
     async def commit(self) -> None:
         await self.session.commit()
