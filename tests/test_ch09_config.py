@@ -14,3 +14,22 @@ def test_ch09_settings_defaults(clean_unit_env):
     assert settings.eval_schedule_enabled is False
     assert settings.eval_interval_hours == 24
     assert settings.review_queue_page_size == 20
+
+
+def test_langfuse_host_env_is_accepted(clean_unit_env):
+    clean_unit_env.setenv("LANGFUSE_HOST", "http://localhost:3000")
+
+    settings = Settings(_env_file=None, openai_api_key="test")
+
+    assert settings.langfuse_base_url == "http://localhost:3000"
+
+
+def test_langfuse_base_url_wins_over_host(clean_unit_env):
+    clean_unit_env.setenv("LANGFUSE_HOST", "http://localhost:3000")
+    clean_unit_env.setenv(
+        "LANGFUSE_BASE_URL", "https://us.cloud.langfuse.com"
+    )
+
+    settings = Settings(_env_file=None, openai_api_key="test")
+
+    assert settings.langfuse_base_url == "https://us.cloud.langfuse.com"

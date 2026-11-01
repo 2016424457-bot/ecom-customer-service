@@ -155,6 +155,28 @@ def test_parse_intent_rows_keeps_trace_names_without_prefix():
     assert [row.intent for row in rows] == ["refund"]
 
 
+def test_parse_intent_rows_strips_any_configured_trace_prefix():
+    rows = report.parse_intent_rows(
+        {
+            "data": [
+                {
+                    "traceName": "support · refund",
+                    "sum_totalTokens": 300,
+                    "sum_totalCost": 0.3,
+                },
+                {
+                    "traceName": "chat · product",
+                    "sum_totalTokens": 100,
+                    "sum_totalCost": 0.1,
+                },
+            ]
+        }
+    )
+
+    assert [row.intent for row in rows] == ["refund", "product"]
+    assert report._intent_from_trace_name("a · b · c") == "b · c"
+
+
 def test_parse_intent_rows_reads_object_responses():
     response = SimpleNamespace(
         data=[

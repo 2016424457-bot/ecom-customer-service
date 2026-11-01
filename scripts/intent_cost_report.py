@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DAYS = 7
 ROW_LIMIT = 100
-TRACE_NAME_PREFIX = "chat · "
+TRACE_NAME_SEPARATOR = " · "
 OBSERVATION_FIELDS = "core,basic,usage"
 
 CONFIG_HINT = (
@@ -107,9 +107,16 @@ def _as_float(value: Any) -> float:
 
 
 def _intent_from_trace_name(trace_name: str) -> str:
-    if trace_name.startswith(TRACE_NAME_PREFIX):
-        return trace_name[len(TRACE_NAME_PREFIX) :]
-    return trace_name
+    """Strip the configured root-span prefix from ``<trace_name> · <intent>``.
+
+    ``LANGFUSE_TRACE_NAME`` is configurable, so both ``chat · refund`` and
+    ``support · refund`` must yield ``refund``; names without the separator
+    are kept as is.
+    """
+    _prefix, separator, intent = trace_name.partition(
+        TRACE_NAME_SEPARATOR
+    )
+    return intent if separator else trace_name
 
 
 def _rows_from_totals(

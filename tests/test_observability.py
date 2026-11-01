@@ -79,7 +79,13 @@ def test_turn_propagates_attributes_and_finishes(monkeypatch):
         session_id="42", user_id="u1", input={"message": "你好"}
     ) as trace:
         obs.finish_turn_trace(
-            trace, {"intent": "refund", "route": "refund", "evidence_strong": False}
+            trace,
+            {
+                "intent": "退款退货",
+                "route": "refund_fallback",
+                "trace": {"fallback": True},
+                "evidence_strong": False,
+            },
         )
         obs.finish_turn_trace(trace, {"intent": "ignored"})
 
@@ -87,10 +93,46 @@ def test_turn_propagates_attributes_and_finishes(monkeypatch):
     assert client.spans[0].kwargs["name"] == "chat"
     assert client.spans[0].updates == [
         {
-            "name": "chat · refund",
-            "metadata": {"intent": "refund", "route": "refund", "refused": True},
+            "name": "chat · 退款退货",
+            "metadata": {
+                "intent": "退款退货",
+                "route": "refund_fallback",
+                "refused": True,
+            },
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "route", ["chitchat", "business", "other", "refund"]
+)
+def test_routes_that_never_ran_the_gate_are_not_refused(route):
+    client = FakeClient()
+    obs = observability.Observability(client)
+
+    with obs.turn(session_id="42", user_id="u1", input={}) as trace:
+        obs.finish_turn_trace(
+            trace, {"intent": "闲聊", "route": route, "trace": {}}
+        )
+
+    assert client.spans[0].updates[0]["metadata"]["refused"] is False
+
+
+def test_fallback_trace_without_fallback_route_is_refused():
+    client = FakeClient()
+    obs = observability.Observability(client)
+
+    with obs.turn(session_id="42", user_id="u1", input={}) as trace:
+        obs.finish_turn_trace(
+            trace,
+            {
+                "intent": "商品咨询",
+                "route": "knowledge",
+                "trace": {"fallback": True},
+            },
+        )
+
+    assert client.spans[0].updates[0]["metadata"]["refused"] is True
 
 
 def test_retrieval_span_and_shutdown():

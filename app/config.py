@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -183,7 +183,13 @@ class Settings(BaseSettings):
     langfuse_enabled: bool = False
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
-    langfuse_base_url: str = "https://cloud.langfuse.com"
+    langfuse_base_url: str = Field(
+        default="https://cloud.langfuse.com",
+        # Accept the legacy Langfuse SDK name too; the first set wins.
+        validation_alias=AliasChoices(
+            "LANGFUSE_BASE_URL", "LANGFUSE_HOST"
+        ),
+    )
     langfuse_trace_name: str = "chat"
     evidence_confidence_threshold: float = Field(
         default=0.50, ge=0, le=1

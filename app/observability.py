@@ -76,7 +76,14 @@ class Observability:
         trace.finished = True
         intent = values.get("intent") or "unknown"
         route = values.get("route") or ""
-        refused = values.get("evidence_strong") is False
+        trace_data = values.get("trace") or {}
+        # A turn is refused only when it ended in a fallback branch. Routes
+        # that never ran the evidence gate (chit-chat, business, refund
+        # order lookup) leave ``evidence_strong`` at its default False and
+        # must not look like refusals; mirrors the /api/chat done payload.
+        refused = route in ("fallback", "refund_fallback") or bool(
+            trace_data.get("fallback")
+        )
         trace.span.update(
             name=f"{self._trace_name} · {intent}",
             metadata={"intent": intent, "route": route, "refused": refused},
