@@ -330,6 +330,8 @@ def _graph_input(
         "evidence": "",
         "citations": [],
         "evidence_strong": False,
+        "retrieval_chunks": [],
+        "weak_source": None,
         "answer": "",
         "steps": 0,
         "tokens_used": 0,

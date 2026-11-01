@@ -56,6 +56,37 @@ def test_faq_snapshot_parses_items():
     assert _faq_snapshot(raw) == [{"n": 1, "chunk_id": 7, "score": 0.9}]
 
 
+def test_format_faq_round_trips_snapshot_fields():
+    from app.tools.formatters import format_faq
+
+    item = {
+        "n": 1,
+        "chunk_id": 7,
+        "section_path": "政策/退货",
+        "source_doc": "returns.md",
+        "question": "怎么退货",
+        "answer": "7天无理由。",
+        "category": "退货",
+        "score": 0.9,
+    }
+    formatted = format_faq(
+        {"keyword": "退货", "count": 1, "items": [item]}
+    )
+    snapshot = _faq_snapshot(json.dumps(formatted, ensure_ascii=False))
+
+    assert len(snapshot) == 1
+    for key in (
+        "n",
+        "chunk_id",
+        "section_path",
+        "source_doc",
+        "question",
+        "answer",
+        "score",
+    ):
+        assert snapshot[0][key] == item[key]
+
+
 def test_faq_snapshot_returns_empty_for_unusable_payloads():
     assert _faq_snapshot("not-json") == []
     assert _faq_snapshot('{"items": "nope"}') == []

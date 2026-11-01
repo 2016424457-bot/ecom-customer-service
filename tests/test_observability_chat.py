@@ -362,11 +362,11 @@ def _hit(chunk_id=11, score=0.9):
     )
 
 
-def _result(hits):
+def _result(hits, *, reranked=True):
     return RetrievalResult(
         strategy="hybrid_rerank",
         rewritten_query="退货政策",
-        reranked=True,
+        reranked=reranked,
         hits=hits,
     )
 
@@ -402,10 +402,27 @@ async def test_forced_rag_records_retrieval_span(monkeypatch):
     assert span.updates == [
         {
             "output": [
-                {"chunk_id": 11, "score": 0.9},
-                {"chunk_id": 12, "score": 0.7},
+                {
+                    "n": 1,
+                    "chunk_id": 11,
+                    "score": 0.9,
+                    "section_path": "政策/退货",
+                    "question": "退货政策是什么",
+                },
+                {
+                    "n": 2,
+                    "chunk_id": 12,
+                    "score": 0.7,
+                    "section_path": "政策/退货",
+                    "question": "退货政策是什么",
+                },
             ],
-            "metadata": {"strategy": "hybrid_rerank", "reranked": True},
+            "metadata": {
+                "strategy": "hybrid_rerank",
+                "reranked": True,
+                "evidence_confidence": pytest.approx(0.89),
+                "confidence_skipped": False,
+            },
         }
     ]
 
@@ -478,10 +495,76 @@ async def test_refund_policy_rag_records_retrieval_span(monkeypatch):
     span = obs.retrievals[0]["span"]
     assert span.updates == [
         {
-            "output": [{"chunk_id": 21, "score": 0.8}],
-            "metadata": {"strategy": "hybrid_rerank", "reranked": True},
+            "output": [
+                {
+                    "n": 1,
+                    "chunk_id": 21,
+                    "score": 0.8,
+                    "section_path": "政策/退货",
+                    "question": "退货政策是什么",
+                }
+            ],
+            "metadata": {
+                "strategy": "hybrid_rerank",
+                "reranked": True,
+                "evidence_confidence": pytest.approx(0.78),
+                "confidence_skipped": False,
+            },
         }
     ]
+
+
+def _gate_deps() -> SimpleNamespace:
+    return SimpleNamespace(
+        settings=SimpleNamespace(
+            rerank_min_score=0.0,
+            evidence_confidence_threshold=0.55,
+            evidence_effective_floor=0.2,
+            rerank_top_k=10,
+            evidence_tokens_per_item=300,
+            token_chars_per_token=1.5,
+        ),
+        evidence_checker=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_evidence_update_span_records_gate_metadata():
+    span = FakeSpan()
+    result = _result([_hit(11, 0.3), _hit(12, 0.25)])
+
+    update = await nodes._evidence_update(
+        {}, "q", result, _gate_deps(), trace={}, span=span
+    )
+
+    assert update["weak_source"] == "retrieval_low_conf"
+    recorded = span.updates[0]
+    assert set(recorded["output"][0]) == {
+        "n",
+        "chunk_id",
+        "score",
+        "section_path",
+        "question",
+    }
+    metadata = recorded["metadata"]
+    assert metadata["evidence_confidence"] < 0.55
+    assert metadata["confidence_skipped"] is False
+    assert "evidence_confidence_threshold" in metadata["gate_reason"]
+
+
+@pytest.mark.asyncio
+async def test_evidence_update_span_marks_skipped_confidence():
+    span = FakeSpan()
+    result = _result([_hit(11, 0.01)], reranked=False)
+
+    await nodes._evidence_update(
+        {}, "q", result, _gate_deps(), trace={}, span=span
+    )
+
+    metadata = span.updates[0]["metadata"]
+    assert metadata["confidence_skipped"] is True
+    assert metadata["evidence_confidence"] == pytest.approx(0.0185)
+    assert "gate_reason" not in metadata
 
 
 @pytest.mark.asyncio

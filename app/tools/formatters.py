@@ -51,7 +51,16 @@ def format_faq(payload: Any) -> Any:
         "items": [
             _pick(
                 item,
-                ("n", "section_path", "answer", "category"),
+                (
+                    "n",
+                    "chunk_id",
+                    "section_path",
+                    "source_doc",
+                    "question",
+                    "answer",
+                    "category",
+                    "score",
+                ),
             )
             for item in items
             if isinstance(item, dict)

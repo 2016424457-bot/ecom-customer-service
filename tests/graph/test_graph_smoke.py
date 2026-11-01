@@ -473,6 +473,49 @@ async def test_checkpointer_carries_history_across_turns():
 
 
 @pytest.mark.asyncio
+async def test_turn_without_retrieval_clears_previous_snapshot(monkeypatch):
+    async def fake_search(*args, **kwargs):
+        return RetrievalResult(
+            strategy="hybrid_rerank",
+            rewritten_query="商品怎么保修",
+            reranked=True,
+            hits=[
+                KnowledgeHit(
+                    id=11,
+                    category="保修",
+                    questions="商品保修",
+                    answer="保修一年。",
+                    score=0.9,
+                    section_path="政策/保修",
+                    content_type="policy",
+                    source_doc="warranty.md",
+                )
+            ],
+        )
+
+    monkeypatch.setattr(nodes, "search_knowledge_result", fake_search)
+    model = FakeModel([AIMessage("保修一年[1]。")])
+    deps = _deps(intent="商品咨询", model=model)
+
+    async for _ in runtime.stream_turn(
+        deps, conversation_id=19, user_id="u1", message="商品怎么保修"
+    ):
+        pass
+    first = await runtime.get_conversation_state(deps.settings, 19)
+    assert first["retrieval_chunks"]
+
+    deps.intent_classifier.intent = "闲聊"
+    async for _ in runtime.stream_turn(
+        deps, conversation_id=19, user_id="u1", message="你好"
+    ):
+        pass
+    second = await runtime.get_conversation_state(deps.settings, 19)
+
+    assert second["retrieval_chunks"] == []
+    assert second["weak_source"] is None
+
+
+@pytest.mark.asyncio
 async def test_refund_route_judges_order_and_returns_form(monkeypatch):
     monkeypatch.setattr(nodes, "search_many_result", _policy_search)
     registry = FakeRegistry(content=json.dumps(ORDER, ensure_ascii=False))

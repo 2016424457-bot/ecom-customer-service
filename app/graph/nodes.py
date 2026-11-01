@@ -85,26 +85,41 @@ def _span_update(span: Any, **kwargs: Any) -> None:
         )
 
 
-def _retrieval_output(result: Any) -> list[dict[str, Any]]:
-    hits = getattr(result, "hits", None) or []
+_RETRIEVAL_OUTPUT_FIELDS = (
+    "n",
+    "chunk_id",
+    "score",
+    "section_path",
+    "question",
+)
+
+
+def _retrieval_output(
+    ordered: list[tuple[int, Any]],
+) -> list[dict[str, Any]]:
+    """Retrieval span output per spec §4.1, trimmed to the five fields."""
     return [
-        {
-            "chunk_id": getattr(hit, "id", None),
-            "score": getattr(hit, "score", None),
-        }
-        for hit in hits
+        {key: item[key] for key in _RETRIEVAL_OUTPUT_FIELDS}
+        for item in citation_items_full(ordered)
     ]
 
 
-def _trace_retrieval(span: Any, result: Any) -> None:
-    _span_update(
-        span,
-        output=_retrieval_output(result),
-        metadata={
-            "strategy": getattr(result, "strategy", ""),
-            "reranked": getattr(result, "reranked", False),
-        },
-    )
+def _retrieval_metadata(
+    result: Any,
+    signals: Any,
+    *,
+    gate_reason: str | None = None,
+) -> dict[str, Any]:
+    metadata = {
+        "strategy": getattr(result, "strategy", ""),
+        "reranked": getattr(result, "reranked", False),
+        "evidence_confidence": signals.confidence,
+        "confidence_skipped": not getattr(result, "reranked", False),
+    }
+    if gate_reason:
+        metadata["gate_reason"] = gate_reason
+    return metadata
+
 
 CHITCHAT_REPLY = (
     "您好，我是客服小猫，很高兴为您服务～"
@@ -493,6 +508,7 @@ async def _evidence_update(
     *,
     trace: dict[str, Any],
     assess_query: str | None = None,
+    span: Any = None,
 ) -> dict:
     """Shared evidence gate: score hits, gate them, and render evidence.
 
@@ -501,6 +517,9 @@ async def _evidence_update(
     weak and strong branches record the same context. ``assess_query`` lets
     a caller assess against a policy-focused question instead of the raw
     user query (order-specific asks are judged later with the order data).
+    ``span`` stays open across the gate so the retrieval span records the
+    final decision (``evidence_confidence``/``confidence_skipped`` and the
+    ``gate_reason`` for a mechanical rejection).
 
     Gate order: empty hits, then — only when ``result.reranked`` — the
     ``rerank_min_score`` and ``evidence_confidence_threshold`` checks, then
@@ -510,6 +529,7 @@ async def _evidence_update(
     """
     ordered = prompt_order(result.hits)
     full_items = citation_items_full(ordered)
+    span_output = _retrieval_output(ordered)
     signals = compute_confidence(
         [hit.score for hit in result.hits],
         effective_floor=getattr(
@@ -529,40 +549,57 @@ async def _evidence_update(
         **trace,
     }
 
+    def _record(update: dict) -> dict:
+        gate_reason = (update.get("trace") or {}).get("gate_reason")
+        _span_update(
+            span,
+            output=span_output,
+            metadata=_retrieval_metadata(
+                result, signals, gate_reason=gate_reason
+            ),
+        )
+        return update
+
     if not ordered:
-        return _weak_evidence(
-            state,
-            weak_source="retrieval_low_conf",
-            retrieval_chunks=full_items,
-            **base_trace,
+        return _record(
+            _weak_evidence(
+                state,
+                weak_source="retrieval_low_conf",
+                retrieval_chunks=full_items,
+                **base_trace,
+            )
         )
 
     if result.reranked:
         min_score = deps.settings.rerank_min_score
         if signals.top1 < min_score:
-            return _weak_evidence(
-                state,
-                weak_source="retrieval_low_conf",
-                retrieval_chunks=full_items,
-                **base_trace,
-                gate_reason=(
-                    f"top={signals.top1:.3f} < rerank_min_score="
-                    f"{min_score}"
-                ),
+            return _record(
+                _weak_evidence(
+                    state,
+                    weak_source="retrieval_low_conf",
+                    retrieval_chunks=full_items,
+                    **base_trace,
+                    gate_reason=(
+                        f"top={signals.top1:.3f} < rerank_min_score="
+                        f"{min_score}"
+                    ),
+                )
             )
         threshold = getattr(
             deps.settings, "evidence_confidence_threshold", 0.50
         )
         if signals.confidence < threshold:
-            return _weak_evidence(
-                state,
-                weak_source="retrieval_low_conf",
-                retrieval_chunks=full_items,
-                **base_trace,
-                gate_reason=(
-                    f"confidence={signals.confidence:.3f} < "
-                    f"evidence_confidence_threshold={threshold}"
-                ),
+            return _record(
+                _weak_evidence(
+                    state,
+                    weak_source="retrieval_low_conf",
+                    retrieval_chunks=full_items,
+                    **base_trace,
+                    gate_reason=(
+                        f"confidence={signals.confidence:.3f} < "
+                        f"evidence_confidence_threshold={threshold}"
+                    ),
+                )
             )
 
     assessment = None
@@ -575,34 +612,38 @@ async def _evidence_update(
             logger.warning("evidence_check_failed error=%r", exc)
 
     if assessment is not None and not assessment.useful:
-        return _weak_evidence(
-            state,
-            weak_source="self_check",
-            retrieval_chunks=full_items,
-            **base_trace,
-            self_check=assessment.reason,
+        return _record(
+            _weak_evidence(
+                state,
+                weak_source="self_check",
+                retrieval_chunks=full_items,
+                **base_trace,
+                self_check=assessment.reason,
+            )
         )
 
-    return {
-        "evidence_strong": True,
-        "evidence": render_evidence_block(full_items),
-        "evidence_prompt": cap_evidence_block(
-            full_items,
-            getattr(deps.settings, "rerank_top_k", len(full_items)),
-            getattr(
-                deps.settings, "evidence_tokens_per_item", 300
+    return _record(
+        {
+            "evidence_strong": True,
+            "evidence": render_evidence_block(full_items),
+            "evidence_prompt": cap_evidence_block(
+                full_items,
+                getattr(deps.settings, "rerank_top_k", len(full_items)),
+                getattr(
+                    deps.settings, "evidence_tokens_per_item", 300
+                ),
+                getattr(deps.settings, "token_chars_per_token", 1.5),
             ),
-            getattr(deps.settings, "token_chars_per_token", 1.5),
-        ),
-        "citations": citation_items_light(ordered),
-        "retrieval_chunks": full_items,
-        "weak_source": None,
-        "trace": merge_trace(
-            state,
-            **base_trace,
-            self_check=getattr(assessment, "reason", ""),
-        ),
-    }
+            "citations": citation_items_light(ordered),
+            "retrieval_chunks": full_items,
+            "weak_source": None,
+            "trace": merge_trace(
+                state,
+                **base_trace,
+                self_check=getattr(assessment, "reason", ""),
+            ),
+        }
+    )
 
 
 async def forced_rag(state: dict, *, deps: Any) -> dict:
@@ -612,6 +653,7 @@ async def forced_rag(state: dict, *, deps: Any) -> dict:
     rewriter, so the query is not rewritten a second time.
     """
     query = state.get("standalone_query") or _user_text(state)
+    retrieval_failed = False
     try:
         with _retrieval_span(deps, query=query) as span:
             try:
@@ -623,12 +665,22 @@ async def forced_rag(state: dict, *, deps: Any) -> dict:
                     rewriter=NoOpQueryRewriter(),
                 )
             except Exception as exc:
+                retrieval_failed = True
                 _span_update(
                     span, level="ERROR", status_message=str(exc)
                 )
                 raise
-            _trace_retrieval(span, result)
+            return await _evidence_update(
+                state,
+                query,
+                result,
+                deps,
+                trace={"forced_rag": True},
+                span=span,
+            )
     except Exception as exc:
+        if not retrieval_failed:
+            raise
         logger.warning("forced_rag_failed error=%r", exc)
         return _weak_evidence(
             state,
@@ -638,10 +690,6 @@ async def forced_rag(state: dict, *, deps: Any) -> dict:
             retrieval_error=str(exc),
             evidence_top=0.0,
         )
-
-    return await _evidence_update(
-        state, query, result, deps, trace={"forced_rag": True}
-    )
 
 
 async def confidence_check(state: dict, *, deps: Any) -> dict:
@@ -762,6 +810,18 @@ async def refund_policy_rag(state: dict, *, deps: Any) -> dict:
     intent = state.get("intent")
     content_type = "policy" if intent == "退款退货" else "manual"
 
+    # The self-check question must match the policy corpus being queried:
+    # after-sales evidence is warranty/manual text, not return policy.
+    assess_query = (
+        "售后政策条款：保修条件、期限、范围、维修流程"
+        if intent == "售后"
+        else (
+            f"{intent}政策条款："
+            "七天无理由退货条件、例外、运费、到账时效"
+        )
+    )
+
+    retrieval_failed = False
     try:
         with _retrieval_span(deps, query=query) as span:
             try:
@@ -774,12 +834,23 @@ async def refund_policy_rag(state: dict, *, deps: Any) -> dict:
                     rewriter=NoOpQueryRewriter(),
                 )
             except Exception as exc:
+                retrieval_failed = True
                 _span_update(
                     span, level="ERROR", status_message=str(exc)
                 )
                 raise
-            _trace_retrieval(span, result)
+            update = await _evidence_update(
+                state,
+                query,
+                result,
+                deps,
+                trace={"confidence_route": "refund"},
+                assess_query=assess_query,
+                span=span,
+            )
     except Exception as exc:
+        if not retrieval_failed:
+            raise
         logger.warning("refund_policy_rag_failed error=%r", exc)
         update = _weak_evidence(
             state,
@@ -793,24 +864,6 @@ async def refund_policy_rag(state: dict, *, deps: Any) -> dict:
         update["queries"] = queries
         return update
 
-    # The self-check question must match the policy corpus being queried:
-    # after-sales evidence is warranty/manual text, not return policy.
-    assess_query = (
-        "售后政策条款：保修条件、期限、范围、维修流程"
-        if intent == "售后"
-        else (
-            f"{intent}政策条款："
-            "七天无理由退货条件、例外、运费、到账时效"
-        )
-    )
-    update = await _evidence_update(
-        state,
-        query,
-        result,
-        deps,
-        trace={"confidence_route": "refund"},
-        assess_query=assess_query,
-    )
     if update["evidence_strong"]:
         update["trace"]["refund"] = {
             "stage": "policy",

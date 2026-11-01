@@ -439,6 +439,13 @@ async def test_graph_input_has_anchor_and_summary_fields(monkeypatch):
     assert inp["evidence_prompt"] == ""
 
 
+def test_graph_input_resets_retrieval_snapshot():
+    inp = runtime._graph_input("u1", "hi", 7, 1, "", 0, 0)
+
+    assert inp["retrieval_chunks"] == []
+    assert inp["weak_source"] is None
+
+
 def test_truncate_user_input_caps_tokens():
     from app.context import truncate_user_input
 
