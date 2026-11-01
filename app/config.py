@@ -186,8 +186,8 @@ class Settings(BaseSettings):
     langfuse_base_url: str = "https://cloud.langfuse.com"
     langfuse_trace_name: str = "chat"
     evidence_confidence_threshold: float = Field(
-        default=0.55, ge=0, le=1
-    )  # provisional until calibrated
+        default=0.50, ge=0, le=1
+    )  # calibrated 2026-11-01 on evals/ch04_eval_cases.jsonl
     evidence_effective_floor: float = Field(default=0.2, ge=0, le=1)
     flywheel_enabled: bool = True
     flywheel_dedup_candidate_limit: int = Field(default=100, gt=0)

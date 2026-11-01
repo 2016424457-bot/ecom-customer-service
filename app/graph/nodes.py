@@ -534,7 +534,7 @@ async def _evidence_update(
                 ),
             )
         threshold = getattr(
-            deps.settings, "evidence_confidence_threshold", 0.55
+            deps.settings, "evidence_confidence_threshold", 0.50
         )
         if signals.confidence < threshold:
             return _weak_evidence(
