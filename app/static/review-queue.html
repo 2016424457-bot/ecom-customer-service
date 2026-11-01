@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#1f3b2f" />
+  <title>审核后台 · 示例商城</title>
+  <link rel="stylesheet" href="/static/review-queue.css?v=1" />
+</head>
+<body>
+  <div class="page-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">审</div>
+        <div class="brand-copy">
+          <p class="brand-kicker">Flywheel Review Desk</p>
+          <h1>知识缺口审核台</h1>
+          <p class="subtitle">飞轮按出现次数排队；点开看用户原话与召回快照，通过即写回知识库。</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <a class="ghost-btn" href="/faith-cases">编造台账</a>
+        <a class="ghost-btn" href="/chat">返回聊天</a>
+      </div>
+    </header>
+
+    <section class="toolbar" aria-label="状态筛选">
+      <div id="statusFilters" class="filters">
+        <button class="filter-chip is-active" type="button" data-status="待审">待审</button>
+        <button class="filter-chip" type="button" data-status="通过">通过</button>
+        <button class="filter-chip" type="button" data-status="驳回">驳回</button>
+        <button class="filter-chip" type="button" data-status="">全部</button>
+      </div>
+    </section>
+
+    <p id="summary" class="summary">加载中…</p>
+    <main id="reviewList" class="review-list" aria-live="polite"></main>
+
+    <section class="trend-section" aria-label="评估趋势">
+      <div class="trend-head">
+        <h2 class="section-title">评估趋势</h2>
+        <p id="trendSummary" class="trend-summary">加载中…</p>
+      </div>
+      <div id="trendTableWrap" class="trend-table-wrap" aria-live="polite"></div>
+    </section>
+  </div>
+
+  <dialog id="detailDialog" class="detail-dialog" aria-labelledby="detailQuestion">
+    <div class="detail-shell">
+      <header class="detail-head">
+        <div class="detail-title-wrap">
+          <p class="brand-kicker detail-kicker">Review Detail</p>
+          <h2 id="detailQuestion" class="detail-question"></h2>
+        </div>
+        <button id="detailClose" class="close-btn" type="button" aria-label="关闭详情">×</button>
+      </header>
+
+      <div id="detailMeta" class="detail-meta"></div>
+
+      <section class="detail-section">
+        <p class="section-label">用户原话</p>
+        <div id="occurrenceList" class="occurrence-list"></div>
+      </section>
+
+      <section id="reviewedSection" class="detail-section is-hidden">
+        <p class="section-label">审核结果</p>
+        <p id="reviewedNote" class="reviewed-note"></p>
+        <pre id="approvedAnswer" class="approved-answer is-hidden"></pre>
+      </section>
+
+      <section id="decisionSection" class="detail-section">
+        <p class="section-label">审核意见</p>
+        <textarea
+          id="answerInput"
+          class="answer-input"
+          rows="4"
+          placeholder="通过后写入知识库；默认填入 AI 示例答案"
+        ></textarea>
+        <label class="reject-field">
+          <span>驳回原因</span>
+          <input id="rejectReason" type="text" placeholder="可选，仅记录到日志" />
+        </label>
+        <div class="detail-actions">
+          <button id="approveBtn" class="save-btn is-primary" type="button">通过并入库</button>
+          <button id="rejectBtn" class="save-btn" type="button">驳回</button>
+          <span id="detailStatus" class="save-status"></span>
+        </div>
+        <p id="detailError" class="detail-error is-hidden" role="alert"></p>
+      </section>
+    </div>
+  </dialog>
+
+  <script src="/static/review-queue.js?v=1"></script>
+</body>
+</html>

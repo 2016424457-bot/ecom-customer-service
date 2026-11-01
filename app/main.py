@@ -101,6 +101,10 @@ def create_app(
     async def faith_cases_page() -> FileResponse:
         return FileResponse(STATIC_DIR / "faith-cases.html")
 
+    @application.get("/review-queue", include_in_schema=False)
+    async def review_queue_page() -> FileResponse:
+        return FileResponse(STATIC_DIR / "review-queue.html")
+
     @application.exception_handler(AppError)
     async def handle_app_error(
         _request: Request, exc: AppError
