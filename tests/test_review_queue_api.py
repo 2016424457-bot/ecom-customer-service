@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -11,7 +12,10 @@ from fastapi.testclient import TestClient
 from app.api import review as review_api
 from app.config import Settings
 from app.db.models import ReviewQueue
-from app.db.repositories import ReviewQueueRepository
+from app.db.repositories import (
+    KnowledgeRepository,
+    ReviewQueueRepository,
+)
 from app.main import create_app
 from app.prompt_builder import PromptBuilder
 from app.runtime import Runtime
@@ -210,6 +214,12 @@ class FakeKnowledgeRepository:
             if chunk.id == chunk_id:
                 return chunk
         return None
+
+    async def update_chunk_content(self, chunk_id, questions, answer):
+        chunk = await self.get_chunk_by_id(chunk_id)
+        chunk.questions = questions
+        chunk.answer = answer
+        self.calls.append("update_content")
 
     async def insert_knowledge_chunk(self, **kwargs):
         chunk = FakeChunk(id=self._next_id, **kwargs)
@@ -526,7 +536,39 @@ def test_approve_existing_pending_chunk_retries_vectorize(
     assert response.json() == {"status": "通过", "chunk_id": 9}
     assert fake_runtime.knowledge_repository.inserted == []
     assert chunk_ids == [9]
-    assert fake_runtime.calls == ["vectorize", "status"]
+    chunk = fake_runtime.knowledge_repository.chunks[0]
+    assert chunk.answer == "7 天无理由退货。"
+    assert chunk.questions == "如何退货？"
+    assert fake_runtime.calls == ["update_content", "vectorize", "status"]
+
+
+def test_approve_existing_pending_chunk_updates_content(
+    client, fake_runtime, monkeypatch
+):
+    chunk = FakeChunk(
+        id=9,
+        category="未分类",
+        questions="如何退货？",
+        answer="旧答案",
+        content_type="faq",
+        section_path=None,
+        is_key_clause=False,
+        source_doc="review_queue:1",
+        vectorize_status="pending",
+    )
+    fake_runtime.knowledge_repository.chunks.append(chunk)
+    monkeypatch.setattr(
+        review_api, "vectorize_chunk", fake_vectorize(fake_runtime.calls)
+    )
+
+    response = client.post(
+        "/api/review-queue/1/approve", json={"answer": "新答案"}
+    )
+
+    assert response.status_code == 200
+    assert chunk.answer == "新答案"
+    assert chunk.questions == "如何退货？"
+    assert fake_runtime.review_repository.rows[1].approved_answer == "新答案"
 
 
 def test_approve_missing_review_returns_404(client, fake_runtime):
@@ -577,6 +619,25 @@ def test_reject_already_reviewed_returns_409(client, fake_runtime):
 
 def test_approve_lock_is_module_level(client):
     assert isinstance(review_api._approve_lock, asyncio.Lock)
+
+
+def test_reject_takes_the_same_approve_lock(client, monkeypatch):
+    class RecordingLock(asyncio.Lock):
+        def __init__(self) -> None:
+            super().__init__()
+            self.entries = 0
+
+        async def __aenter__(self):
+            self.entries += 1
+            return await super().__aenter__()
+
+    lock = RecordingLock()
+    monkeypatch.setattr(review_api, "_approve_lock", lock)
+
+    response = client.post("/api/review-queue/1/reject", json={})
+
+    assert response.status_code == 200
+    assert lock.entries == 1
 
 
 class FakeDbSession:
@@ -652,7 +713,8 @@ async def test_repository_list_pool_rows_joins_by_matched_review():
 
     sql = str(session.statements[0])
     assert "low_confidence_questions.matched_review_id = " in sql
-    assert "ORDER BY low_confidence_questions.id" in sql
+    assert "ORDER BY low_confidence_questions.id DESC" in sql
+    assert "LIMIT " in sql
 
 
 async def test_repository_set_review_status_writes_approved_answer():
@@ -678,3 +740,40 @@ async def test_repository_set_review_status_without_answer():
     assert "UPDATE review_queue SET review_status=" in sql
     assert "approved_answer" not in sql
     assert "review_queue.id = " in sql
+
+
+class FakeChunkSession(FakeDbSession):
+    def __init__(self, chunk=None) -> None:
+        super().__init__()
+        self.chunk = chunk
+
+    async def get(self, model, key):
+        self.gets.append((model, key))
+        return self.chunk
+
+
+async def test_repository_update_chunk_content_updates_row():
+    chunk = SimpleNamespace(questions="旧问法", answer="旧答案")
+    session = FakeChunkSession(chunk)
+    repository = KnowledgeRepository(session)
+
+    updated = await repository.update_chunk_content(
+        5, questions="新问法", answer="新答案"
+    )
+
+    assert updated is True
+    assert chunk.questions == "新问法"
+    assert chunk.answer == "新答案"
+    assert session.flushes == 1
+
+
+async def test_repository_update_chunk_content_missing_row():
+    session = FakeChunkSession(None)
+    repository = KnowledgeRepository(session)
+
+    assert (
+        await repository.update_chunk_content(
+            5, questions="q", answer="a"
+        )
+        is False
+    )

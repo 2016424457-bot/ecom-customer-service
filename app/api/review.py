@@ -136,6 +136,15 @@ async def approve_review(
                     )
                     await review_repo.commit()
                     return {"status": "通过", "chunk_id": chunk_id}
+                # A retry may approve a different answer than the failed
+                # attempt; refresh the pending chunk so the vector written
+                # below matches the review row instead of the stale text.
+                await knowledge_repo.update_chunk_content(
+                    chunk_id,
+                    questions=review.normalized_question,
+                    answer=answer,
+                )
+                await knowledge_repo.commit()
 
             try:
                 await vectorize_chunk(
@@ -169,25 +178,28 @@ async def reject_review(
     runtime: Runtime = Depends(get_runtime),
 ) -> dict:
     """Reject a review row without touching the knowledge base."""
-    async with runtime.review_knowledge_scope() as (
-        review_repo,
-        _knowledge_repo,
-    ):
-        review = await review_repo.get_review(review_id)
-        if review is None:
-            raise HTTPException(
-                status_code=404, detail="审核项不存在"
-            )
-        if review.review_status != "待审":
-            raise HTTPException(
-                status_code=409, detail="审核项已处理"
-            )
-        if (payload.reason or "").strip():
-            logger.info(
-                "review_rejected review_id=%s reason=%s",
-                review_id,
-                payload.reason.strip(),
-            )
-        await review_repo.set_review_status(review_id, "驳回")
-        await review_repo.commit()
+    # Share the approve lock: an in-flight approve must not overwrite a
+    # rejection (or vice versa), so both re-read the status inside it.
+    async with _approve_lock:
+        async with runtime.review_knowledge_scope() as (
+            review_repo,
+            _knowledge_repo,
+        ):
+            review = await review_repo.get_review(review_id)
+            if review is None:
+                raise HTTPException(
+                    status_code=404, detail="审核项不存在"
+                )
+            if review.review_status != "待审":
+                raise HTTPException(
+                    status_code=409, detail="审核项已处理"
+                )
+            if (payload.reason or "").strip():
+                logger.info(
+                    "review_rejected review_id=%s reason=%s",
+                    review_id,
+                    payload.reason.strip(),
+                )
+            await review_repo.set_review_status(review_id, "驳回")
+            await review_repo.commit()
     return {"status": "驳回"}

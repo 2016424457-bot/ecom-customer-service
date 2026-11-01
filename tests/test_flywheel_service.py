@@ -147,6 +147,51 @@ async def test_process_passes_pool_snapshot_to_normalizer():
     assert normalizer.calls == [("想退", chunks)]
 
 
+async def test_process_rejects_empty_normalized_question(caplog):
+    repo = FakeReviewRepo({1: pool_row()})
+    normalizer = FakeNormalizer(
+        result=NormalizedQuestion(
+            question="   ", suggested_answer="示例答案", grounded=False
+        )
+    )
+    dedup = FakeDedup(DedupVerdict(matched_id=None, reason="no match"))
+    service = make_service(repo, normalizer, dedup)
+
+    with caplog.at_level(
+        logging.WARNING, logger="app.flywheel.service"
+    ):
+        assert await service.process(1) is None
+
+    assert "flywheel_empty_question pool_id=1" in caplog.text
+    assert dedup.calls == []
+    assert repo.inserted == []
+    assert repo.increments == []
+    assert repo.matched == []
+    assert repo.commits == 0
+
+
+async def test_process_truncates_question_to_review_column():
+    long_question = "问" * 600
+    repo = FakeReviewRepo({1: pool_row()})
+    normalizer = FakeNormalizer(
+        result=NormalizedQuestion(
+            question=f"  {long_question}  ",
+            suggested_answer="示例答案",
+            grounded=True,
+        )
+    )
+    dedup = FakeDedup(DedupVerdict(matched_id=None, reason="no match"))
+    service = make_service(repo, normalizer, dedup)
+
+    review_id = await service.process(1)
+
+    expected = "问" * 512
+    assert review_id == 100
+    assert repo.inserted == [(expected, "示例答案")]
+    assert dedup.calls[0][0] == expected
+    assert repo.matched == [(1, 100)]
+
+
 async def test_process_hit_increments_and_skips_insert():
     repo = FakeReviewRepo(
         {1: pool_row(retrieved_chunks=[{"chunk_id": 5}])},

@@ -22,6 +22,8 @@ class FlywheelService:
     """
 
     QUEUE_MAXSIZE = 1000
+    # ``review_queue.normalized_question`` is VARCHAR(512).
+    QUESTION_MAX_CHARS = 512
 
     def __init__(
         self,
@@ -98,6 +100,20 @@ class FlywheelService:
             normalized = await self._normalizer.normalize(
                 row.raw_question, row.retrieved_chunks
             )
+            question = (normalized.question or "").strip()
+            if not question:
+                logger.warning(
+                    "flywheel_empty_question pool_id=%s", pool_id
+                )
+                return None
+            if len(question) > self.QUESTION_MAX_CHARS:
+                logger.warning(
+                    "flywheel_question_truncated pool_id=%s from=%s to=%s",
+                    pool_id,
+                    len(question),
+                    self.QUESTION_MAX_CHARS,
+                )
+                question = question[: self.QUESTION_MAX_CHARS]
             rows = await repository.list_pending_candidates(
                 self._candidate_limit
             )
@@ -110,14 +126,14 @@ class FlywheelService:
                 for candidate in rows
             ]
             verdict = await self._deduplicator.match(
-                normalized.question, candidates
+                question, candidates
             )
             if verdict.matched_id is not None:
                 review_id = verdict.matched_id
                 await repository.increment_occurrence(review_id)
             else:
                 review = await repository.insert_review(
-                    normalized.question, normalized.suggested_answer
+                    question, normalized.suggested_answer
                 )
                 review_id = review.id
             await repository.set_pool_matched_review(pool_id, review_id)

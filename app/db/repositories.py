@@ -601,6 +601,18 @@ class KnowledgeRepository:
     ) -> KnowledgeChunk | None:
         return await self.session.get(KnowledgeChunk, chunk_id)
 
+    async def update_chunk_content(
+        self, chunk_id: int, *, questions: str, answer: str
+    ) -> bool:
+        """Refresh the content an approve retry is about to vectorize."""
+        chunk = await self.session.get(KnowledgeChunk, chunk_id)
+        if chunk is None:
+            return False
+        chunk.questions = questions
+        chunk.answer = answer
+        await self.session.flush()
+        return True
+
     async def commit(self) -> None:
         await self.session.commit()
 
@@ -825,14 +837,17 @@ class ReviewQueueRepository:
         return await self.session.get(ReviewQueue, review_id)
 
     async def list_pool_rows(
-        self, review_id: int
+        self, review_id: int, limit: int = 100
     ) -> list[LowConfidenceQuestion]:
+        # Only the newest occurrences: rows carry full JSON snapshots and
+        # a long-lived pool entry could otherwise grow without bound.
         rows = await self.session.scalars(
             select(LowConfidenceQuestion)
             .where(
                 LowConfidenceQuestion.matched_review_id == review_id
             )
-            .order_by(LowConfidenceQuestion.id)
+            .order_by(LowConfidenceQuestion.id.desc())
+            .limit(limit)
         )
         return list(rows)
 
