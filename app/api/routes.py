@@ -1,5 +1,6 @@
 """HTTP routes for the chat API."""
 
+import logging
 from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,12 +21,15 @@ from app.schemas import (
     ChatResumeRequest,
     FaithCaseOut,
     FaithCaseUpdate,
+    FeedbackRequest,
     KnowledgeChunkDetail,
     ToolCallView,
     ToolResultView,
 )
 from app.services.chat import resume_chat, stream_chat
 from app.services.extraction import extract_after_sales
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -39,6 +43,14 @@ def _message_text(content: Any) -> str:
             for block in content
             if isinstance(block, dict) and block.get("type") == "text"
         )
+    return ""
+
+
+def _latest_user_text(values: dict[str, Any]) -> str:
+    """Return the newest human turn's text from a checkpoint state."""
+    for message in reversed(values.get("messages", []) or []):
+        if isinstance(message, HumanMessage):
+            return _message_text(getattr(message, "content", None))
     return ""
 
 
@@ -259,6 +271,63 @@ async def chat_pending_endpoint(
         runtime.settings, conversation_id
     )
     return {"pending_confirm": preview}
+
+
+@router.post("/api/feedback")
+async def feedback_endpoint(
+    payload: FeedbackRequest,
+    runtime: Runtime = Depends(get_runtime),
+) -> dict[str, Any]:
+    """Record a user 👎 in the question pool and enqueue the flywheel."""
+    async with runtime.repository_scope() as repository:
+        conversation = await repository.get_conversation(
+            payload.conversation_id
+        )
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+
+        try:
+            values = await graph_runtime.get_conversation_state(
+                runtime.settings, payload.conversation_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "feedback_state_unavailable conversation_id=%s error=%r",
+                payload.conversation_id,
+                exc,
+            )
+            values = {}
+        snapshot = (
+            (values.get("retrieval_chunks") or None)
+            if _latest_user_text(values) == payload.question
+            else None
+        )
+
+        try:
+            row = await repository.insert_low_confidence_question(
+                payload.conversation_id,
+                payload.question,
+                "user_feedback",
+                "用户反馈未解决",
+                retrieved_chunks=snapshot,
+            )
+            await repository.commit()
+        except SQLAlchemyError:
+            logger.exception(
+                "feedback_insert_failed conversation_id=%s",
+                payload.conversation_id,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="反馈暂时无法保存,请稍后重试",
+            )
+
+    pool_id = int(row.id)
+    enqueued = False
+    flywheel = getattr(runtime, "flywheel", None)
+    if flywheel is not None:
+        enqueued = bool(await flywheel.enqueue(pool_id))
+    return {"pool_id": pool_id, "enqueued": enqueued}
 
 
 @router.post("/api/chat/extract", response_model=AfterSalesExtraction)

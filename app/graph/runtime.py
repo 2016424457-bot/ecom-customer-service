@@ -826,6 +826,18 @@ async def get_pending(
     return _preview_from_interrupt(interrupts[0], conversation_id)
 
 
+async def get_conversation_state(
+    settings: Any, conversation_id: int
+) -> dict:
+    """Return the latest checkpoint values without executing any node."""
+    graph = build_graph(
+        get_checkpointer(), SimpleNamespace(settings=settings)
+    )
+    config = {"configurable": {"thread_id": str(conversation_id)}}
+    snapshot = await graph.aget_state(config)
+    return getattr(snapshot, "values", {}) or {}
+
+
 async def run_turn(
     deps: GraphDeps,
     *,

@@ -63,6 +63,13 @@ class ChatExtractRequest(BaseModel):
         return value
 
 
+class FeedbackRequest(BaseModel):
+    """Payload for the user's 👎 feedback on an answer."""
+
+    conversation_id: int = Field(gt=0)
+    question: str = Field(min_length=1, max_length=8000)
+
+
 class ErrorResponse(BaseModel):
     """Non-streaming error body shared by API routes."""
 

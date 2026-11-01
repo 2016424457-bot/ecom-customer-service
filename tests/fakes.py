@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 from langchain_core.messages import BaseMessage
@@ -39,6 +40,9 @@ class FakeRepository:
         self._next_id += 1
         self.conversations[conversation.id] = conversation
         return conversation
+
+    async def get_conversation(self, conversation_id: int):
+        return self.conversations.get(conversation_id)
 
     async def list_messages(self, conversation_id: int):
         return [
@@ -88,6 +92,7 @@ class FakeRepository:
                 "retrieved_chunks": retrieved_chunks,
             }
         )
+        return SimpleNamespace(id=len(self.low_confidence))
 
     async def next_ticket_no(self, day) -> str:
         return "T20261021001"
@@ -106,6 +111,25 @@ class FakeRepository:
 
     def role_contents(self) -> list[tuple[str, str | None]]:
         return [(row.role, row.content) for _, row in self.messages]
+
+
+class FakeFlywheel:
+    """Records enqueue calls and the repository state at enqueue time."""
+
+    def __init__(
+        self, repository: FakeRepository, *, result: bool = True
+    ) -> None:
+        self.repository = repository
+        self.result = result
+        self.pool_ids: list[int] = []
+        self.rows_at_enqueue: list[int] = []
+        self.commits_at_enqueue: list[int] = []
+
+    async def enqueue(self, pool_id: int) -> bool:
+        self.pool_ids.append(pool_id)
+        self.rows_at_enqueue.append(len(self.repository.low_confidence))
+        self.commits_at_enqueue.append(self.repository.commits)
+        return self.result
 
 
 class FakeChatModel:
