@@ -792,5 +792,64 @@ class ReviewQueueRepository:
         )
         await self.session.flush()
 
+    async def list_reviews(
+        self,
+        status: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[ReviewQueue], int]:
+        stmt = select(ReviewQueue)
+        count_stmt = select(func.count()).select_from(ReviewQueue)
+        if status is not None:
+            stmt = stmt.where(ReviewQueue.review_status == status)
+            count_stmt = count_stmt.where(
+                ReviewQueue.review_status == status
+            )
+        stmt = (
+            stmt.order_by(
+                ReviewQueue.occurrence_count.desc(),
+                ReviewQueue.updated_at.desc(),
+                ReviewQueue.id.desc(),
+            )
+            .limit(limit)
+            .offset(offset)
+        )
+        items = list(await self.session.scalars(stmt))
+        total = await self.session.scalar(count_stmt) or 0
+        return items, int(total)
+
+    async def get_review(
+        self, review_id: int
+    ) -> ReviewQueue | None:
+        return await self.session.get(ReviewQueue, review_id)
+
+    async def list_pool_rows(
+        self, review_id: int
+    ) -> list[LowConfidenceQuestion]:
+        rows = await self.session.scalars(
+            select(LowConfidenceQuestion)
+            .where(
+                LowConfidenceQuestion.matched_review_id == review_id
+            )
+            .order_by(LowConfidenceQuestion.id)
+        )
+        return list(rows)
+
+    async def set_review_status(
+        self,
+        review_id: int,
+        status: str,
+        approved_answer: str | None = None,
+    ) -> None:
+        values: dict = {"review_status": status}
+        if approved_answer is not None:
+            values["approved_answer"] = approved_answer
+        await self.session.execute(
+            update(ReviewQueue)
+            .where(ReviewQueue.id == review_id)
+            .values(**values)
+        )
+        await self.session.flush()
+
     async def commit(self) -> None:
         await self.session.commit()

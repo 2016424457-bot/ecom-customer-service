@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.actions import router as actions_router
 from app.api.conversations import router as conversations_router
+from app.api.review import router as review_router
 from app.api.routes import router
 from app.config import Settings
 from app.context import format_context_budget
@@ -84,6 +85,7 @@ def create_app(
     application.include_router(router)
     application.include_router(actions_router)
     application.include_router(conversations_router)
+    application.include_router(review_router)
 
     @application.get("/", include_in_schema=False)
     async def index() -> RedirectResponse:

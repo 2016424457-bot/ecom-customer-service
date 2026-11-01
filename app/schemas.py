@@ -228,6 +228,55 @@ class FaithCaseUpdate(BaseModel):
     resolution: str | None = Field(default=None, max_length=300)
 
 
+class ReviewQueueOut(BaseModel):
+    """One normalized question waiting in the flywheel review queue."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    normalized_question: str
+    ai_suggested_answer: str | None
+    occurrence_count: int
+    review_status: str
+    approved_answer: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReviewOccurrenceOut(BaseModel):
+    """One raw user question linked to a review queue row."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    raw_question: str
+    source: str
+    reason: str | None
+    retrieved_chunks: list[dict] | None
+    created_at: datetime
+
+
+class ReviewQueueDetailOut(BaseModel):
+    """Review row plus the raw questions that feed it."""
+
+    item: ReviewQueueOut
+    occurrences: list[ReviewOccurrenceOut] = Field(
+        default_factory=list
+    )
+
+
+class ApproveRequest(BaseModel):
+    """Payload for approving a review row; blank answer uses the draft."""
+
+    answer: str | None = None
+
+
+class RejectRequest(BaseModel):
+    """Payload for rejecting a review row; the reason is optional."""
+
+    reason: str | None = None
+
+
 class ConversationListItem(BaseModel):
     id: int
     status: str
