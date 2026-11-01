@@ -11,9 +11,11 @@ class FakeStructuredModel:
         self.result = result
         self.calls = []
         self.schema = None
+        self.kwargs = None
 
-    def with_structured_output(self, schema):
+    def with_structured_output(self, schema, **kwargs):
         self.schema = schema
+        self.kwargs = kwargs
         return self
 
     async def ainvoke(self, messages):
@@ -68,6 +70,14 @@ def test_normalize_binds_structured_schema():
     model = _model()
     QuestionNormalizer(model)
     assert model.schema is NormalizedQuestion
+    assert model.kwargs == {}
+
+
+def test_normalize_passes_configured_structured_method():
+    model = _model()
+    QuestionNormalizer(model, structured_method="function_calling")
+    assert model.schema is NormalizedQuestion
+    assert model.kwargs == {"method": "function_calling"}
 
 
 def test_prompt_files_exist_and_contain_grounding_rules():

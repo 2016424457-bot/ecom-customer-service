@@ -33,8 +33,16 @@ class QuestionNormalizer:
         self,
         model: Any,
         prompt_path: Path | str = DEFAULT_PROMPT_PATH,
+        structured_method: str | None = None,
     ) -> None:
-        self._structured = model.with_structured_output(NormalizedQuestion)
+        if structured_method is None:
+            self._structured = model.with_structured_output(
+                NormalizedQuestion
+            )
+        else:
+            self._structured = model.with_structured_output(
+                NormalizedQuestion, method=structured_method
+            )
         self._prompt = Path(prompt_path).read_text(encoding="utf-8")
 
     async def normalize(

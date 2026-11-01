@@ -35,8 +35,14 @@ class QuestionDeduplicator:
         self,
         model: Any,
         prompt_path: Path | str = DEFAULT_PROMPT_PATH,
+        structured_method: str | None = None,
     ) -> None:
-        self._structured = model.with_structured_output(DedupVerdict)
+        if structured_method is None:
+            self._structured = model.with_structured_output(DedupVerdict)
+        else:
+            self._structured = model.with_structured_output(
+                DedupVerdict, method=structured_method
+            )
         self._prompt = Path(prompt_path).read_text(encoding="utf-8")
 
     async def match(

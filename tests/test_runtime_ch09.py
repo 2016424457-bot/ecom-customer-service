@@ -150,11 +150,11 @@ def test_build_runtime_wires_observability_and_flywheel(
         constructor["model_settings"] = settings_arg
         return built_model
 
-    def fake_normalizer(model):
-        return ("normalizer", model)
+    def fake_normalizer(model, structured_method=None):
+        return ("normalizer", model, structured_method)
 
-    def fake_deduplicator(model):
-        return ("deduplicator", model)
+    def fake_deduplicator(model, structured_method=None):
+        return ("deduplicator", model, structured_method)
 
     class FakeFlywheelService:
         def __init__(
@@ -196,13 +196,66 @@ def test_build_runtime_wires_observability_and_flywheel(
     assert isinstance(runtime.flywheel, FakeFlywheelService)
     assert constructor["model_settings"] is settings
     assert constructor["session_factory"] is runtime.session_factory
-    assert constructor["normalizer"] == ("normalizer", built_model)
-    assert constructor["deduplicator"] == ("deduplicator", built_model)
+    assert constructor["normalizer"] == (
+        "normalizer",
+        built_model,
+        "function_calling",
+    )
+    assert constructor["deduplicator"] == (
+        "deduplicator",
+        built_model,
+        "function_calling",
+    )
     assert (
         constructor["candidate_limit"]
         == settings.flywheel_dedup_candidate_limit
     )
     assert constructor["enabled"] is True
+
+
+def test_build_runtime_passes_configured_structured_method(
+    clean_unit_env, monkeypatch
+):
+    settings = Settings(
+        _env_file=None,
+        openai_api_key="test",
+        structured_output_method="json_mode",
+    )
+    constructor: dict = {}
+
+    class FakeFlywheelService:
+        def __init__(
+            self, session_factory, normalizer, deduplicator, **kwargs
+        ):
+            constructor["normalizer"] = normalizer
+            constructor["deduplicator"] = deduplicator
+
+    def fake_normalizer(model, structured_method=None):
+        return ("normalizer", structured_method)
+
+    def fake_deduplicator(model, structured_method=None):
+        return ("deduplicator", structured_method)
+
+    monkeypatch.setattr(
+        runtime_module, "build_observability", lambda s: None
+    )
+    monkeypatch.setattr(
+        runtime_module, "build_flywheel_model", lambda s: object()
+    )
+    monkeypatch.setattr(
+        runtime_module, "QuestionNormalizer", fake_normalizer
+    )
+    monkeypatch.setattr(
+        runtime_module, "QuestionDeduplicator", fake_deduplicator
+    )
+    monkeypatch.setattr(
+        runtime_module, "FlywheelService", FakeFlywheelService
+    )
+
+    build_runtime(settings)
+
+    assert constructor["normalizer"] == ("normalizer", "json_mode")
+    assert constructor["deduplicator"] == ("deduplicator", "json_mode")
 
 
 def test_build_runtime_leaves_flywheel_none_when_disabled(

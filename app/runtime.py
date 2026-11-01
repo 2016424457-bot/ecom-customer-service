@@ -209,8 +209,14 @@ def build_runtime(settings: Settings) -> Runtime:
     if settings.flywheel_enabled:
         flywheel = FlywheelService(
             session_factory,
-            QuestionNormalizer(build_flywheel_model(settings)),
-            QuestionDeduplicator(build_flywheel_model(settings)),
+            QuestionNormalizer(
+                build_flywheel_model(settings),
+                structured_method=settings.structured_output_method,
+            ),
+            QuestionDeduplicator(
+                build_flywheel_model(settings),
+                structured_method=settings.structured_output_method,
+            ),
             candidate_limit=settings.flywheel_dedup_candidate_limit,
             enabled=settings.flywheel_enabled,
         )
