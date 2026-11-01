@@ -257,6 +257,14 @@ class LowConfidenceQuestion(Base):
         nullable=False,
     )
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retrieved_chunks: Mapped[list[dict] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    matched_review_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("review_queue.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -385,3 +393,57 @@ class ToolAuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
+
+
+class ReviewQueue(Base):
+    __tablename__ = "review_queue"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    normalized_question: Mapped[str] = mapped_column(
+        String(512), nullable=False
+    )
+    ai_suggested_answer: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    occurrence_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="1"
+    )
+    review_status: Mapped[str] = mapped_column(
+        Enum("待审", "通过", "驳回", name="review_status"),
+        nullable=False,
+        server_default="待审",
+    )
+    approved_answer: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+    __table_args__ = (Index("idx_review_status", "review_status"),)
+
+
+class EvalRun(Base):
+    __tablename__ = "eval_runs"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    triggered_by: Mapped[str] = mapped_column(
+        Enum("定时", "手动", name="eval_triggered_by"),
+        nullable=False,
+        server_default="定时",
+    )
+    dataset_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    metrics: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    __table_args__ = (Index("idx_created_at", "created_at"),)

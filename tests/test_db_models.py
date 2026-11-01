@@ -15,6 +15,8 @@ def test_table_and_column_names_match_schema():
         "refund_requests",
         "conversation_summaries",
         "tool_audit_logs",
+        "review_queue",
+        "eval_runs",
     }
     assert [c.name for c in Base.metadata.tables["conversations"].columns] == [
         "id",
@@ -96,6 +98,8 @@ def test_ch04_tables_and_columns():
         "raw_question",
         "source",
         "reason",
+        "retrieved_chunks",
+        "matched_review_id",
         "created_at",
     ]
     assert "faith_cases" in Base.metadata.tables

@@ -179,6 +179,24 @@ class Settings(BaseSettings):
     tool_audit_result_max_chars: int = Field(default=1000, gt=0)
     ticket_create_delay_seconds: float = Field(default=0, ge=0)
 
+    # ch09 observability + data flywheel
+    langfuse_enabled: bool = False
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_base_url: str = "https://cloud.langfuse.com"
+    langfuse_trace_name: str = "chat"
+    evidence_confidence_threshold: float = Field(
+        default=0.55, ge=0, le=1
+    )  # provisional until calibrated
+    evidence_effective_floor: float = Field(default=0.2, ge=0, le=1)
+    flywheel_enabled: bool = True
+    flywheel_dedup_candidate_limit: int = Field(default=100, gt=0)
+    flywheel_model: str = ""
+    eval_schedule_enabled: bool = False
+    eval_interval_hours: float = Field(default=24, gt=0)
+    eval_dataset_path: Path = Path("evals/ch04_eval_cases.jsonl")
+    review_queue_page_size: int = Field(default=20, gt=0)
+
     @field_validator("openai_base_url")
     @classmethod
     def validate_base_url(cls, value: str) -> str:
