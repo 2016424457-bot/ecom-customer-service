@@ -730,6 +730,21 @@ class ReviewQueueRepository:
         )
         return list(rows)
 
+    async def list_unprocessed_pool_ids(self, limit: int) -> list[int]:
+        """Pool rows the flywheel never linked, oldest first.
+
+        A worker or DB failure leaves ``matched_review_id`` NULL, so these
+        rows are what the backfill script replays. Linked rows never come
+        back, which makes rerunning the backfill idempotent.
+        """
+        rows = await self.session.scalars(
+            select(LowConfidenceQuestion.id)
+            .where(LowConfidenceQuestion.matched_review_id.is_(None))
+            .order_by(LowConfidenceQuestion.id)
+            .limit(limit)
+        )
+        return list(rows)
+
     async def insert_review(
         self, normalized_question: str, ai_suggested_answer: str
     ) -> ReviewQueue:
