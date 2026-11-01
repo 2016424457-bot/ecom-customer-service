@@ -771,6 +771,7 @@ async def refund_policy_rag(state: dict, *, deps: Any) -> dict:
             retrieval_error=str(exc),
             evidence_top=0.0,
             refund={"stage": "policy_weak", "queries": queries},
+            confidence_route="refund",
         )
         update["queries"] = queries
         return update
@@ -790,7 +791,7 @@ async def refund_policy_rag(state: dict, *, deps: Any) -> dict:
         query,
         result,
         deps,
-        trace={},
+        trace={"confidence_route": "refund"},
         assess_query=assess_query,
     )
     if update["evidence_strong"]:

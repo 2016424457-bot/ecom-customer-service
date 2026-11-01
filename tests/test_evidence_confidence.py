@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import HumanMessage
 
+from app.graph import nodes
 from app.graph.nodes import _evidence_update
 from app.knowledge.confidence import compute_confidence
 from app.knowledge.types import KnowledgeHit, RetrievalResult
@@ -220,3 +222,70 @@ async def test_caller_trace_is_merged_on_every_outcome():
 
     assert weak["trace"]["forced_rag"] is True
     assert strong["trace"]["forced_rag"] is True
+
+
+class FakeExpander:
+    async def expand(self, query, order):
+        return ["退款政策", "七天无理由"]
+
+
+def _refund_deps():
+    deps = _deps()
+    deps.query_expander = FakeExpander()
+    deps.knowledge_repository = object()
+    return deps
+
+
+def _refund_state():
+    return {
+        "messages": [HumanMessage("这个能退吗")],
+        "intent": "退款退货",
+        "standalone_query": "这个能退吗",
+    }
+
+
+async def test_refund_route_strong_trace_records_confidence_route(
+    monkeypatch,
+):
+    async def fake_search(queries, **kwargs):
+        return _result([0.9, 0.7])
+
+    monkeypatch.setattr(nodes, "search_many_result", fake_search)
+
+    update = await nodes.refund_policy_rag(
+        _refund_state(), deps=_refund_deps()
+    )
+
+    assert update["evidence_strong"] is True
+    assert update["trace"]["confidence_route"] == "refund"
+    assert update["trace"]["refund"]["stage"] == "policy"
+
+
+async def test_refund_route_weak_trace_records_confidence_route(
+    monkeypatch,
+):
+    async def fake_search(queries, **kwargs):
+        return _result([0.3, 0.25])
+
+    monkeypatch.setattr(nodes, "search_many_result", fake_search)
+
+    update = await nodes.refund_policy_rag(
+        _refund_state(), deps=_refund_deps()
+    )
+
+    assert update["evidence_strong"] is False
+    assert update["weak_source"] == "retrieval_low_conf"
+    assert update["trace"]["confidence_route"] == "refund"
+    assert update["trace"]["refund"]["stage"] == "policy_weak"
+
+
+async def test_knowledge_route_trace_has_no_confidence_route():
+    strong = await _evidence_update(
+        {}, "q", _result([0.9, 0.7]), _deps(), trace={"forced_rag": True}
+    )
+    weak = await _evidence_update(
+        {}, "q", _result([0.3, 0.25]), _deps(), trace={"forced_rag": True}
+    )
+
+    assert "confidence_route" not in strong["trace"]
+    assert "confidence_route" not in weak["trace"]
