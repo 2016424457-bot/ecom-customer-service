@@ -80,7 +80,7 @@
 - **Query 理解**：LLM 把口语问题改写成标准问法；同义词只加在检索侧，不改入库文本。
 - **引用与拒答**：`query_faq` 返回 `n / chunk_id / section_path`；回答用 `[n]` 引用；生成前做证据自评，不足则拒答并写 `low_confidence_questions`（`source='self_check'`）。
 - **评估**：48 条标注集，四策略（vector / bm25 / hybrid / hybrid_rerank）Recall@K / MRR，最终策略 Faithfulness；编造个案进 `faith_cases`。
-- **前端**：引用角标可点、来源弹层、每条回答 👍/👎 纯前端反馈、`/faith-cases` 最小管理页。
+- **前端**：引用角标可点、来源弹层、每条回答 👍/👎 反馈（CH04 时纯前端；CH09 起 👎 会落库）、`/faith-cases` 最小管理页。
 
 ## CH03 新增能力
 
@@ -286,7 +286,7 @@ CH09 新增 `review_queue`、`eval_runs` 两张表，并给 `low_confidence_ques
 mysql -h 127.0.0.1 -u root -p ecom_customer_service < sql/ch09-ddl.sql
 ```
 
-CH09 配置（`.env`；Langfuse 未配置时 tracing 与成本报告 no-op，其余飞轮/评估功能不受影响）：
+CH09 配置（`.env`；Langfuse 未配置时 tracing 为 no-op、成本报告脚本退出码 2，其余飞轮/评估功能不受影响）：
 
 ```ini
 # CH09 可观测性与数据飞轮
@@ -494,7 +494,7 @@ curl -s -X POST http://127.0.0.1:8000/api/feedback \
   -d '{"conversation_id":9526,"question":"退款多久到账？"}'
 # {"pool_id":50,"enqueued":true}
 
-# 待审队列（status 可选 待审/通过/驳回/全部，默认不过滤）
+# 待审队列（status 可选 待审/通过/驳回；省略或传空表示全部）
 curl -s "http://127.0.0.1:8000/api/review-queue?status=待审&limit=20"
 
 # 详情：规范化问题 + 关联原话 + 来源 + 召回快照
@@ -517,7 +517,7 @@ curl -s "http://127.0.0.1:8000/api/eval-runs/trend?limit=20"
 open http://127.0.0.1:8000/review-queue  # macOS；Windows/Linux 用浏览器直接访问
 ```
 
-飞轮标准化/查重与审核写回都依赖上游模型与嵌入服务；未配置密钥时聊天与落池仍可用，但 `review_queue` 行可能停在 `matched_review_id IS NULL`，由 `scripts/backfill_flywheel.py` 重试。
+飞轮标准化/查重与审核写回都依赖上游模型与嵌入服务。这里的「未配置密钥」指 Langfuse 或嵌入服务 key：聊天本身仍需有效的 `OPENAI_API_KEY`；缺这些 key 时落池仍可用，但 `review_queue` 行可能停在 `matched_review_id IS NULL`，由 `scripts/backfill_flywheel.py` 重试。
 
 ## 测试、评估与验收
 
@@ -665,7 +665,7 @@ uv run python -m scripts.calibrate_evidence
 ```
 
 - `intent_cost_report.py`：主路径 Langfuse Metrics API v2，按根 span `chat · <intent>` 的 `traceName` 分组；Metrics API 不可用时回退 Observations API，按 `traceId` 聚合。输出 Markdown 表（意图 / token / 成本 / 占比）与「最烧钱意图」。
-- `run_eval_pipeline.py`：复用 `evals/ch04_eval_cases.jsonl` 与生产对齐的 `hybrid_rerank` 参数；每条用例都检索，只有可答用例生成并跑 Faithfulness 裁判；7 个指标 + `cases` 写入 `eval_runs`，`--trigger` 只能是 `手动` / `定时`，`--limit` 可先跑少量用例。
+- `run_eval_pipeline.py`：复用 `evals/ch04_eval_cases.jsonl` 与生产对齐的 `hybrid_rerank` 参数；每条用例都检索，只有可答用例生成并跑 Faithfulness 裁判；6 个分数指标（`recall_at_1/3/5/10`、`mrr`、`faithfulness`）加 `cases`，共 7 个字段写入 `eval_runs`；`--trigger` 只能是 `手动` / `定时`，`--limit` 可先跑少量用例。
 - `show_eval_trend.py`：直接读 MySQL `eval_runs`，按时间升序计算 Δ，输出 Markdown 表；负 Δ 带 `↓`。
 - `backfill_flywheel.py`：只处理 `matched_review_id IS NULL` 的池行，逐条调用飞轮服务；单条失败记录日志后继续。飞轮 `FLYWHEEL_ENABLED=false` 时返回 1。
 - `calibrate_evidence.py`：用 `NoOpQueryRewriter` + `RERANK_MIN_SCORE` + 无 `content_type` 对齐生产知识路，扫描 0.30–0.90 阈值；报告写 `evals/reports/evidence_confidence_calibration.json`。当前默认 0.50 是 2026-11-01 的校准结果。
@@ -680,8 +680,8 @@ uv run python -m scripts.calibrate_evidence
 - 订单、商品、物流工具返回 mock 数据，不接真实系统：固定演示订单只有 1001–1003（蓝牙耳机 / 机械键盘 / 保温杯），其它合法格式订单号按号码确定性生成；FAQ 已改为 BM25 + dense 混合召回 + `bge-reranker-v2-m3` 重排；重排失败会回退 hybrid 顺序。
 - Milvus 集合 schema 新增了 `text/sparse/category` 等字段，旧库必须 `build_knowledge.py --reset --recreate` 重建；启动时检测到旧 schema 会直接报错。
 - 重排依赖 SiliconFlow rerank 权限；`scripts/smoke_rerank.py` 失败时先确认 key/地址，不要换模型。
-- 引用映射与 👍/👎 反馈只存在浏览器 localStorage；换浏览器或清缓存后旧消息的角标不可点，反馈也不可见。反馈不落库。
-- CH05 的弱证据闸写 `low_confidence_questions(source='retrieval_low_conf')`；CH04 的自评拒答仍写 `source='self_check'`；`user_feedback` 留给后续章节。
+- 引用映射与反馈按钮状态（👍/👎 选中、「已反馈」锁定）只存在浏览器 localStorage；换浏览器或清缓存后旧消息的角标不可点、按钮状态不可见。👍 仍是纯前端；👎 在 CH09 起会通过 `POST /api/feedback` 落 `low_confidence_questions(source='user_feedback')` 并带召回快照。
+- CH05 的弱证据闸写 `low_confidence_questions(source='retrieval_low_conf')`；CH04 的自评拒答仍写 `source='self_check'`；CH09 的聊天页 👎 写 `source='user_feedback'`（带 `retrieved_chunks` 快照）。
 - `faith_cases` 管理页没有认证，只适合本地演示。
 - 评估集 48 条覆盖有限，数字用于策略对比与回归，不宣称绝对质量；Faithfulness 裁判是 LLM，不是金标准。
 - Milvus 默认用 Lite 本地文件，单进程；离线建库/挖矿与在线服务不能同时打开同一个文件。生产可切 standalone。

@@ -103,7 +103,7 @@ Task 17/18 与 Task 19 验收在本机 MySQL 留下的数据，保留作为演�
 - Milvus Lite 单进程：评估、补偿、校准、审核向量化不能与服务同时打开本地文件；服务只支持 `--workers 1`。
 - 飞轮单 worker + 进程内队列，重启丢未处理项；跨进程有重复/丢更新风险，靠 `matched_review_id IS NULL` + `backfill_flywheel.py` 兜底。
 - Langfuse 默认 Cloud 仅适合演示数据；真实数据切自部署 compose。Hobby 50k units/月、30 天窗口、2 用户。
-- Langfuse 未配置时 tracing / 成本报告 no-op；Observations 回退路径的 `fields` 不含 metadata，意图可能 unknown（主路径 Metrics API 不受影响）。
+- Langfuse 未配置时 tracing 为 no-op、成本报告脚本退出码 2；Observations 回退路径的 `fields` 不含 metadata，意图可能 unknown（主路径 Metrics API 不受影响）。
 - 置信度阈值只按知识路校准；退款路沿用同阈值并记 `confidence_route="refund"`，未单独校准。
 - 审核通过失败返回 502、行保持「待审」、chunk 留 pending；重试按 `source_doc` 幂等。
 - 👎 只回捞最新一轮且文本完全一致的快照；前端锁按钮，后端不去重。
