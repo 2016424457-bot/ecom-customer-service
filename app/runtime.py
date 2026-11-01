@@ -15,8 +15,12 @@ from app.db.repositories import (
     ChatRepository,
     FaithCaseRepository,
     KnowledgeRepository,
+    ReviewQueueRepository,
 )
 from app.db.session import create_engine_and_session
+from app.flywheel.dedup import QuestionDeduplicator
+from app.flywheel.normalize import QuestionNormalizer
+from app.flywheel.service import FlywheelService
 from app.knowledge.self_check import EvidenceChecker
 from app.llm import (
     build_chat_model,
@@ -24,11 +28,13 @@ from app.llm import (
     build_evidence_check_model,
     build_expansion_model,
     build_extraction_model,
+    build_flywheel_model,
     build_intent_fast_model,
     build_intent_model,
     build_refund_judge_model,
     build_summary_model,
 )
+from app.observability import build_observability
 from app.prompt_builder import PromptBuilder
 from app.services.audit import ToolAuditWriter
 from app.services.mcp_tools import McpToolProvider
@@ -58,6 +64,7 @@ class Runtime:
     evidence_checker: Any = None
     knowledge_repository: Any = None
     faith_repository: Any = None
+    review_repository: Any = None
     context_budget: Any = None
     summary_service: Any = None
     mcp_provider: Any = None
@@ -98,11 +105,44 @@ class Runtime:
         async with self.session_factory() as session:
             yield FaithCaseRepository(session)
 
+    @asynccontextmanager
+    async def review_knowledge_scope(
+        self,
+    ) -> AsyncIterator[tuple[Any, Any]]:
+        """Review queue and knowledge repositories sharing one session."""
+        if self.session_factory is None:
+            if (
+                self.review_repository is None
+                or self.knowledge_repository is None
+            ):
+                raise RuntimeError("runtime has no review repository")
+            yield self.review_repository, self.knowledge_repository
+            return
+
+        async with self.session_factory() as session:
+            yield (
+                ReviewQueueRepository(session),
+                KnowledgeRepository(session),
+            )
+
+    async def start(self) -> None:
+        """Start background services owned by the runtime."""
+        if self.flywheel is not None:
+            await self.flywheel.start()
+
     async def aclose(self) -> None:
+        if self.flywheel is not None:
+            close = getattr(self.flywheel, "aclose", None)
+            if close is not None:
+                await close()
         if self.mcp_provider is not None:
             close = getattr(self.mcp_provider, "aclose", None)
             if close is not None:
                 await close()
+        if self.observability is not None:
+            shutdown = getattr(self.observability, "shutdown", None)
+            if shutdown is not None:
+                shutdown()
         if self.engine is not None:
             await self.engine.dispose()
 
@@ -145,6 +185,16 @@ def build_runtime(settings: Settings) -> Runtime:
         write_tools=_parse_csv(settings.mcp_write_tools),
         enabled=settings.mcp_enabled,
     )
+    observability = build_observability(settings)
+    flywheel = None
+    if settings.flywheel_enabled:
+        flywheel = FlywheelService(
+            session_factory,
+            QuestionNormalizer(build_flywheel_model(settings)),
+            QuestionDeduplicator(build_flywheel_model(settings)),
+            candidate_limit=settings.flywheel_dedup_candidate_limit,
+            enabled=settings.flywheel_enabled,
+        )
     runtime = Runtime(
         settings=settings,
         prompt_builder=PromptBuilder(
@@ -172,6 +222,8 @@ def build_runtime(settings: Settings) -> Runtime:
             session_factory,
             max_chars=settings.tool_audit_result_max_chars,
         ),
+        observability=observability,
+        flywheel=flywheel,
     )
     runtime.context_budget = compute_context_budget(settings)
     runtime.summary_service = SummaryService(

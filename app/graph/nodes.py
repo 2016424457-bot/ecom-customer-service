@@ -210,9 +210,24 @@ def _fallback_reason(state: dict) -> str:
     return "；".join(parts) or "检索证据不足"
 
 
+async def _enqueue_flywheel(deps: Any, row: Any) -> None:
+    """Queue the committed pool row; failures must never mask the reply."""
+    flywheel = getattr(deps, "flywheel", None)
+    if flywheel is None:
+        return
+    try:
+        await flywheel.enqueue(row.id)
+    except Exception as exc:  # noqa: BLE001 - enqueue must not break chat
+        logger.warning(
+            "flywheel_enqueue_failed pool_id=%s error=%r",
+            getattr(row, "id", None),
+            exc,
+        )
+
+
 async def fallback_reply(state: dict, *, deps: Any) -> dict:
     """Weak evidence: fixed reply + low-confidence pool, no Agent call."""
-    await deps.repository.insert_low_confidence_question(
+    row = await deps.repository.insert_low_confidence_question(
         state.get("conversation_id"),
         _user_text(state),
         state.get("weak_source") or "retrieval_low_conf",
@@ -220,6 +235,7 @@ async def fallback_reply(state: dict, *, deps: Any) -> dict:
         retrieved_chunks=state.get("retrieval_chunks") or None,
     )
     await deps.repository.commit()
+    await _enqueue_flywheel(deps, row)
     return {
         "answer": FALLBACK_REPLY,
         "trace": merge_trace(state, route="fallback", fallback=True),
@@ -909,7 +925,7 @@ def _refund_weak_reason(state: dict) -> str:
 
 async def refund_fallback_reply(state: dict, *, deps: Any) -> dict:
     """Weak refund-policy evidence: fixed reply plus human hand-off."""
-    await deps.repository.insert_low_confidence_question(
+    row = await deps.repository.insert_low_confidence_question(
         state.get("conversation_id"),
         _user_text(state),
         state.get("weak_source") or "retrieval_low_conf",
@@ -917,6 +933,7 @@ async def refund_fallback_reply(state: dict, *, deps: Any) -> dict:
         retrieved_chunks=state.get("retrieval_chunks") or None,
     )
     await deps.repository.commit()
+    await _enqueue_flywheel(deps, row)
     actions = [
         {"type": "transfer_human"},
         {

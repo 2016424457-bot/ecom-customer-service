@@ -18,16 +18,25 @@ def test_lifespan_initializes_and_closes_graph(monkeypatch):
     async def aclose():
         calls.append(("aclose", None))
 
+    async def start():
+        calls.append(("start", None))
+
     monkeypatch.setattr(graph_runtime, "init_graph", fake_init)
     monkeypatch.setattr(graph_runtime, "close_graph", fake_close)
 
     runtime = SimpleNamespace(
         settings=SimpleNamespace(log_level="INFO"),
         aclose=aclose,
+        start=start,
     )
     app = create_app(runtime=runtime)
 
     with TestClient(app):
         pass
 
-    assert [name for name, _ in calls] == ["init", "close", "aclose"]
+    assert [name for name, _ in calls] == [
+        "init",
+        "start",
+        "close",
+        "aclose",
+    ]

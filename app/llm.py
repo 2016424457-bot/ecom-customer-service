@@ -46,6 +46,17 @@ def build_chat_model(settings: Settings) -> ChatOpenAI:
     return ChatOpenAI(**kwargs)
 
 
+def build_flywheel_model(settings: Settings) -> ChatOpenAI:
+    """Create the plain model wrapped by the flywheel normalizer/dedup."""
+    kwargs = build_model_kwargs(
+        settings,
+        temperature=settings.chat_temperature,
+        max_tokens=settings.chat_max_tokens,
+    )
+    kwargs["model"] = settings.flywheel_model or settings.openai_model
+    return ChatOpenAI(**kwargs)
+
+
 def build_intent_model(settings: Settings) -> Runnable:
     """Create the structured-output runnable used for intent classification."""
     kwargs = build_model_kwargs(

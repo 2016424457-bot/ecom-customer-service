@@ -71,6 +71,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_application: FastAPI):
         await graph_runtime.init_graph(runtime.settings)
+        await runtime.start()
         yield
         await graph_runtime.close_graph()
         await runtime.aclose()
