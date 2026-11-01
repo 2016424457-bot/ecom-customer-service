@@ -4,6 +4,7 @@ Every test injects fake deps: no network, model or database is touched.
 """
 
 import json
+import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -581,6 +582,50 @@ async def test_build_eval_deps_constructs_real_collaborators(
         assert deps.reranker is None
 
     assert entered == [True]
+
+
+async def test_pipeline_warns_when_gold_locators_unresolved(
+    clean_unit_env, tmp_path, monkeypatch, caplog
+):
+    unresolved_case = {
+        "id": "A99",
+        "bucket": "A_policy",
+        "difficulty": "easy",
+        "query": "运费险怎么赔",
+        "answerable": True,
+        "gold": [{"source_doc": "missing.md", "contains": "任意"}],
+        "note": "",
+    }
+    cases = [CASES[0], unresolved_case]
+    hits = {"七天无理由": [10], "运费险怎么赔": []}
+    env = _build_env(tmp_path, cases=cases, hits=hits)
+
+    with caplog.at_level(
+        logging.WARNING, logger="app.services.eval_pipeline"
+    ):
+        metrics = await _run(env, monkeypatch)
+
+    assert "gold_unresolved=['A99']" in caplog.text
+    assert set(metrics) == METRIC_KEYS
+    assert env.eval_repository.inserted[0]["dataset_size"] == 2
+
+
+async def test_pipeline_warns_when_knowledge_store_is_empty(
+    clean_unit_env, tmp_path, monkeypatch, caplog
+):
+    env = _build_env(tmp_path, rows=[])
+
+    with caplog.at_level(
+        logging.WARNING, logger="app.services.eval_pipeline"
+    ):
+        metrics = await _run(env, monkeypatch)
+
+    assert "eval_knowledge_chunks_empty" in caplog.text
+    assert "gold_unresolved=" in caplog.text
+    assert metrics["recall_at_1"] == 0.0
+    assert metrics["recall_at_10"] == 0.0
+    assert metrics["mrr"] == 0.0
+    assert env.eval_repository.inserted[0]["dataset_size"] == len(CASES)
 
 
 class FakeInsertSession:

@@ -111,7 +111,14 @@ async def _run_pipeline(
 ) -> dict[str, float | int]:
     cases = load_cases(settings.eval_dataset_path, limit)
     rows = await deps.knowledge_repository.list_done_chunks()
-    resolve_gold(cases, rows)
+    if not rows:
+        logger.warning(
+            "eval_knowledge_chunks_empty dataset=%s",
+            settings.eval_dataset_path,
+        )
+    unresolved = resolve_gold(cases, rows)
+    if unresolved:
+        logger.warning("gold_unresolved=%s", unresolved)
 
     rewriter = NoOpQueryRewriter()
     answerable_total = 0
