@@ -265,6 +265,29 @@
     }
   }
 
+  function postFeedback(item, value) {
+    if (value !== "down") return;
+    if (typeof item.question !== "string" || !item.question.trim()) return;
+    const target = conversationId || Number(sessionId);
+    if (!Number.isInteger(target) || target <= 0) return;
+    void fetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conversation_id: target,
+        question: item.question,
+      }),
+    })
+      .then((response) => {
+        if (!response.ok) {
+          console.warn("反馈提交失败", response.status);
+        }
+      })
+      .catch((error) => {
+        console.warn("反馈提交失败", error);
+      });
+  }
+
   function renderFeedback(feedbackEl, item) {
     feedbackEl.textContent = "";
     const locked = item.feedback === "up" || item.feedback === "down";
@@ -288,6 +311,7 @@
         item.feedback = value;
         saveHistory();
         renderFeedback(feedbackEl, item);
+        postFeedback(item, value);
       });
       return button;
     });
@@ -961,9 +985,25 @@
       const items = Array.isArray(data && data.items)
         ? data.items
         : [];
+      const sameConversation =
+        conversationId === target || Number(sessionId) === target;
+      const priorFeedback = new Map();
+      if (sameConversation) {
+        for (const item of history) {
+          if (
+            item &&
+            item.role === "assistant" &&
+            item.feedback &&
+            typeof item.text === "string"
+          ) {
+            priorFeedback.set(item.text, item.feedback);
+          }
+        }
+      }
       sessionId = String(target);
       conversationId = target;
       saveSessionId();
+      let lastUserText = null;
       history = items
         .filter(
           (item) =>
@@ -971,10 +1011,24 @@
             (item.role === "user" || item.role === "assistant") &&
             typeof item.content === "string",
         )
-        .map((item) => ({
-          role: item.role,
-          text: item.content,
-        }));
+        .map((item) => {
+          if (item.role === "user") {
+            lastUserText = item.content;
+            return {
+              role: "user",
+              text: item.content,
+            };
+          }
+          const mapped = {
+            role: "assistant",
+            text: item.content,
+            question: lastUserText,
+          };
+          if (priorFeedback.has(item.content)) {
+            mapped.feedback = priorFeedback.get(item.content);
+          }
+          return mapped;
+        });
       saveHistory();
       renderHistory();
       showSuggestions(false);
@@ -1121,6 +1175,7 @@
     const assistantItem = {
       role: "assistant",
       text: "",
+      question: text,
       tools: [],
       citations: [],
       actions: [],
