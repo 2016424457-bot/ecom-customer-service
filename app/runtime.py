@@ -13,6 +13,7 @@ from app.config import Settings
 from app.context import compute_context_budget
 from app.db.repositories import (
     ChatRepository,
+    EvalRunRepository,
     FaithCaseRepository,
     KnowledgeRepository,
     ReviewQueueRepository,
@@ -37,6 +38,7 @@ from app.llm import (
 from app.observability import build_observability
 from app.prompt_builder import PromptBuilder
 from app.services.audit import ToolAuditWriter
+from app.services.eval_scheduler import EvalScheduler
 from app.services.mcp_tools import McpToolProvider
 from app.sessions import ConversationLocks
 from app.summarizer import SummaryService
@@ -65,12 +67,14 @@ class Runtime:
     knowledge_repository: Any = None
     faith_repository: Any = None
     review_repository: Any = None
+    eval_repository: Any = None
     context_budget: Any = None
     summary_service: Any = None
     mcp_provider: Any = None
     audit_writer: Any = None
     observability: Any | None = None
     flywheel: Any | None = None
+    eval_scheduler: Any | None = None
 
     @asynccontextmanager
     async def repository_scope(self) -> AsyncIterator[Any]:
@@ -106,6 +110,17 @@ class Runtime:
             yield FaithCaseRepository(session)
 
     @asynccontextmanager
+    async def eval_repository_scope(self) -> AsyncIterator[Any]:
+        if self.session_factory is None:
+            if self.eval_repository is None:
+                raise RuntimeError("runtime has no eval repository")
+            yield self.eval_repository
+            return
+
+        async with self.session_factory() as session:
+            yield EvalRunRepository(session)
+
+    @asynccontextmanager
     async def review_knowledge_scope(
         self,
     ) -> AsyncIterator[tuple[Any, Any]]:
@@ -129,8 +144,12 @@ class Runtime:
         """Start background services owned by the runtime."""
         if self.flywheel is not None:
             await self.flywheel.start()
+        if self.eval_scheduler is not None:
+            await self.eval_scheduler.start()
 
     async def aclose(self) -> None:
+        if self.eval_scheduler is not None:
+            await self.eval_scheduler.aclose()
         if self.flywheel is not None:
             close = getattr(self.flywheel, "aclose", None)
             if close is not None:
@@ -195,6 +214,20 @@ def build_runtime(settings: Settings) -> Runtime:
             candidate_limit=settings.flywheel_dedup_candidate_limit,
             enabled=settings.flywheel_enabled,
         )
+
+    async def run_scheduled_eval() -> None:
+        # Imported lazily so runtime assembly stays independent of the
+        # evaluation pipeline's model/retrieval stack at import time.
+        from app.services.eval_pipeline import run_eval_pipeline
+
+        await run_eval_pipeline(
+            settings=settings,
+            session_factory=session_factory,
+            trigger="定时",
+        )
+
+    eval_scheduler = EvalScheduler(settings, run_scheduled_eval)
+
     runtime = Runtime(
         settings=settings,
         prompt_builder=PromptBuilder(
@@ -224,6 +257,7 @@ def build_runtime(settings: Settings) -> Runtime:
         ),
         observability=observability,
         flywheel=flywheel,
+        eval_scheduler=eval_scheduler,
     )
     runtime.context_budget = compute_context_budget(settings)
     runtime.summary_service = SummaryService(
