@@ -585,6 +585,16 @@ class KnowledgeRepository:
         rows.reverse()
         return rows
 
+    async def get_chunk_by_source_doc(
+        self, source_doc: str
+    ) -> KnowledgeChunk | None:
+        return await self.session.scalar(
+            select(KnowledgeChunk)
+            .where(KnowledgeChunk.source_doc == source_doc)
+            .order_by(KnowledgeChunk.id)
+            .limit(1)
+        )
+
     async def get_chunk_by_id(
         self, chunk_id: int
     ) -> KnowledgeChunk | None:

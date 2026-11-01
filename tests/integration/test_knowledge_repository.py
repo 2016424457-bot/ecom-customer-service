@@ -84,6 +84,20 @@ async def test_count_and_delete_chunks_by_source(session):
     assert await repo.get_chunks_by_ids([second])
 
 
+async def test_get_chunk_by_source_doc_returns_lowest_id(session):
+    repo = KnowledgeRepository(session)
+    source = f"src-{uuid.uuid4().hex[:8]}.md"
+    first = await _insert_chunk(repo, source_doc=source, questions="第一问")
+    await _insert_chunk(repo, source_doc=source, questions="第二问")
+
+    row = await repo.get_chunk_by_source_doc(source)
+
+    assert row is not None
+    assert row.id == first
+    missing = f"missing-{uuid.uuid4().hex[:8]}.md"
+    assert await repo.get_chunk_by_source_doc(missing) is None
+
+
 async def test_neighbor_pointers_round_trip(session):
     repo = KnowledgeRepository(session)
     ids = [

@@ -200,6 +200,45 @@ async def vectorize_pending(
     return done
 
 
+async def vectorize_chunk(
+    repository: Any,
+    settings: Settings,
+    chunk_id: int,
+    *,
+    store: VectorStore | None = None,
+    embedder: Embedder = embed_texts,
+) -> None:
+    row = await repository.get_chunk_by_id(chunk_id)
+    if row is None:
+        raise ValueError(f"knowledge chunk {chunk_id} not found")
+
+    text = f"{row.category}\n{row.questions}\n{row.answer}"
+    vectors = await embedder([text], settings)
+    if len(vectors) != 1:
+        raise RuntimeError(
+            f"embedding count {len(vectors)} != chunk count 1"
+        )
+    vector = vectors[0]
+    if len(vector) != settings.embed_dim:
+        raise RuntimeError(
+            f"embedding dim {len(vector)} != {settings.embed_dim}"
+        )
+
+    vector_store = _resolve_store(store, settings)
+    record = VectorRecord(
+        id=row.id,
+        text=text,
+        vector=vector,
+        category=row.category,
+        content_type=row.content_type,
+        section_path=row.section_path,
+        source_doc=row.source_doc,
+    )
+    await acall(vector_store.upsert, [record])
+    await repository.mark_chunk_vectorized(row.id, str(row.id))
+    await repository.commit()
+
+
 async def verify_vectors(
     repository: Any,
     settings: Settings,
