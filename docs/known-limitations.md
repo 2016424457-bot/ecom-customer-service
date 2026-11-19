@@ -1,0 +1,49 @@
+# 已知限制
+
+以下是逐章累积的边界与约束，按出现顺序排列。README 只保留影响理解与部署的要点。
+
+- 同一会话的串行锁在进程内；`AsyncSqliteSaver` 也是单文件、单进程，本章仅支持 `--workers 1`。测试用 `InMemorySaver` 注入；真实 checkpointer 冒烟可跑 `python -m scripts.smoke_langgraph`（checkpointer 依赖已随 `uv.lock` 安装）。
+- 图历史由 checkpointer 持有（含工具消息），MySQL `messages` 只审计 user/assistant 正文；如果删除 `CHECKPOINTER_DB_PATH` 对应 sqlite 文件，图上下文会丢失，但审计消息仍在。
+- 订单、商品、物流工具返回 mock 数据，不接真实系统：固定演示订单只有 1001–1003（蓝牙耳机 / 机械键盘 / 保温杯），其它合法格式订单号按号码确定性生成；FAQ 已改为 BM25 + dense 混合召回 + `bge-reranker-v2-m3` 重排；重排失败会回退 hybrid 顺序。
+- Milvus 集合 schema 新增了 `text/sparse/category` 等字段，旧库必须 `build_knowledge.py --reset --recreate` 重建；启动时检测到旧 schema 会直接报错。
+- 重排依赖 SiliconFlow rerank 权限；`scripts/smoke_rerank.py` 失败时先确认 key/地址，不要换模型。
+- 引用映射与反馈按钮状态（👍/👎 选中、「已反馈」锁定）只存在浏览器 localStorage；换浏览器或清缓存后旧消息的角标不可点、按钮状态不可见。👍 仍是纯前端；👎 在 CH09 起会通过 `POST /api/feedback` 落 `low_confidence_questions(source='user_feedback')` 并带召回快照。
+- CH05 的弱证据闸写 `low_confidence_questions(source='retrieval_low_conf')`；CH04 的自评拒答仍写 `source='self_check'`；CH09 的聊天页 👎 写 `source='user_feedback'`（带 `retrieved_chunks` 快照）。
+- `faith_cases` 管理页没有认证，只适合本地演示。
+- 评估集 48 条覆盖有限，数字用于策略对比与回归，不宣称绝对质量；Faithfulness 裁判是 LLM，不是金标准。
+- Milvus 默认用 Lite 本地文件，单进程；离线建库/挖矿与在线服务不能同时打开同一个文件。生产可切 standalone。
+- 嵌入依赖外部 OpenAI 兼容服务；没有 `EMBED_API_KEY` 时建库、挖矿向量化和在线检索都不可用。
+- 挖矿去重是规范化问题文本的精确去重，换说法的近重复可能同时入库；挖矿质量受 LLM 波动影响，评估集只是底线。
+- CH05 起 `create_ticket` 只写 `tickets`，不再把会话状态改成“已转人工”；转人工是前端模拟，不接真人系统。Agent 调 `create_ticket` 只生成前端可选项，不会自动建单；只有 `POST /api/actions/create-ticket` 会写库。
+- 业务数据类（物流/订单/售后）Agent 自调 `query_faq` 时，本章不把 FAQ 结果回收成 `citations`；引用只在知识类强制检索路径产出。
+- SSE 按 `agent_llm` 节点过滤 token；工具调用轮的过渡文本可能先短暂显示，随后 `reset` 清空气泡文本；最终气泡只保留最终答案。Prompt 仍要求模型不要在工具轮输出长篇过渡语。
+- 建工单表单不预填后端 `draft`，类别与描述由用户当场填写；这是 spec §6.3 的有意设计。
+- CH06 的意图、coref、扩写、退款判定都是 Prompt 模型输出，存在非确定性；标注评估集（22 用例 / 26 轮）是回归底线，数字不代表线上绝对准确率。
+- `INTENT_FAST_MODEL` 只做一次「小模型判 → 低置信升级大模型」；没有更复杂的级联或人工标注回流。大模型仍低置信归「其他」，宁可不猜。
+- Milvus Lite 是单文件后端，多路 Query 必须串行检索（并发 provisioning 会抢锁）；换 standalone Milvus 后可再考虑并行。
+- 退款单号 `RYYYYMMDDNNN` 按当日计数生成（沿用 `tickets` 的模式），不是幂等键；重复提交会产生多张退款单，前端只靠按钮置灰防重复。
+- 退款判定依赖 LLM 结构化输出；`eligible=null`（证据不足）时不发退款表单，只给解释与转人工/建工单选项。
+- 订单卡片与退款表单经过真实浏览器验收（截图 `dev-notes/ch06-acceptance4.jpg`），没有自动化前端测试。
+- 没有用户认证、限流、计费或多租户隔离，不要直接暴露到公网。
+- 默认只监听 `127.0.0.1`，仅适合本地开发与验收。
+- 经反向代理或网关访问时，代理可能缓冲 SSE 导致 token 不能实时到达；请为流式响应设置 `X-Accel-Buffering: no`（Nginx）或关闭代理缓冲。
+- Prompt 中的业务信息（品牌名、服务时间）来自 `.env`，本章不接入订单/物流 API，无法核实真实订单状态。
+- `LOG_CONTENT=false` 默认不记录用户消息与模型回复全文；改为 `true` 会把全文写入日志，存在隐私风险。
+- 模型输出具有不确定性；评估脚本中的关键词检查只是底线，不能替代人工复核。
+- CH07 的摘要任务在应用进程内 `asyncio.create_task`：服务重启会丢在跑任务，但触发条件仍在，下一轮会重触发；`--workers 1` 约束不变。
+- 摘要输入是轮结束时的 State 快照（含工具消息），不是 MySQL `messages` 表；工具结果本来就不落库。
+- 锚点是用户消息 id；CH07 上线前的旧消息没有 `db-` 锚点，会全部落层1并靠 `trim_messages` 兜底，不会崩但也不参与摘要。
+- 本章不做语义检索捞历史、主题重要度留关键事实、跨会话长期记忆或用户画像；层2半压 + 分段摘要就是本章的完整方案。
+- `SUMMARY_MODEL` 留空复用主聊天模型；摘要 prompt 评估是 4 条标注样例，模型非确定性，数字是底线不是线上承诺。
+- `log/app.log` 会记录摘要全文与滑窗消息前 40 字；生产环境需按隐私要求控制访问与轮转。
+- 演示配置（`MODEL_CONTEXT_WINDOW=18000`）会主动触发降级/摘要；默认窗口 20+ 轮不应出现压缩日志。两者用途不同，不要拿演示配置当生产默认。
+- **Milvus Lite 单进程**：评估流水线、`backfill_flywheel.py`、`calibrate_evidence.py` 与审核通过向量化都会打开本地 Milvus 文件，必须保证同一时间只有一个进程；跑批前先停服务（或切 standalone Milvus）。服务仍只支持 `--workers 1`。
+- **飞轮单 worker**：`FlywheelService` 在应用进程内用单 worker + `asyncio.Queue` 串行处理；服务重启会丢未处理队列，靠 `matched_review_id IS NULL` 与 `backfill_flywheel.py` 补偿。多进程部署有跨进程重复/丢更新风险，本章不覆盖。
+- **Langfuse Cloud 数据边界与额度**：课程演示数据可上传；真实客服数据（用户原话、检索片段、LLM 输入输出）不应发往 Cloud，应切自部署 compose。Hobby 50k units/月、30 天访问窗口、2 用户；`units = traces + observations + scores`，超量需升级。
+- **Langfuse 未配置时**：tracing 与成本报告不可用（`intent_cost_report.py` 返回 2）；聊天、飞轮、评估不受影响。成本报告实测（Langfuse 4.x）Metrics API 的 `traceName` 维度不归属子 observation 的 token：token 落在 `traceName=None` 行、具名行只有 0；脚本检测到该形态即回退 Observations API v2（`fields=core,basic,usage,metadata`，cursor 分页，最多 100 页 / 1 万条 observation），按 `traceId` 用根 observation 的 `metadata.intent` 归属子 observation 的 usage / cost，无 intent 的 trace 记 `unknown`。
+- **置信度阈值只按知识路校准**：0.50 来自 CH04 48 条数据集与 `hybrid_rerank`；退款/售后政策路沿用同一阈值并记 `confidence_route="refund"`，分数分布不同，未单独校准。重排服务故障时机械闸跳过，只靠自评，可能放宽回答。
+- **审核写回**：通过时先 commit `pending` chunk 再向量化，失败返回 502、审核行保持「待审」、chunk 留 pending；重试按 `source_doc=review_queue:{id}` 幂等。驳回原因只写日志，DDL 没有该列。
+- **👎 快照尽力回捞**：`POST /api/feedback` 只从最新 checkpoint 找与 `question` 完全一致的最后一条用户消息；更早轮次或文本不一致时快照为 `NULL`。前端对单条消息锁定反馈按钮，后端不做去重。
+- **审核页分页常量**：`REVIEW_QUEUE_PAGE_SIZE` 已进配置，但静态页当前用 JS 常量 `PAGE_SIZE = 20` 对齐，改配置不会自动传导到页面。
+- **评估数字用于回归，不是线上承诺**：CH04 数据集 48 条覆盖有限；Faithfulness 由 LLM 裁判，非金标准；模型非确定性会导致轮次间抖动。
+- **CH09 DDL 不是幂等脚本**：`sql/ch09-ddl.sql` 按用户给定原文照录，重复执行会因表/列已存在报错；新库按顺序执行一次即可。
