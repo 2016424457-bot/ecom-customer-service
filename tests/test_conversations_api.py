@@ -6,6 +6,12 @@ import pytest
 from fastapi import HTTPException
 
 from app.api import conversations
+from app.auth import SessionUser
+
+
+TEST_USER = SessionUser(
+    id=1, username="u1", role="user", display_name="U1"
+)
 
 
 class Row:
@@ -30,7 +36,7 @@ class FakeRepo:
     async def get_conversation(self, conversation_id):
         if not self.exists:
             return None
-        return SimpleNamespace(id=conversation_id)
+        return SimpleNamespace(id=conversation_id, user_id="user:1")
 
     async def list_messages(self, conversation_id):
         return self.rows
@@ -58,18 +64,18 @@ async def test_list_conversations_serializes_items():
     )
 
     response = await conversations.list_conversations(
-        user_id="u1", limit=50, runtime=_runtime(repo)
+        user_id="u1", limit=50, runtime=_runtime(repo), user=TEST_USER
     )
 
     assert response.items[0].id == 7
     assert response.items[0].has_summary is True
-    assert repo.called == ("u1", 50)
+    assert repo.called == ("user:1", 50)
 
 
 async def test_messages_404_when_missing():
     with pytest.raises(HTTPException) as exc_info:
         await conversations.list_messages(
-            99, runtime=_runtime(FakeRepo(exists=False))
+            99, runtime=_runtime(FakeRepo(exists=False)), user=TEST_USER
         )
 
     assert exc_info.value.status_code == 404
@@ -85,7 +91,7 @@ async def test_messages_filters_tool_rows():
     )
 
     response = await conversations.list_messages(
-        5, runtime=_runtime(repo)
+        5, runtime=_runtime(repo), user=TEST_USER
     )
 
     assert [item.role for item in response.items] == [

@@ -5,6 +5,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.auth import require_admin
 from app.knowledge.build import vectorize_chunk
 from app.runtime import Runtime, get_runtime
 from app.schemas import (
@@ -16,7 +17,7 @@ from app.schemas import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 # The app runs single-process (see README), so a process-local lock is
 # enough to serialize approvals and keep one review row from being written

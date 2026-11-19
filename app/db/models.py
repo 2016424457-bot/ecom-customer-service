@@ -447,3 +447,28 @@ class EvalRun(Base):
         DateTime, nullable=False, server_default=func.now()
     )
     __table_args__ = (Index("idx_created_at", "created_at"),)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    username: Mapped[str] = mapped_column(
+        String(32), nullable=False, unique=True
+    )
+    password_hash: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    role: Mapped[str] = mapped_column(
+        Enum("user", "admin", name="user_role"),
+        nullable=False,
+        server_default="user",
+    )
+    display_name: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )

@@ -66,7 +66,7 @@ def fake_runtime(
     extract = tmp_path / "extract.txt"
     extract.write_text("抽取", encoding="utf-8")
     repository = FakeRepository()
-    repository.conversations[1] = FakeConversation(id=1, user_id="u1")
+    repository.conversations[1] = FakeConversation(id=1, user_id="user:1")
     return Runtime(
         settings=Settings(_env_file=None, openai_api_key="test"),
         prompt_builder=PromptBuilder(

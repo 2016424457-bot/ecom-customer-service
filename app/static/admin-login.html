@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#8f8f8f" />
+  <title>管理员登录 · 示例商城</title>
+  <link rel="stylesheet" href="/static/auth.css?v=1" />
+</head>
+<body>
+  <main class="auth-card">
+    <div class="brand-row">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8.4 11.6h15.2l-1.2 12.1a2 2 0 0 1-2 1.9H11.6a2 2 0 0 1-2-1.9L8.4 11.6Z"></path>
+          <path d="M12.4 11.6V10a3.6 3.6 0 0 1 7.2 0v1.6"></path>
+        </svg>
+      </span>
+      <span class="brand-name">示例商城</span>
+      <span class="brand-sub">运营后台</span>
+    </div>
+
+    <h1 class="auth-title">管理员登录。</h1>
+    <p class="auth-lede">审核知识缺口、维护编造台账、查看数据飞轮。</p>
+
+    <form class="auth-form" data-auth-form data-endpoint="/api/auth/login" data-portal="admin" data-next="/review-queue">
+      <label class="field">
+        <span>管理员账号</span>
+        <input type="text" name="username" autocomplete="username" placeholder="管理员账号" required />
+      </label>
+      <label class="field">
+        <span>密码</span>
+        <input type="password" name="password" autocomplete="current-password" placeholder="请输入密码" required />
+      </label>
+      <p class="form-error" role="alert"></p>
+      <button class="btn btn--primary" type="submit">进入后台</button>
+    </form>
+
+    <div class="auth-divider"></div>
+    <div class="auth-alt">
+      <span>顾客请使用顾客登录入口</span>
+      <a href="/login">顾客入口 →</a>
+    </div>
+
+    <p class="demo-hint">内置管理员：<b>admin / admin1234</b>。后台与顾客端是两套独立页面，登录后不会看到对方的内容。</p>
+  </main>
+
+  <script type="module" src="/static/water-bg.js?v=2"></script>
+  <script src="/static/auth.js?v=1"></script>
+</body>
+</html>

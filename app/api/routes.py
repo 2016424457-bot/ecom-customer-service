@@ -9,9 +9,16 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.errors import AppError, map_upstream_error
+from app.auth import (
+    SessionUser,
+    get_owned_conversation,
+    require_admin,
+    require_user,
+)
 from app.graph import runtime as graph_runtime
 from app.graph.nodes import resolve_answer
 from app.runtime import Runtime, get_runtime
+from app.session_id import parse_conversation_id
 from app.schemas import (
     AfterSalesExtraction,
     AgentRequest,
@@ -26,7 +33,12 @@ from app.schemas import (
     ToolCallView,
     ToolResultView,
 )
-from app.services.chat import resume_chat, stream_chat
+from app.services.chat import (
+    HANDOFF_STATUS,
+    actions_after_handoff,
+    resume_chat,
+    stream_chat,
+)
 from app.services.extraction import extract_after_sales
 
 logger = logging.getLogger(__name__)
@@ -172,7 +184,11 @@ async def agent_endpoint(
         answer=resolve_answer(state),
         tool_calls=calls,
         tool_results=results,
-        suggested_actions=state.get("suggested_actions", []) or [],
+        suggested_actions=actions_after_handoff(
+            state.get("suggested_actions", []),
+            getattr(conversation, "status", "") == HANDOFF_STATUS,
+            payload.message,
+        ),
         pending_confirm=out.get("pending_confirm"),
     )
 
@@ -181,12 +197,20 @@ async def agent_endpoint(
 async def chat_stream_endpoint(
     payload: ChatRequest,
     runtime: Runtime = Depends(get_runtime),
+    user: SessionUser = Depends(require_user),
 ) -> AsyncIterator[ServerSentEvent]:
     """Stream one chat turn as Server-Sent Events."""
     async with runtime.repository_scope() as repository:
+        session_conversation_id = parse_conversation_id(
+            payload.session_id
+        )
+        if session_conversation_id is not None:
+            await get_owned_conversation(
+                repository, session_conversation_id, user
+            )
         async for event, data in stream_chat(
             session_id=payload.session_id,
-            user_id=payload.user_id,
+            user_id=user.user_key,
             user_message=payload.message,
             chat_model=runtime.chat_model,
             repository=repository,
@@ -218,9 +242,10 @@ async def chat_stream_endpoint(
 async def chat_endpoint(
     payload: ChatRequest,
     runtime: Runtime = Depends(get_runtime),
+    user: SessionUser = Depends(require_user),
 ) -> AsyncIterator[ServerSentEvent]:
     """Alias for /api/chat/stream kept for the CH05 spec."""
-    async for event in chat_stream_endpoint(payload, runtime):
+    async for event in chat_stream_endpoint(payload, runtime, user):
         yield event
 
 
@@ -228,9 +253,13 @@ async def chat_endpoint(
 async def chat_resume_endpoint(
     payload: ChatResumeRequest,
     runtime: Runtime = Depends(get_runtime),
+    user: SessionUser = Depends(require_user),
 ) -> AsyncIterator[ServerSentEvent]:
     """Resume a paused ticket confirmation as Server-Sent Events."""
     async with runtime.repository_scope() as repository:
+        await get_owned_conversation(
+            repository, payload.conversation_id, user
+        )
         async for event, data in resume_chat(
             conversation_id=payload.conversation_id,
             decision=payload.decision,
@@ -265,8 +294,13 @@ async def chat_resume_endpoint(
 async def chat_pending_endpoint(
     conversation_id: int = Query(gt=0),
     runtime: Runtime = Depends(get_runtime),
+    user: SessionUser = Depends(require_user),
 ) -> dict[str, Any]:
     """Return the pending ticket preview for a conversation, if any."""
+    async with runtime.repository_scope() as repository:
+        await get_owned_conversation(
+            repository, conversation_id, user
+        )
     preview = await graph_runtime.get_pending(
         runtime.settings, conversation_id
     )
@@ -277,14 +311,13 @@ async def chat_pending_endpoint(
 async def feedback_endpoint(
     payload: FeedbackRequest,
     runtime: Runtime = Depends(get_runtime),
+    user: SessionUser = Depends(require_user),
 ) -> dict[str, Any]:
     """Record a user 👎 in the question pool and enqueue the flywheel."""
     async with runtime.repository_scope() as repository:
-        conversation = await repository.get_conversation(
-            payload.conversation_id
+        await get_owned_conversation(
+            repository, payload.conversation_id, user
         )
-        if conversation is None:
-            raise HTTPException(status_code=404, detail="会话不存在")
 
         try:
             values = await graph_runtime.get_conversation_state(
@@ -334,6 +367,7 @@ async def feedback_endpoint(
 async def chat_extract_endpoint(
     payload: ChatExtractRequest,
     runtime: Runtime = Depends(get_runtime),
+    _user: SessionUser = Depends(require_user),
 ) -> AfterSalesExtraction:
     """Extract the fixed after-sales fields from one message."""
     return await extract_after_sales(
@@ -350,6 +384,7 @@ async def chat_extract_endpoint(
 async def knowledge_chunk_detail(
     chunk_id: int,
     runtime: Runtime = Depends(get_runtime),
+    _user: SessionUser = Depends(require_user),
 ) -> KnowledgeChunkDetail:
     """Return the source chunk behind a citation."""
     async with runtime.knowledge_repository_scope() as repository:
@@ -366,6 +401,7 @@ async def list_faith_cases(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     runtime: Runtime = Depends(get_runtime),
+    _admin: SessionUser = Depends(require_admin),
 ) -> dict:
     """List the faithfulness forensics ledger."""
     async with runtime.faith_repository_scope() as repository:
@@ -389,6 +425,7 @@ async def update_faith_case(
     case_id: int,
     payload: FaithCaseUpdate,
     runtime: Runtime = Depends(get_runtime),
+    _admin: SessionUser = Depends(require_admin),
 ) -> FaithCaseOut:
     """Change a case's status and resolution."""
     if payload.status != "未解决" and not (

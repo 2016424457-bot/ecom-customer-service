@@ -3,18 +3,38 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.auth import SessionUser, get_owned_conversation, require_user
 from app.runtime import Runtime, get_runtime
 from app.schemas import (
     CreateTicketRequest,
     CreateTicketResponse,
     SubmitRefundRequest,
     SubmitRefundResponse,
+    TransferHumanRequest,
 )
 from app.services.refunds import REFUND_REASON_CODES, create_refund_record
 from app.services.tickets import create_ticket_record
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.post("/api/actions/transfer-human")
+async def transfer_human_action(
+    payload: TransferHumanRequest,
+    runtime: Runtime = Depends(get_runtime),
+    user: SessionUser = Depends(require_user),
+) -> dict[str, str]:
+    """Mark the conversation as handed off so转人工 is not offered again."""
+    async with runtime.repository_scope() as repository:
+        conversation = await get_owned_conversation(
+            repository, payload.conversation_id, user
+        )
+        await repository.set_conversation_status(
+            conversation.id, "已转人工"
+        )
+        await repository.commit()
+    return {"status": "已转人工"}
 
 
 @router.post(
@@ -24,14 +44,13 @@ router = APIRouter()
 async def create_ticket_action(
     payload: CreateTicketRequest,
     runtime: Runtime = Depends(get_runtime),
+    user: SessionUser = Depends(require_user),
 ) -> CreateTicketResponse:
     """Write a ticket only after the user clicks the button and submits the form."""
     async with runtime.repository_scope() as repository:
-        conversation = await repository.get_conversation(
-            payload.conversation_id
+        await get_owned_conversation(
+            repository, payload.conversation_id, user
         )
-        if conversation is None:
-            raise HTTPException(status_code=404, detail="会话不存在")
 
         try:
             ticket = await create_ticket_record(
@@ -72,6 +91,7 @@ async def create_ticket_action(
 async def submit_refund_action(
     payload: SubmitRefundRequest,
     runtime: Runtime = Depends(get_runtime),
+    user: SessionUser = Depends(require_user),
 ) -> SubmitRefundResponse:
     """Persist a refund request only after the user submits the fixed form."""
     if payload.reason_code not in REFUND_REASON_CODES:
@@ -81,13 +101,9 @@ async def submit_refund_action(
 
     async with runtime.repository_scope() as repository:
         try:
-            conversation = await repository.get_conversation(
-                payload.conversation_id
+            await get_owned_conversation(
+                repository, payload.conversation_id, user
             )
-            # HTTPException is not a SQLAlchemyError, so the 404 still
-            # propagates while DB failures map to 503 below.
-            if conversation is None:
-                raise HTTPException(status_code=404, detail="会话不存在")
 
             refund = await create_refund_record(
                 repository,

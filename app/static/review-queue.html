@@ -3,60 +3,77 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#1f4d3a" />
-  <title>知识缺口审核台 · 示例商城</title>
-  <link rel="stylesheet" href="/static/review-queue.css?v=3" />
+  <meta name="theme-color" content="#221d17" />
+  <title>审核台 · 示例商城客服台</title>
+  <link rel="stylesheet" href="/static/editorial.css?v=6" />
+  <link rel="stylesheet" href="/static/review-queue.css?v=7" />
+  <link rel="stylesheet" href="/static/apple-theme.css?v=4" />
 </head>
-<body>
-  <div class="page">
-    <header class="masthead">
-      <div class="masthead-main">
-        <div class="mark" aria-hidden="true">审</div>
-        <div class="masthead-copy">
-          <p class="kicker">知识飞轮</p>
-          <h1>知识缺口审核台</h1>
-          <p class="lede">先看用户问了什么，再看当时召回了什么，最后决定是否写回知识库。</p>
-        </div>
-      </div>
-      <nav class="masthead-nav" aria-label="页面导航">
-        <a href="/chat">返回聊天</a>
-        <a href="/faith-cases">编造台账</a>
+<body class="admin-page" data-ghost="审">
+  <header class="masthead">
+    <a class="brand" href="/chat" aria-label="示例商城客服台首页">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8.4 11.6h15.2l-1.2 12.1a2 2 0 0 1-2 1.9H11.6a2 2 0 0 1-2-1.9L8.4 11.6Z"></path>
+          <path d="M12.4 11.6V10a3.6 3.6 0 0 1 7.2 0v1.6"></path>
+        </svg>
+      </span>
+      <h1 class="brand-name">示例商城</h1>
+      <span class="brand-sub">客服台</span>
+    </a>
+    <p class="issue-line">十一月刊 · 知识飞轮</p>
+    <div class="masthead-right">
+      <nav class="section-nav" aria-label="后台页面">
+        <a class="nav-link is-active" href="/review-queue">审核台</a>
+        <a class="nav-link" href="/faith-cases">台账</a>
+        <a class="nav-link" href="/flywheel">数据飞轮</a>
       </nav>
-    </header>
+      <span class="user-chip">
+        <span class="user-chip__avatar" aria-hidden="true">管</span>
+        <span data-user-name>管理员</span>
+      </span>
+      <button class="btn btn--quiet" type="button" data-logout="admin">退出</button>
+    </div>
+  </header>
 
-    <section class="guide" aria-label="审核步骤">
-      <ol class="guide-list">
-        <li>
-          <span class="step-index" aria-hidden="true">1</span>
-          <div>
-            <strong>选一条待审</strong>
-            <p>按出现次数排队；次数越高，越值得先补。</p>
-          </div>
-        </li>
-        <li>
-          <span class="step-index" aria-hidden="true">2</span>
-          <div>
-            <strong>核对原话与召回</strong>
-            <p>展开召回片段，判断是知识缺失，还是检索没命中。</p>
-          </div>
-        </li>
-        <li>
-          <span class="step-index" aria-hidden="true">3</span>
-          <div>
-            <strong>通过或驳回</strong>
-            <p>通过会写入知识库并向量化；失败保持待审，可重试。</p>
-          </div>
-        </li>
-      </ol>
-    </section>
+  <main class="admin-main">
+    <div class="page-head">
+      <div>
+        <h2>审核台</h2>
+        <p id="pageFinding" class="page-lede">按出现次数排队，先补最常被问的。</p>
+      </div>
+      <dl class="page-figures" aria-label="审核数量">
+        <div>
+          <dt>待审</dt>
+          <dd id="headPending" class="figure">—</dd>
+        </div>
+        <div>
+          <dt>通过</dt>
+          <dd id="headApproved" class="figure">—</dd>
+        </div>
+        <div>
+          <dt>驳回</dt>
+          <dd id="headRejected" class="figure">—</dd>
+        </div>
+      </dl>
+    </div>
 
-    <main class="workspace">
+    <p class="guide-row">
+      <span class="guide-steps">
+        <span>选一条</span>
+        <span class="guide-sep" aria-hidden="true">/</span>
+        <span>核对原话与召回</span>
+        <span class="guide-sep" aria-hidden="true">/</span>
+        <span>通过或驳回</span>
+      </span>
+      <span class="guide-note">通过会写入知识库并向量化；失败保持待审，可重试。</span>
+    </p>
+
+    <div class="review-grid">
       <section class="queue-pane" aria-label="审核队列">
         <div class="pane-head">
-          <div>
-            <h2>审核队列</h2>
-            <p id="summary" class="pane-summary">加载中…</p>
-          </div>
+          <h2>队列</h2>
+          <p id="summary" class="pane-summary">加载中…</p>
         </div>
 
         <div id="statusFilters" class="filter-tabs" role="tablist" aria-label="状态筛选">
@@ -71,8 +88,8 @@
 
       <section id="detailPane" class="detail-pane" aria-label="审核详情">
         <div id="detailEmpty" class="detail-empty">
-          <p class="empty-title">选一条问题</p>
-          <p class="empty-copy">选中后，这里会显示用户原话、召回片段和审核操作。</p>
+          <p class="detail-empty-title">从左边选一条。</p>
+          <p class="detail-empty-copy">选中后，这里会展开用户原话、召回片段和写回知识库的答案。</p>
         </div>
 
         <div id="detailBody" class="detail-body is-hidden">
@@ -109,7 +126,7 @@
             <textarea
               id="answerInput"
               class="answer-input"
-              rows="5"
+              rows="6"
               placeholder="填写或修改要写回知识库的答案"
             ></textarea>
             <label class="reject-field">
@@ -117,25 +134,32 @@
               <input id="rejectReason" type="text" placeholder="仅记录到日志" />
             </label>
             <div class="detail-actions">
-              <button id="approveBtn" class="btn btn-primary" type="button">通过并写回</button>
-              <button id="rejectBtn" class="btn" type="button">驳回</button>
+              <button id="approveBtn" class="btn btn--stamp" type="button">通过并写回</button>
+              <button id="rejectBtn" class="btn btn--paper" type="button">驳回</button>
               <span id="detailStatus" class="save-status"></span>
             </div>
             <p id="detailError" class="detail-error is-hidden" role="alert"></p>
           </aside>
         </div>
       </section>
-    </main>
+    </div>
 
     <details id="trendDrawer" class="trend-drawer">
       <summary>
-        <span class="trend-title">评估趋势</span>
+        <span class="trend-title">附录 · 评估趋势</span>
         <span id="trendSummary" class="trend-summary">加载中…</span>
       </summary>
       <div id="trendTableWrap" class="trend-table-wrap" aria-live="polite"></div>
     </details>
-  </div>
+  </main>
 
-  <script src="/static/review-queue.js?v=3"></script>
+  <footer class="folio">
+    <span>示例商城 · 客服台</span>
+    <span>十一月刊 · 知识飞轮 · 审核台</span>
+  </footer>
+
+  <script src="/static/review-queue.js?v=5"></script>
+  <script src="/static/auth-ui.js?v=1"></script>
+  <script type="module" src="/static/water-bg.js?v=2"></script>
 </body>
 </html>

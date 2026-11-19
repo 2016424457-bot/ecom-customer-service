@@ -93,6 +93,13 @@ class Settings(BaseSettings):
         "mysql+asyncmy://root:123456@127.0.0.1:3306/ecom_customer_service"
         "?charset=utf8mb4"
     )
+
+    # ch10 auth: signed session cookie + seeded admin account
+    session_secret: str = "dev-only-change-me-ecom-session-secret"
+    session_ttl_seconds: int = Field(default=7 * 24 * 3600, gt=0)
+    admin_username: str = "admin"
+    admin_password: str = "admin1234"
+    admin_display_name: str = "管理员"
     tool_timeout_seconds: float = Field(default=5, gt=0)
     tool_max_retries: int = Field(default=2, ge=0)
 

@@ -13,7 +13,7 @@ from app.main import create_app
 from app.prompt_builder import PromptBuilder
 from app.runtime import Runtime
 from app.sessions import ConversationLocks
-from tests.fakes import FakeRepository
+from tests.fakes import FakeConversation, FakeRepository
 
 
 def parse_sse(body: str) -> list[tuple[str, dict[str, Any]]]:
@@ -55,13 +55,16 @@ def prompt_builder(tmp_path: Path) -> PromptBuilder:
 def make_client(
     *, settings: Settings, prompt_builder: PromptBuilder
 ) -> TestClient:
+    repository = FakeRepository()
+    repository.conversations[1] = FakeConversation(1, "user:1")
+    repository.conversations[7] = FakeConversation(7, "user:1")
     runtime = Runtime(
         settings=settings,
         prompt_builder=prompt_builder,
         chat_model=object(),
         extraction_model=None,
         locks=ConversationLocks(),
-        repository=FakeRepository(),
+        repository=repository,
         intent_model=object(),
     )
     return TestClient(create_app(runtime=runtime))

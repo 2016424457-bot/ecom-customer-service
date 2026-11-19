@@ -11,6 +11,11 @@ from app.api.conversations import router as conversations_router
 from app.api.eval import router as eval_router
 from app.api.review import router as review_router
 from app.api.routes import router
+from app.auth import (
+    ensure_auth_schema,
+    router as auth_router,
+    session_user,
+)
 from app.config import Settings
 from app.context import format_context_budget
 from app.errors import AppError
@@ -74,6 +79,7 @@ def create_app(
     async def lifespan(_application: FastAPI):
         await graph_runtime.init_graph(runtime.settings)
         await runtime.start()
+        await ensure_auth_schema(runtime)
         yield
         await graph_runtime.close_graph()
         await runtime.aclose()
@@ -88,22 +94,84 @@ def create_app(
     application.include_router(conversations_router)
     application.include_router(review_router)
     application.include_router(eval_router)
+    application.include_router(auth_router)
+
+    async def _current_user(request: Request):
+        return await session_user(request, request.app.state.runtime)
+
+    def _login_redirect(next_path: str, admin: bool = False):
+        target = "/admin/login" if admin else "/login"
+        return RedirectResponse(
+            f"{target}?next={next_path}", status_code=303
+        )
 
     @application.get("/", include_in_schema=False)
-    async def index() -> RedirectResponse:
-        return RedirectResponse(url="/chat")
+    async def index(request: Request) -> RedirectResponse:
+        user = await _current_user(request)
+        if user is None:
+            return RedirectResponse(url="/login", status_code=303)
+        if user.role == "admin":
+            return RedirectResponse(url="/review-queue", status_code=303)
+        return RedirectResponse(url="/chat", status_code=303)
+
+    @application.get("/login", include_in_schema=False)
+    async def login_page(request: Request):
+        user = await _current_user(request)
+        if user is not None:
+            target = "/review-queue" if user.role == "admin" else "/chat"
+            return RedirectResponse(url=target, status_code=303)
+        return FileResponse(STATIC_DIR / "login.html")
+
+    @application.get("/register", include_in_schema=False)
+    async def register_page(request: Request):
+        user = await _current_user(request)
+        if user is not None:
+            target = "/review-queue" if user.role == "admin" else "/chat"
+            return RedirectResponse(url=target, status_code=303)
+        return FileResponse(STATIC_DIR / "register.html")
+
+    @application.get("/admin/login", include_in_schema=False)
+    async def admin_login_page(request: Request):
+        user = await _current_user(request)
+        if user is not None and user.role == "admin":
+            return RedirectResponse(url="/review-queue", status_code=303)
+        return FileResponse(STATIC_DIR / "admin-login.html")
 
     @application.get("/chat", include_in_schema=False)
-    async def chat_page() -> FileResponse:
+    async def chat_page(request: Request):
+        user = await _current_user(request)
+        if user is None:
+            return _login_redirect("/chat")
+        if user.role != "user":
+            return RedirectResponse(url="/review-queue", status_code=303)
         return FileResponse(STATIC_DIR / "chat.html")
 
+    @application.get("/review-queue", include_in_schema=False)
+    async def review_queue_page(request: Request):
+        user = await _current_user(request)
+        if user is None:
+            return _login_redirect("/review-queue", admin=True)
+        if user.role != "admin":
+            return RedirectResponse(url="/chat", status_code=303)
+        return FileResponse(STATIC_DIR / "review-queue.html")
+
     @application.get("/faith-cases", include_in_schema=False)
-    async def faith_cases_page() -> FileResponse:
+    async def faith_cases_page(request: Request):
+        user = await _current_user(request)
+        if user is None:
+            return _login_redirect("/faith-cases", admin=True)
+        if user.role != "admin":
+            return RedirectResponse(url="/chat", status_code=303)
         return FileResponse(STATIC_DIR / "faith-cases.html")
 
-    @application.get("/review-queue", include_in_schema=False)
-    async def review_queue_page() -> FileResponse:
-        return FileResponse(STATIC_DIR / "review-queue.html")
+    @application.get("/flywheel", include_in_schema=False)
+    async def flywheel_page(request: Request):
+        user = await _current_user(request)
+        if user is None:
+            return _login_redirect("/flywheel", admin=True)
+        if user.role != "admin":
+            return RedirectResponse(url="/chat", status_code=303)
+        return FileResponse(STATIC_DIR / "flywheel.html")
 
     @application.exception_handler(AppError)
     async def handle_app_error(

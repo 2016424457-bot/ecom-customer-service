@@ -1,0 +1,405 @@
+/* Apple 浅色主题 · 配色取自水纹花卉底图
+   在 editorial.css 与各页样式之后加载，覆盖颜色与表面质感。 */
+
+:root {
+  --ink: #26343c;
+  --ink-2: #40545f;
+  --ink-3: #526773;
+  --bone: #26343c;
+  --bone-2: #40545f;
+  --paper: #fbfaf6;
+  --paper-ink: #26343c;
+  --text: #26343c;
+  --muted: #5b7180;
+  --faint: #7e919d;
+  --line: rgba(68, 90, 104, 0.18);
+  --line-strong: rgba(68, 90, 104, 0.34);
+  --rule: rgba(68, 90, 104, 0.14);
+  --accent: #1f6fa5;
+  --accent-bright: #2a80bb;
+  --accent-deep: #185a86;
+  --accent-strong: #1f6fa5;
+  --accent-wash: rgba(31, 111, 165, 0.12);
+  --ok: #3e8e5a;
+  --gold: #e8890c;
+  --gold-soft: rgba(232, 137, 12, 0.14);
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+    "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+  color-scheme: light;
+}
+
+html {
+  background: #8f8f8f;
+}
+
+body {
+  background: transparent;
+}
+
+body::before {
+  color: rgba(38, 52, 60, 0.05);
+}
+
+body::after {
+  opacity: 0.03;
+}
+
+/* ── 报头与导航 ─────────────────────────────────────── */
+
+.masthead {
+  background: rgba(255, 253, 248, 0.68);
+  border-bottom-color: rgba(255, 255, 255, 0.6);
+  -webkit-backdrop-filter: blur(20px) saturate(170%);
+  backdrop-filter: blur(20px) saturate(170%);
+}
+
+.brand-mark {
+  padding: 4px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #f5a623, var(--gold));
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(232, 137, 12, 0.3);
+}
+
+.brand-mark svg {
+  width: 22px;
+  height: 22px;
+}
+
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-2);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.user-chip__avatar {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--gold-soft);
+  color: #a85d00;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mode-switch {
+  border-color: rgba(255, 255, 255, 0.55);
+  background: rgba(38, 52, 60, 0.06);
+}
+
+.mode-switch button,
+.mode-switch a {
+  color: var(--muted);
+}
+
+.mode-switch button[aria-selected="true"],
+.mode-switch a[aria-selected="true"] {
+  background: rgba(255, 253, 248, 0.94);
+  color: var(--ink);
+  box-shadow: 0 2px 10px rgba(74, 60, 38, 0.12);
+}
+
+.mode-switch button[aria-selected="true"]:hover,
+.mode-switch a[aria-selected="true"]:hover {
+  color: var(--ink);
+}
+
+/* ── 面板与纸张 ─────────────────────────────────────── */
+
+.vellum {
+  border-color: rgba(255, 255, 255, 0.58);
+  background: rgba(255, 253, 248, 0.74);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  backdrop-filter: blur(22px) saturate(160%);
+  box-shadow: 0 18px 50px rgba(74, 60, 38, 0.16);
+}
+
+.paper {
+  background: var(--paper);
+  color: var(--paper-ink);
+}
+
+/* ── 按钮 ───────────────────────────────────────────── */
+
+.btn {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.btn:hover {
+  border-color: var(--ink-2);
+  background: rgba(38, 52, 60, 0.06);
+}
+
+.btn--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn--primary:hover {
+  border-color: #2a80bb;
+  background: #2a80bb;
+  color: #fff;
+}
+
+.btn--stamp {
+  border-color: var(--accent-deep);
+  background: var(--accent-deep);
+  color: #fff;
+}
+
+.btn--stamp:hover {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+  color: #fff;
+}
+
+.btn--quiet {
+  color: var(--muted);
+}
+
+.btn--quiet:hover {
+  background: rgba(38, 52, 60, 0.06);
+  color: var(--ink);
+}
+
+.btn--paper {
+  color: var(--paper-ink);
+  border-color: rgba(38, 52, 60, 0.28);
+}
+
+.btn--paper:hover {
+  background: rgba(38, 52, 60, 0.06);
+  border-color: var(--paper-ink);
+}
+
+/* ── 弹窗 ───────────────────────────────────────────── */
+
+dialog::backdrop {
+  background: rgba(38, 52, 60, 0.34);
+}
+
+.dialog-sheet {
+  box-shadow: 0 40px 90px -30px rgba(38, 52, 60, 0.5);
+}
+
+/* ── 对话页 ─────────────────────────────────────────── */
+
+.session-rail,
+.desk-rail {
+  padding: 16px 18px;
+  border-radius: 22px;
+  background: rgba(255, 253, 248, 0.62);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  backdrop-filter: blur(18px) saturate(150%);
+  box-shadow: 0 14px 40px rgba(74, 60, 38, 0.12);
+}
+
+.conversation-item:hover {
+  background: rgba(38, 52, 60, 0.045);
+}
+
+.conversation-item.is-active {
+  border-left-color: var(--gold);
+  background: var(--gold-soft);
+}
+
+.conversation-item.is-active .conversation-title {
+  color: #a85d00;
+}
+
+.avatar {
+  border-color: rgba(68, 90, 104, 0.24);
+  color: var(--muted);
+}
+
+.msg.user .avatar {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.msg.error .avatar {
+  border-color: rgba(209, 73, 63, 0.4);
+  background: rgba(209, 73, 63, 0.12);
+  color: #b3261e;
+}
+
+.msg.assistant .avatar {
+  border-color: rgba(232, 137, 12, 0.32);
+  background: var(--gold-soft);
+  color: #a85d00;
+}
+
+.msg.user .bubble {
+  background: #fdfcf8;
+  box-shadow: 0 6px 18px rgba(74, 60, 38, 0.08);
+}
+
+.msg.assistant .bubble {
+  border-color: rgba(68, 90, 104, 0.14);
+  background: rgba(253, 252, 248, 0.94);
+  box-shadow: 0 6px 18px rgba(74, 60, 38, 0.06);
+}
+
+.composer-wrap {
+  background: rgba(255, 253, 248, 0.42);
+}
+
+.scenario:hover {
+  background: rgba(38, 52, 60, 0.05);
+}
+
+.scenario-label {
+  color: #b26a00;
+}
+
+.action-btn {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.action-btn:hover:not(:disabled) {
+  border-color: var(--ink-2);
+  background: rgba(38, 52, 60, 0.06);
+}
+
+.action-btn.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.action-btn.primary:hover:not(:disabled) {
+  border-color: #2a80bb;
+  background: #2a80bb;
+  color: #fff;
+}
+
+.send-btn {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.send-btn:hover:not(:disabled) {
+  border-color: #2a80bb;
+  background: #2a80bb;
+  color: #fff;
+}
+
+.ticket-preview-card {
+  background: rgba(38, 52, 60, 0.04);
+}
+
+.fly-core {
+  background: rgba(255, 253, 248, 0.92);
+}
+
+/* ── 审核台 / 台账 ──────────────────────────────────── */
+
+.page-head h2 {
+  color: var(--ink);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.page-lede,
+.guide-row,
+.pane-summary,
+.summary {
+  color: var(--ink-2);
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.queue-pane {
+  padding: 16px 18px;
+  border-radius: 22px;
+  background: rgba(255, 253, 248, 0.72);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  backdrop-filter: blur(22px) saturate(160%);
+  box-shadow: 0 18px 50px rgba(74, 60, 38, 0.14);
+}
+
+.queue-item:hover {
+  background: rgba(38, 52, 60, 0.045);
+}
+
+.queue-item.is-selected {
+  background: var(--gold-soft);
+}
+
+.detail-pane {
+  border-radius: 22px;
+  box-shadow: 0 18px 50px rgba(74, 60, 38, 0.16);
+}
+
+.reject-field input {
+  border-color: var(--line-strong);
+  background: rgba(38, 52, 60, 0.04);
+  color: var(--ink);
+}
+
+.reject-field input:focus {
+  border-color: var(--accent);
+  background: #fff;
+}
+
+.filter-chip {
+  color: var(--muted);
+}
+
+.filter-chip.is-active {
+  color: var(--accent-deep);
+}
+
+.bucket-filter select {
+  border-color: var(--line-strong);
+  background: rgba(255, 253, 248, 0.7);
+  color: var(--ink);
+}
+
+.case-list,
+.ledger-source {
+  border-radius: 22px;
+}
+
+.case-list {
+  padding: 8px 20px;
+  background: rgba(255, 253, 248, 0.72);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  backdrop-filter: blur(22px) saturate(160%);
+  box-shadow: 0 18px 50px rgba(74, 60, 38, 0.14);
+}
+
+.case-answer pre {
+  background: rgba(38, 52, 60, 0.04);
+}
+
+.save-btn {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.save-btn:hover {
+  background: rgba(38, 52, 60, 0.06);
+}
+
+.save-btn.is-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.save-btn.is-primary:hover {
+  border-color: #2a80bb;
+  background: #2a80bb;
+  color: #fff;
+}

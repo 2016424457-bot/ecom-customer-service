@@ -7,7 +7,13 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api import actions
-from app.schemas import CreateTicketRequest
+from app.auth import SessionUser
+from app.schemas import CreateTicketRequest, TransferHumanRequest
+
+
+TEST_USER = SessionUser(
+    id=1, username="u1", role="user", display_name="U1"
+)
 
 
 class FakeTicket:
@@ -26,7 +32,7 @@ class FakeRepository:
     async def get_conversation(self, conversation_id):
         if not self.exists:
             return None
-        return SimpleNamespace(id=conversation_id, user_id="u1")
+        return SimpleNamespace(id=conversation_id, user_id="user:1")
 
     async def next_ticket_no(self, day) -> str:
         return "T20260715001"
@@ -72,6 +78,7 @@ async def test_create_ticket_action_writes_without_handoff():
             ticket_type="投诉",
         ),
         _runtime(repository),
+        TEST_USER,
     )
 
     assert response.ticket_no == "T20260715001"
@@ -97,6 +104,7 @@ async def test_create_ticket_action_missing_conversation_404():
                 ticket_type="咨询",
             ),
             _runtime(FakeRepository(exists=False)),
+            TEST_USER,
         )
 
     assert exc.value.status_code == 404
@@ -112,6 +120,21 @@ async def test_create_ticket_action_database_error_503():
                 ticket_type="售后",
             ),
             _runtime(FakeRepository(fail=True)),
+            TEST_USER,
         )
 
     assert exc.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_transfer_human_marks_conversation():
+    repository = FakeRepository()
+
+    response = await actions.transfer_human_action(
+        TransferHumanRequest(conversation_id=5),
+        _runtime(repository),
+        TEST_USER,
+    )
+
+    assert response == {"status": "已转人工"}
+    assert repository.status_updates == [(5, "已转人工")]

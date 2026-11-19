@@ -7,7 +7,13 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api import actions
+from app.auth import SessionUser
 from app.schemas import SubmitRefundRequest
+
+
+TEST_USER = SessionUser(
+    id=1, username="u1", role="user", display_name="U1"
+)
 
 
 class FakeRefund:
@@ -37,7 +43,7 @@ class FakeRepository:
             raise SQLAlchemyError("db down")
         if not self.exists:
             return None
-        return SimpleNamespace(id=conversation_id, user_id="u1")
+        return SimpleNamespace(id=conversation_id, user_id="user:1")
 
     async def next_refund_no(self, day) -> str:
         if self.fail_number:
@@ -94,6 +100,7 @@ async def test_submit_refund_writes_record():
             note="  耳机有杂音  ",
         ),
         _runtime(repository),
+        TEST_USER,
     )
 
     assert response.refund_no == "R20261025001"
@@ -120,6 +127,7 @@ async def test_submit_refund_blank_note_becomes_none():
             note="   ",
         ),
         _runtime(repository),
+        TEST_USER,
     )
 
     assert repository.refunds[0]["note"] is None
@@ -138,6 +146,7 @@ async def test_submit_refund_rejects_bad_reason():
                 reason_code="not-a-code",
             ),
             _runtime(repository),
+            TEST_USER,
         )
 
     assert exc.value.status_code == 422
@@ -155,6 +164,7 @@ async def test_submit_refund_missing_conversation_404():
                 reason_code="quality",
             ),
             _runtime(FakeRepository(exists=False)),
+            TEST_USER,
         )
 
     assert exc.value.status_code == 404
@@ -171,6 +181,7 @@ async def test_submit_refund_lookup_database_error_503():
                 reason_code="quality",
             ),
             _runtime(FakeRepository(fail_lookup=True)),
+            TEST_USER,
         )
 
     assert exc.value.status_code == 503
@@ -187,6 +198,7 @@ async def test_submit_refund_database_error_503():
                 reason_code="quality",
             ),
             _runtime(FakeRepository(fail=True)),
+            TEST_USER,
         )
 
     assert exc.value.status_code == 503
@@ -203,6 +215,7 @@ async def test_submit_refund_number_failure_500():
                 reason_code="quality",
             ),
             _runtime(FakeRepository(fail_number=True)),
+            TEST_USER,
         )
 
     assert exc.value.status_code == 500

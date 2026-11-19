@@ -123,6 +123,12 @@ class AgentResponse(BaseModel):
     pending_confirm: dict | None = None
 
 
+class TransferHumanRequest(BaseModel):
+    """Payload for the user-clicked human hand-off action."""
+
+    conversation_id: int = Field(gt=0)
+
+
 class CreateTicketRequest(BaseModel):
     """Payload for the user-clicked create-ticket action."""
 

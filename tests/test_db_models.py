@@ -17,6 +17,7 @@ def test_table_and_column_names_match_schema():
         "tool_audit_logs",
         "review_queue",
         "eval_runs",
+        "users",
     }
     assert [c.name for c in Base.metadata.tables["conversations"].columns] == [
         "id",
@@ -153,5 +154,16 @@ def test_ch07_conversation_summaries_columns():
         "from_msg_id",
         "upto_msg_id",
         "content",
+        "created_at",
+    ]
+
+
+def test_ch10_users_columns():
+    assert [c.name for c in Base.metadata.tables["users"].columns] == [
+        "id",
+        "username",
+        "password_hash",
+        "role",
+        "display_name",
         "created_at",
     ]

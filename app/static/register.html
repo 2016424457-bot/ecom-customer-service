@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#8f8f8f" />
+  <title>注册 · 示例商城客服台</title>
+  <link rel="stylesheet" href="/static/auth.css?v=1" />
+</head>
+<body>
+  <main class="auth-card">
+    <div class="brand-row">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8.4 11.6h15.2l-1.2 12.1a2 2 0 0 1-2 1.9H11.6a2 2 0 0 1-2-1.9L8.4 11.6Z"></path>
+          <path d="M12.4 11.6V10a3.6 3.6 0 0 1 7.2 0v1.6"></path>
+        </svg>
+      </span>
+      <span class="brand-name">示例商城</span>
+      <span class="brand-sub">顾客注册</span>
+    </div>
+
+    <h1 class="auth-title">创建账号。</h1>
+    <p class="auth-lede">注册后就能直接进入客服对话，历史会话会跟着账号走。</p>
+
+    <form class="auth-form" data-auth-form data-endpoint="/api/auth/register" data-confirm="true" data-next="/chat">
+      <label class="field">
+        <span>账号</span>
+        <input type="text" name="username" autocomplete="username" placeholder="3–32 位字母、数字或下划线" pattern="[A-Za-z0-9_]{3,32}" required />
+      </label>
+      <label class="field">
+        <span>昵称（选填）</span>
+        <input type="text" name="display_name" autocomplete="nickname" maxlength="64" placeholder="客服会这样称呼你" />
+      </label>
+      <label class="field">
+        <span>密码</span>
+        <input type="password" name="password" autocomplete="new-password" minlength="8" maxlength="128" placeholder="至少 8 位" required />
+      </label>
+      <label class="field">
+        <span>确认密码</span>
+        <input type="password" name="confirm" autocomplete="new-password" minlength="8" maxlength="128" placeholder="再输入一次" required />
+      </label>
+      <p class="form-error" role="alert"></p>
+      <button class="btn btn--primary" type="submit">注册并登录</button>
+    </form>
+
+    <div class="auth-divider"></div>
+    <div class="auth-alt">
+      <span>已经有账号？<a href="/login">直接登录</a></span>
+      <a href="/admin/login">管理员入口 →</a>
+    </div>
+  </main>
+
+  <script type="module" src="/static/water-bg.js?v=2"></script>
+  <script src="/static/auth.js?v=1"></script>
+</body>
+</html>

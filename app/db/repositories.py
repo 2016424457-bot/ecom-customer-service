@@ -43,7 +43,7 @@ class ChatRepository:
             if conversation is not None:
                 return conversation
 
-        conversation = Conversation(user_id=user_id)
+        conversation = Conversation(user_id=user_id, status="进行中")
         self.session.add(conversation)
         await self.session.flush()
         return conversation

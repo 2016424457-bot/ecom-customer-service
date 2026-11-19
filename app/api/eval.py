@@ -2,10 +2,11 @@
 
 from fastapi import APIRouter, Depends, Query
 
+from app.auth import require_admin
 from app.evaluation.trend import compute_trend
 from app.runtime import Runtime, get_runtime
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 def _run_payload(run) -> dict:

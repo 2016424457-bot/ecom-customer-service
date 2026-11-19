@@ -15,6 +15,32 @@ from app.sessions import ConversationLocks
 logger = logging.getLogger(__name__)
 
 Event = tuple[str, dict[str, Any]]
+HANDOFF_STATUS = "已转人工"
+
+
+def actions_after_handoff(
+    actions: Any, transferred: bool, user_message: str = ""
+) -> list[dict[str, Any]]:
+    """Once handed off, offer only the create-ticket action."""
+    items = [
+        action
+        for action in (actions or [])
+        if isinstance(action, dict)
+        and (not transferred or action.get("type") != "transfer_human")
+    ]
+    if transferred and not any(
+        action.get("type") == "create_ticket" for action in items
+    ):
+        items.append(
+            {
+                "type": "create_ticket",
+                "draft": {
+                    "description": user_message,
+                    "ticket_type": "咨询",
+                },
+            }
+        )
+    return items
 
 
 def chunk_text(content: Any) -> str:
@@ -79,6 +105,9 @@ async def stream_chat(
                 session_id, user_id
             )
             await repository.commit()
+            transferred = (
+                getattr(conversation, "status", "") == HANDOFF_STATUS
+            )
 
             if intent_model is None:
                 intent_model = chat_model.with_structured_output(
@@ -112,6 +141,25 @@ async def stream_chat(
                 user_id=user_id,
                 message=user_message,
             ):
+                if transferred:
+                    if event == "actions":
+                        data = {
+                            **data,
+                            "items": actions_after_handoff(
+                                data.get("items"),
+                                True,
+                                user_message,
+                            ),
+                        }
+                    elif event == "done":
+                        data = {
+                            **data,
+                            "suggested_actions": actions_after_handoff(
+                                data.get("suggested_actions"),
+                                True,
+                                user_message,
+                            ),
+                        }
                 yield event, data
     except graph_runtime.ConversationNotFound:
         yield (
@@ -172,6 +220,14 @@ async def resume_chat(
     lock = locks.lock_for(str(conversation_id))
     try:
         async with lock:
+            conversation = await repository.get_conversation(
+                conversation_id
+            )
+            transferred = (
+                conversation is not None
+                and getattr(conversation, "status", "")
+                == HANDOFF_STATUS
+            )
             if intent_model is None:
                 intent_model = chat_model.with_structured_output(
                     IntentResult,
@@ -203,6 +259,21 @@ async def resume_chat(
                 decision=decision,
                 interrupt_id=interrupt_id,
             ):
+                if transferred:
+                    if event == "actions":
+                        data = {
+                            **data,
+                            "items": actions_after_handoff(
+                                data.get("items"), True
+                            ),
+                        }
+                    elif event == "done":
+                        data = {
+                            **data,
+                            "suggested_actions": actions_after_handoff(
+                                data.get("suggested_actions"), True
+                            ),
+                        }
                 yield event, data
     except graph_runtime.ConversationNotFound:
         yield (

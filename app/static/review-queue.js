@@ -25,6 +25,10 @@
 
   const listEl = document.getElementById("reviewList");
   const summaryEl = document.getElementById("summary");
+  const pageFinding = document.getElementById("pageFinding");
+  const headPending = document.getElementById("headPending");
+  const headApproved = document.getElementById("headApproved");
+  const headRejected = document.getElementById("headRejected");
   const statusFilters = document.getElementById("statusFilters");
   const trendSummary = document.getElementById("trendSummary");
   const trendTableWrap = document.getElementById("trendTableWrap");
@@ -145,6 +149,16 @@
     const label = status || "全部";
     summaryEl.textContent = `${label} · 共 ${total} 条`;
 
+    if (pageFinding) {
+      if (status === "待审" && items.length) {
+        pageFinding.textContent = `${total} 条待审 · 最常被问的是「${items[0].normalized_question}」`;
+      } else if (!status) {
+        pageFinding.textContent = `全部 ${total} 条 · 按出现次数排队，先补最常被问的。`;
+      } else {
+        pageFinding.textContent = `当前查看：${label} · 共 ${total} 条`;
+      }
+    }
+
     if (!items.length) {
       const empty = document.createElement("p");
       empty.className = "queue-empty";
@@ -221,6 +235,9 @@
       const counts = new Map(
         statuses.map((value, index) => [value, results[index]]),
       );
+      if (headPending) headPending.textContent = String(counts.get("待审") ?? 0);
+      if (headApproved) headApproved.textContent = String(counts.get("通过") ?? 0);
+      if (headRejected) headRejected.textContent = String(counts.get("驳回") ?? 0);
       let all = 0;
       for (const button of statusFilters.querySelectorAll("[data-status]")) {
         const value = button.dataset.status || "";

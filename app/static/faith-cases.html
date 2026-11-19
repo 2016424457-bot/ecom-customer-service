@@ -3,26 +3,63 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#1f3b2f" />
-  <title>编造个案台账 · 示例商城</title>
-  <link rel="stylesheet" href="/static/faith-cases.css?v=1" />
+  <meta name="theme-color" content="#221d17" />
+  <title>编造台账 · 示例商城客服台</title>
+  <link rel="stylesheet" href="/static/editorial.css?v=6" />
+  <link rel="stylesheet" href="/static/faith-cases.css?v=5" />
+  <link rel="stylesheet" href="/static/apple-theme.css?v=4" />
 </head>
-<body>
-  <div class="page-shell">
-    <header class="topbar">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true">审</div>
-        <div class="brand-copy">
-          <p class="brand-kicker">Faithfulness Ledger</p>
-          <h1>编造个案台账</h1>
-          <p class="subtitle">忠实度裁判判出的编造，一题一行；处置状态人工维护。</p>
-        </div>
-      </div>
-      <a class="ghost-btn" href="/chat">返回聊天</a>
-    </header>
+<body class="admin-page ledger-page" data-ghost="录">
+  <header class="masthead">
+    <a class="brand" href="/chat" aria-label="示例商城客服台首页">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8.4 11.6h15.2l-1.2 12.1a2 2 0 0 1-2 1.9H11.6a2 2 0 0 1-2-1.9L8.4 11.6Z"></path>
+          <path d="M12.4 11.6V10a3.6 3.6 0 0 1 7.2 0v1.6"></path>
+        </svg>
+      </span>
+      <h1 class="brand-name">示例商城</h1>
+      <span class="brand-sub">客服台</span>
+    </a>
+    <p class="issue-line">十一月刊 · 忠实度</p>
+    <div class="masthead-right">
+      <nav class="section-nav" aria-label="后台页面">
+        <a class="nav-link" href="/review-queue">审核台</a>
+        <a class="nav-link is-active" href="/faith-cases">台账</a>
+        <a class="nav-link" href="/flywheel">数据飞轮</a>
+      </nav>
+      <span class="user-chip">
+        <span class="user-chip__avatar" aria-hidden="true">管</span>
+        <span data-user-name>管理员</span>
+      </span>
+      <button class="btn btn--quiet" type="button" data-logout="admin">退出</button>
+    </div>
+  </header>
 
-    <section class="toolbar" aria-label="筛选">
-      <div id="statusFilters" class="filters">
+  <main class="admin-main">
+    <div class="page-head">
+      <div>
+        <h2>编造台账</h2>
+        <p id="pageFinding" class="page-lede">忠实度裁判判出的编造，一题一行；处置状态人工维护。</p>
+      </div>
+      <dl class="page-figures" aria-label="台账数量">
+        <div>
+          <dt>未解决</dt>
+          <dd id="headOpen" class="figure">—</dd>
+        </div>
+        <div>
+          <dt>已解决</dt>
+          <dd id="headResolved" class="figure">—</dd>
+        </div>
+        <div>
+          <dt>无需解决</dt>
+          <dd id="headNoop" class="figure">—</dd>
+        </div>
+      </dl>
+    </div>
+
+    <div class="ledger-toolbar">
+      <div id="statusFilters" class="filters" aria-label="状态筛选">
         <button class="filter-chip is-active" type="button" data-status="">全部</button>
         <button class="filter-chip" type="button" data-status="未解决">未解决</button>
         <button class="filter-chip" type="button" data-status="已解决">已解决</button>
@@ -39,12 +76,44 @@
           <option value="F_unanswerable">F_unanswerable</option>
         </select>
       </label>
-    </section>
+      <p id="summary" class="summary">加载中…</p>
+    </div>
 
-    <p id="summary" class="summary">加载中…</p>
     <main id="caseList" class="case-list" aria-live="polite"></main>
-  </div>
 
-  <script src="/static/faith-cases.js?v=1"></script>
+    <section class="ledger-source" aria-label="台账来源">
+      <div class="ledger-source-head">
+        <p class="margin-key">台账来源 · 最近一轮评估</p>
+        <p id="sourceMeta" class="ledger-source-meta">读取中…</p>
+      </div>
+      <div class="ledger-source-body">
+        <dl class="source-figures">
+          <div>
+            <dt>用例</dt>
+            <dd id="sourceCases" class="figure">—</dd>
+          </div>
+          <div>
+            <dt>Faithfulness</dt>
+            <dd id="sourceFaith" class="figure">—</dd>
+          </div>
+          <div>
+            <dt>MRR</dt>
+            <dd id="sourceMrr" class="figure">—</dd>
+          </div>
+        </dl>
+        <svg id="sourceTrend" class="source-trend" viewBox="0 0 520 120" role="img" aria-label="最近八轮 Faithfulness 趋势"></svg>
+        <a class="text-link" href="/review-queue">查看完整趋势 →</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="folio">
+    <span>示例商城 · 客服台</span>
+    <span>十一月刊 · 忠实度 · 编造台账</span>
+  </footer>
+
+  <script src="/static/faith-cases.js?v=5"></script>
+  <script src="/static/auth-ui.js?v=1"></script>
+  <script type="module" src="/static/water-bg.js?v=2"></script>
 </body>
 </html>

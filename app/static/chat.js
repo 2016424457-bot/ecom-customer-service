@@ -2,7 +2,6 @@
   "use strict";
 
   const SESSION_KEY = "ecom-chat-session-id";
-  const USER_KEY = "ecom-chat-user-id";
   const HISTORY_KEY = "ecom-chat-history";
   const STREAM_URL = "/api/chat/stream";
   const RESUME_URL = "/api/chat/resume";
@@ -10,27 +9,30 @@
   const HEALTH_URL = "/health";
   const TICKET_URL = "/api/actions/create-ticket";
   const REFUND_URL = "/api/actions/submit-refund";
+  const TRANSFER_URL = "/api/actions/transfer-human";
   const CONVERSATIONS_URL = "/api/conversations";
   const MAX_INPUT = 8000;
 
-  const WELCOME =
-    "您好，这里是示例商城客户服务。请告诉我您的订单号、遇到的问题和期望的处理方式，我会为您妥善处理。";
-
   const AVATAR_ICONS = {
-    assistant: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M4 14v-2a8 8 0 0 1 16 0v2"></path>
-      <rect x="2.8" y="13" width="4.2" height="6.2" rx="2.1"></rect>
-      <rect x="17" y="13" width="4.2" height="6.2" rx="2.1"></rect>
-      <path d="M19.1 19.2a3.2 3.2 0 0 1-3.2 2.3h-3"></path>
+    assistant: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M4 13.4v-1.2a8 8 0 0 1 16 0v1.2"></path>
+      <rect x="3" y="13" width="3.8" height="6" rx="1.7"></rect>
+      <rect x="17.2" y="13" width="3.8" height="6" rx="1.7"></rect>
+      <path d="M19.1 19.6a3.2 3.2 0 0 1-3.2 2.7h-2.2"></path>
     </svg>`,
-    user: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <circle cx="12" cy="8" r="3.2"></circle>
-      <path d="M5.6 20c.7-3.2 3.2-5 6.4-5s5.7 1.8 6.4 5"></path>
-    </svg>`,
-    error: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <path d="M12 7.5v5.5"></path>
-      <circle cx="12" cy="16.8" r="0.9" fill="currentColor" stroke="none"></circle>
-    </svg>`,
+    user: `<span class="avatar-glyph">您</span>`,
+    error: `<span class="avatar-glyph">!</span>`,
+  };
+
+  const TOOL_LABELS = {
+    query_order: "查订单",
+    query_logistics: "查物流",
+    check_warranty: "查保修",
+    query_return_progress: "查退货进度",
+    create_ticket: "建工单",
+    search_knowledge: "查知识库",
+    refund_policy: "查退款政策",
+    order_detail: "查订单详情",
   };
 
   const VALID_ROLES = new Set(["user", "assistant", "error"]);
@@ -68,12 +70,13 @@
 
   let sessionId = loadSessionId();
   let conversationId = null;
-  let userId = loadUserId();
   let history = loadHistory();
   let busy = false;
   let pendingLocked = false;
   let pendingTicket = null;
   let pendingRefund = null;
+  let transferred = false;
+  const conversationStatus = new Map();
 
   function uuid() {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -108,18 +111,6 @@
       localStorage.setItem(SESSION_KEY, sessionId);
     } catch {
       /* storage may be unavailable */
-    }
-  }
-
-  function loadUserId() {
-    try {
-      const stored = localStorage.getItem(USER_KEY);
-      if (isValidSessionId(stored)) return stored;
-      const next = uuid();
-      localStorage.setItem(USER_KEY, next);
-      return next;
-    } catch {
-      return uuid();
     }
   }
 
@@ -175,22 +166,51 @@
     composer.classList.toggle("is-pending", locked);
     input.placeholder = locked
       ? "请先在上方确认或取消工单预览"
-      : "请输入您的问题…";
+      : "从订单号开始，说说这一单…";
   }
 
   function createMessage(
     role,
     text,
-    { typing = false, tools = [], showFeedback = false } = {},
+    { typing = false, tools = [], showFeedback = false, at = null } = {},
   ) {
     const row = document.createElement("div");
     row.className = `msg ${role}`;
     row.dataset.role = role;
 
+    const avatarSlot = document.createElement("div");
+    avatarSlot.className = "avatar-slot";
+
     const avatar = document.createElement("div");
     avatar.className = "avatar";
     avatar.setAttribute("aria-hidden", "true");
     avatar.innerHTML = AVATAR_ICONS[role] || AVATAR_ICONS.assistant;
+    avatarSlot.append(avatar);
+
+    const main = document.createElement("div");
+    main.className = "msg-main";
+
+    const meta = document.createElement("div");
+    meta.className = "msg-meta";
+
+    const who = document.createElement("span");
+    who.className = "msg-who";
+    who.textContent =
+      role === "user" ? "顾客" : role === "error" ? "系统" : "客服 · 小例";
+    meta.append(who);
+
+    if (at) {
+      const time = document.createElement("time");
+      time.className = "msg-time";
+      const date = new Date(at);
+      time.dateTime = date.toISOString();
+      time.textContent = date.toLocaleTimeString("zh-CN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+      meta.append(time);
+    }
 
     const bubble = document.createElement("div");
     bubble.className = "bubble";
@@ -217,7 +237,12 @@
     bubble.append(toolWrap, textEl, feedbackEl);
     for (const tool of tools) updateToolBadge(toolWrap, tool);
 
-    row.append(avatar, bubble);
+    main.append(meta, bubble);
+    if (role === "user") {
+      row.append(main, avatarSlot);
+    } else {
+      row.append(avatarSlot, main);
+    }
     messagesEl.append(row);
     scrollToBottom();
     return { row, bubble, textEl, toolWrap, feedbackEl };
@@ -288,13 +313,22 @@
       });
   }
 
+  function appendBeforeFeedback(bubble, node) {
+    const feedback = bubble.querySelector(".feedback-row");
+    if (feedback) {
+      bubble.insertBefore(node, feedback);
+    } else {
+      bubble.append(node);
+    }
+  }
+
   function renderFeedback(feedbackEl, item) {
     feedbackEl.textContent = "";
     const locked = item.feedback === "up" || item.feedback === "down";
 
     const buttons = [
-      { value: "up", label: "👍", aria: "这条回答有帮助" },
-      { value: "down", label: "👎", aria: "这条回答没有帮助" },
+      { value: "up", label: "有用", aria: "这条回答有帮助" },
+      { value: "down", label: "没用", aria: "这条回答没有帮助" },
     ].map(({ value, label, aria }) => {
       const button = document.createElement("button");
       button.type = "button";
@@ -316,11 +350,15 @@
       return button;
     });
 
+    const prompt = document.createElement("span");
+    prompt.className = "feedback-prompt";
+    prompt.textContent = "这条回答";
+
     const status = document.createElement("span");
     status.className = "feedback-status";
     status.textContent = locked ? "已反馈" : "";
 
-    feedbackEl.append(...buttons, status);
+    feedbackEl.append(prompt, ...buttons, status);
     feedbackEl.classList.remove("is-hidden");
   }
 
@@ -329,9 +367,10 @@
   }
 
   function appendAssistantMessage(text) {
-    history.push({ role: "assistant", text });
+    const at = Date.now();
+    history.push({ role: "assistant", text, at });
     saveHistory();
-    createMessage("assistant", text);
+    createMessage("assistant", text, { at });
     scrollToBottom();
   }
 
@@ -416,7 +455,7 @@
     }
 
     picker.append(statusEl);
-    bubble.append(picker);
+    appendBeforeFeedback(bubble, picker);
   }
 
   function renderActions(bubble, item) {
@@ -433,7 +472,23 @@
     const bar = document.createElement("div");
     bar.className = "action-bar";
 
-    for (const action of actions) {
+    const visibleActions = actions.filter(
+      (action) =>
+        !(transferred && action && action.type === "transfer_human"),
+    );
+    if (
+      transferred &&
+      !visibleActions.some(
+        (action) => action && action.type === "create_ticket",
+      )
+    ) {
+      visibleActions.push({
+        type: "create_ticket",
+        draft: { description: "", ticket_type: "咨询" },
+      });
+    }
+
+    for (const action of visibleActions) {
       if (!action || typeof action.type !== "string") continue;
 
       if (action.type === "select_order") {
@@ -448,11 +503,29 @@
       if (action.type === "transfer_human") {
         button.textContent = action.handled ? "已转人工" : "转人工";
         button.disabled = Boolean(action.handled);
-        button.addEventListener("click", () => {
+        button.addEventListener("click", async () => {
           if (action.handled) return;
-          action.handled = true;
-          saveHistory();
+          const id = Number(sessionId);
+          if (!Number.isInteger(id) || id <= 0) {
+            addErrorMessage("会话尚未建立，无法转人工。");
+            return;
+          }
           button.disabled = true;
+          try {
+            const response = await fetch(TRANSFER_URL, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ conversation_id: id }),
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          } catch {
+            button.disabled = false;
+            addErrorMessage("转接失败，请稍后重试。");
+            return;
+          }
+          action.handled = true;
+          transferred = true;
+          saveHistory();
           button.textContent = "已转人工";
           appendAssistantMessage("已转接人工客服");
           appendAssistantMessage(
@@ -484,7 +557,7 @@
     }
 
     if (bar.children.length) {
-      bubble.append(bar);
+      appendBeforeFeedback(bubble, bar);
       scrollToBottom();
     }
   }
@@ -552,7 +625,7 @@
     if (item.text) answerEl.textContent = item.text;
 
     card.append(head, desc, actions, status, answerEl);
-    bubble.append(card);
+    appendBeforeFeedback(bubble, card);
 
     if (resolution === "confirmed") {
       setTicketCardState(
@@ -875,7 +948,7 @@
 
     const label = document.createElement("span");
     label.className = "tool-label";
-    label.textContent = name;
+    label.textContent = TOOL_LABELS[name] || name;
 
     badge.append(icon, label);
     return badge;
@@ -883,6 +956,7 @@
 
   function updateToolBadge(wrap, tool) {
     const name = tool.name || "tool";
+    const labelText = TOOL_LABELS[name] || name;
     const key = tool.tool_call_id || tool.key || name;
     let badge = Array.from(wrap.children).find(
       (item) => item.dataset.callId === key,
@@ -899,11 +973,11 @@
 
     const label = badge.querySelector(".tool-label");
     if (status === "running") {
-      label.textContent = `正在调用 ${name}…`;
+      label.textContent = `正在${labelText}…`;
     } else if (status === "error") {
-      label.textContent = `${name} · 失败`;
+      label.textContent = `${labelText} · 未完成`;
     } else {
-      label.textContent = name;
+      label.textContent = labelText;
     }
   }
 
@@ -934,6 +1008,7 @@
       button.type = "button";
       button.className = "conversation-item";
       button.dataset.id = String(item.id);
+      conversationStatus.set(Number(item.id), item.status);
       if (Number(item.id) === conversationId) {
         button.classList.add("is-active");
       }
@@ -960,7 +1035,7 @@
     if (!conversationList) return;
     try {
       const response = await fetch(
-        `${CONVERSATIONS_URL}?user_id=${encodeURIComponent(userId)}`,
+        CONVERSATIONS_URL,
         { cache: "no-store" },
       );
       if (!response.ok) return;
@@ -1002,6 +1077,7 @@
       }
       sessionId = String(target);
       conversationId = target;
+      transferred = conversationStatus.get(target) === "已转人工";
       saveSessionId();
       let lastUserText = null;
       history = items
@@ -1056,13 +1132,16 @@
   function renderHistory() {
     messagesEl.innerHTML = "";
     if (!history.length) {
-      createMessage("assistant", WELCOME);
+      showSuggestions(true);
+      scrollToBottom("auto");
       return;
     }
+    showSuggestions(false);
     for (const item of history) {
       const view = createMessage(item.role, item.text, {
         tools: item.tools || [],
         showFeedback: item.role === "assistant",
+        at: item.at || null,
       });
       if (item.role === "assistant") {
         renderAnswer(view.textEl, item.text, item.citations);
@@ -1075,7 +1154,7 @@
   }
 
   function appendHistory(role, text) {
-    history.push({ role, text });
+    history.push({ role, text, at: Date.now() });
     saveHistory();
   }
 
@@ -1165,17 +1244,20 @@
     }
     autoResize();
 
+    const sentAt = Date.now();
     appendHistory("user", text);
-    createMessage("user", text);
+    createMessage("user", text, { at: sentAt });
 
     const placeholder = createMessage("assistant", "", {
       typing: true,
       showFeedback: true,
+      at: sentAt,
     });
     const assistantItem = {
       role: "assistant",
       text: "",
       question: text,
+      at: sentAt,
       tools: [],
       citations: [],
       actions: [],
@@ -1194,7 +1276,6 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           session_id: sessionId,
-          user_id: userId,
           message: text,
         }),
       });
@@ -1378,9 +1459,9 @@
     saveHistory();
     sessionId = uuid();
     conversationId = null;
+    transferred = false;
     saveSessionId();
     messagesEl.innerHTML = "";
-    createMessage("assistant", WELCOME);
     setPendingLock(false);
     showSuggestions(true);
     autoResize();
@@ -1416,13 +1497,22 @@
     });
   }
 
-  suggestions.addEventListener("click", (event) => {
-    const chip = event.target.closest("[data-message]");
-    if (!chip || busy) return;
-    input.value = chip.dataset.message || "";
-    autoResize();
-    void sendMessage();
-  });
+  if (suggestions) {
+    suggestions.addEventListener("click", (event) => {
+      const fill = event.target.closest("[data-fill]");
+      if (fill && !busy) {
+        input.value = fill.dataset.fill || "";
+        autoResize();
+        input.focus();
+        return;
+      }
+      const chip = event.target.closest("[data-message]");
+      if (!chip || busy) return;
+      input.value = chip.dataset.message || "";
+      autoResize();
+      void sendMessage();
+    });
+  }
 
   async function openSource(chunkId, number) {
     const dialog = document.getElementById("sourceDialog");

@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 
+from app.auth import SessionUser, get_owned_conversation, require_user
 from app.runtime import Runtime, get_runtime
 from app.schemas import (
     ConversationListItem,
@@ -19,10 +20,11 @@ async def list_conversations(
     user_id: str = "anonymous",
     limit: int = Query(50, ge=1, le=100),
     runtime: Runtime = Depends(get_runtime),
+    user: SessionUser = Depends(require_user),
 ) -> ConversationListResponse:
     async with runtime.repository_scope() as repository:
         items = await repository.list_conversations(
-            user_id, limit
+            user.user_key, limit
         )
     return ConversationListResponse(
         items=[
@@ -38,15 +40,10 @@ async def list_conversations(
 async def list_messages(
     conversation_id: int,
     runtime: Runtime = Depends(get_runtime),
+    user: SessionUser = Depends(require_user),
 ) -> ConversationMessagesResponse:
     async with runtime.repository_scope() as repository:
-        conversation = await repository.get_conversation(
-            conversation_id
-        )
-        if conversation is None:
-            raise HTTPException(
-                status_code=404, detail="会话不存在"
-            )
+        await get_owned_conversation(repository, conversation_id, user)
         rows = await repository.list_messages(conversation_id)
     return ConversationMessagesResponse(
         items=[

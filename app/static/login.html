@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#8f8f8f" />
+  <title>登录 · 示例商城客服台</title>
+  <link rel="stylesheet" href="/static/auth.css?v=1" />
+</head>
+<body>
+  <main class="auth-card">
+    <div class="brand-row">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M8.4 11.6h15.2l-1.2 12.1a2 2 0 0 1-2 1.9H11.6a2 2 0 0 1-2-1.9L8.4 11.6Z"></path>
+          <path d="M12.4 11.6V10a3.6 3.6 0 0 1 7.2 0v1.6"></path>
+        </svg>
+      </span>
+      <span class="brand-name">示例商城</span>
+      <span class="brand-sub">顾客登录</span>
+    </div>
+
+    <h1 class="auth-title">欢迎回来。</h1>
+    <p class="auth-lede">登录后继续你的服务会话，订单和记录都会留在这里。</p>
+
+    <form class="auth-form" data-auth-form data-endpoint="/api/auth/login" data-portal="user" data-next="/chat">
+      <label class="field">
+        <span>账号</span>
+        <input type="text" name="username" autocomplete="username" placeholder="账号" required />
+      </label>
+      <label class="field">
+        <span>密码</span>
+        <input type="password" name="password" autocomplete="current-password" placeholder="请输入密码" required />
+      </label>
+      <p class="form-error" role="alert"></p>
+      <button class="btn btn--primary" type="submit">登录</button>
+    </form>
+
+    <div class="auth-divider"></div>
+    <div class="auth-alt">
+      <span>还没有账号？<a href="/register">注册一个</a></span>
+      <a href="/admin/login">管理员入口 →</a>
+    </div>
+
+    <p class="demo-hint">顾客账号请先在注册页创建；管理员账号由系统内置，请走「管理员入口」。</p>
+  </main>
+
+  <script type="module" src="/static/water-bg.js?v=2"></script>
+  <script src="/static/auth.js?v=1"></script>
+</body>
+</html>
